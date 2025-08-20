@@ -1,4 +1,4 @@
-# mesh-rs
+# meshrs
 
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg?maxAge=3600)](https://github.com/rust-lang/rust)
 
