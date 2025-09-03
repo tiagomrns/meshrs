@@ -5,7 +5,10 @@ use std::fs;
 use std::vec;
 //use std::io::Write;
 
-use crate::database::*;  // Import model definitions (Node, Element, ElementType, etc.)
+//use crate::database::*;                     // Import mesh data structures and error types from database module
+
+use crate::lib::*;                     // Import mesh data structures and error types from lib module
+use crate::error::*;                     // Import mesh data structures and error types from error module
 
 
 pub struct VTUWriter;  // Defines a structure to represent a mesh parser for MPHTXT files

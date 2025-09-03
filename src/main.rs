@@ -4,8 +4,12 @@ use std::process;               // Enables process control, particularly process
 use std::path::{Path, PathBuf}; // Path manipulation utilities - Path for immutable path references, PathBuf for owned paths
 
 // Import custom modules that contain the core functionality
-mod database;                   // Module containing data structures (MeshData, Node, Element, etc.)
-use database::*;                // Wildcard import brings all public items from database module into scope
+mod lib;                   // Module containing data structures (MeshData, Node, Element, etc.)
+use lib::*;                // Wildcard import brings all public items from lib module into scope
+
+// Import custom modules that contain the core functionality
+mod error;                   // Module containing data structures (MeshData, Node, Element, etc.)
+use error::*;                // Wildcard import brings all public items from error module into scope
 
 mod parser;                     // Module containing file format parsers
 use parser::comsol::mphtxt::MphtxtParser;       // Parser specifically for COMSOL .mphtxt mesh files

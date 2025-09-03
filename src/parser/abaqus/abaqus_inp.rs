@@ -1,7 +1,11 @@
 // Import standard library modules for file I/O operations
 use std::fs::File;              // For opening files
 use std::io::{self, BufRead, BufReader}; // For buffered reading of files line by line
-use crate::database::*;         // Import all public items from our database module (MeshData, ElementType, etc.)
+
+//use crate::database::*;                     // Import mesh data structures and error types from database module
+
+use crate::lib::*;                     // Import mesh data structures and error types from lib module
+use crate::error::*;                     // Import mesh data structures and error types from error module
 
 // Implementation block for ElementType enum - adds methods to the ElementType enum
 impl ElementType {

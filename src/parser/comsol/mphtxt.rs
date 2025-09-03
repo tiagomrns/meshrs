@@ -4,7 +4,10 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader};    // For input/output operations and buffered reading (buffered reading is more efficient for line-by-line processing)
 
 
-use crate::database::*;                     // Import mesh data structures and error types from database module
+//use crate::database::*;                     // Import mesh data structures and error types from database module
+
+use crate::lib::*;                     // Import mesh data structures and error types from lib module
+use crate::error::*;                     // Import mesh data structures and error types from error module
 
 //use crate::database::ElementType;
 

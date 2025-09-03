@@ -1,7 +1,11 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::collections::HashMap;
-use crate::database::*;
+
+//use crate::database::*;                     // Import mesh data structures and error types from database module
+
+use crate::lib::*;                     // Import mesh data structures and error types from lib module
+use crate::error::*;                     // Import mesh data structures and error types from error module
 
 pub struct ComsolTxtElementParser;
 
