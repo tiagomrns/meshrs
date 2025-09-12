@@ -30,7 +30,7 @@ pub enum ElementType {              // Enumeration of supported finite element t
     Tetra,                          // First order tetrahedral element   Comsol
     QuadraticTetra,                 // Second order tetrahedral element   Comsol
     Pyramid,                        // First order pyramid element   Comsol
-    QuadraticPyramid,            // Second order pyramid element   13 nodes   Comsol  ???
+    //QuadraticPyramid,            // Second order pyramid element   13 nodes   Comsol  ???
     // TriquadraticPyramid,            // Second order pyramid element   with padded nodes  19 nodes   Comsol
     Wedge,                          // First order prism element   Comsol
     QuadraticWedge,                 // Second order prism element   Abaqus
@@ -67,7 +67,7 @@ impl ElementType {
             ElementType::Tetra => CellType::Tetra,  
             ElementType::QuadraticTetra => CellType::QuadraticTetra,  
             ElementType::Pyramid => CellType::Pyramid,
-            ElementType::QuadraticPyramid => CellType::QuadraticPyramid,
+            //ElementType::QuadraticPyramid => CellType::QuadraticPyramid,
             // ElementType::TriquadraticPyramid => CellType::TriquadraticPyramid,   
             ElementType::Wedge => CellType::Wedge,   
             ElementType::QuadraticWedge => CellType::QuadraticWedge,

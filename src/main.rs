@@ -20,6 +20,9 @@ use parser::comsol::txt_element::ComsolTxtElementParser; // Parser for element f
 mod writer;                     // Module containing output file writers
 use writer::xml_writer::VTUWriter; // Writer for VTK XML unstructured grid (.vtu) format
 
+mod mesh_analysis;                   // Module containing mesh quality analysis  
+use mesh_analysis::geometric_analysis::GeometricAnalysis; // Geometric analysis for mesh quality  
+
 /// Struct to hold parsed command line arguments in a structured format
 /// This makes it easier to pass around and validate the user's input
 struct CommandLineArgs {
@@ -28,6 +31,7 @@ struct CommandLineArgs {
     element_txt_file: Option<String>, // Path to txt file containing element field values - optional
     mesh_entity: MeshEntity,            // Specifies which type of values to parse from txt files
     print_vtu: bool,                  // Flag to control whether to print VTU file content to console
+    analyze_mesh: bool,               // Flag to enable mesh quality analysis  
 }
 
 /// Enum to specify which type of values to parse from txt file(s)
@@ -54,6 +58,7 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
     let mut mesh_entity = MeshEntity::Node;          // Default to node values (will be overridden if flags provided)
     let mut print_vtu = false;                        // Default to not printing VTU content
     let mut txt_files: Vec<String> = Vec::new();      // Collect all txt files to process based on mesh_entity later
+    let mut analyze_mesh = false;                     // Default to not analyzing mesh quality
 
     // Start parsing from index 1 (skip program name at index 0)
     let mut i = 1;
@@ -70,6 +75,9 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
             },
             "--print-vtu" => {                        // User wants VTU content printed
                 print_vtu = true;                     // Enable VTU content printing
+            },
+            "--analyze-mesh" => {                     // User wants mesh quality analysis  
+                analyze_mesh = true;                  // Enable mesh analysis 
             },
             file if file.ends_with(".mphtxt") || file.ends_with(".inp") => { // Check if file is a mesh file
                 if mesh_file.is_some() {              // Check if we already found a mesh file
@@ -121,7 +129,7 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
 
     // Validate that if txt files are provided, the user must specify what type they contain
     // This prevents ambiguity about how to parse the txt files
-    if !txt_files.is_empty() && !args.iter().any(|arg| arg.starts_with("--") && (arg.contains("values") || arg == "--print-vtu")) {
+    if !txt_files.is_empty() && !args.iter().any(|arg| arg.starts_with("--") && (arg.contains("values") || arg == "--print-vtu" || arg == "--analyze-mesh")) { 
         return Err("When parsing txt files, you must specify --node-values, --element-values, or --both-values".to_string());
     }
 
@@ -132,6 +140,7 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
         element_txt_file, // Optional element values file path
         mesh_entity,       // Specified mesh entity parsing mode
         print_vtu,        // VTU printing preference
+        analyze_mesh,     // Mesh analysis preference
     })
 }
 
@@ -153,6 +162,7 @@ fn print_usage(program_name: &str) {
     eprintln!("  --element-values      Parse txt file as element values");       // Element values option description
     eprintln!("  --both-values         Parse two txt files (first=nodes, second=elements)"); // Both values option description
     eprintln!("  --print-vtu           Print VTU file content to console");      // Print option description
+    eprintln!("  --analyze-mesh        Perform mesh quality analysis");          // Analysis option description 
     eprintln!(); // Empty line for separation
     eprintln!("Note: Mesh file is always required. Value type must be specified when using txt files."); // Important usage note
     eprintln!(); // Empty line for separation
@@ -162,6 +172,146 @@ fn print_usage(program_name: &str) {
     eprintln!("  {} mesh.mphtxt elements.txt --element-values # Parse mesh + element values", program_name); // Mesh + elements example
     eprintln!("  {} mesh.mphtxt nodes.txt elements.txt --both-values # Parse mesh + both values", program_name); // Complete example
     eprintln!("  {} model.inp nodes.txt elements.txt --both-values --print-vtu # Parse all with output", program_name); // Full featured example
+    eprintln!("  {} mesh.mphtxt --analyze-mesh               # Parse mesh + quality analysis", program_name); // Analysis example  
+    eprintln!("  {} mesh.mphtxt nodes.txt --node-values --analyze-mesh # Parse + analyze both meshes", program_name); // Full analysis example 
+}
+
+/* 
+/// Create a deformed mesh by applying nodal displacements to the original mesh 
+/// Returns a new MeshData structure with updated node coordinates
+fn create_deformed_mesh(original_mesh: &MeshData, node_value_data: &NodeValueData) -> Result<MeshData, String> {
+    // Find displacement data in the node values
+    let displacement_info = node_value_data.node_value_type_info
+        .iter()
+        .find(|info| matches!(info.nodevalue_type, ValueType::Displacement))
+        .ok_or("No displacement data found in node values")?;
+
+    // Validate that we have displacement data for all mesh nodes
+    if displacement_info.num_nodes != original_mesh.num_nodes {
+        return Err(format!(
+            "Displacement data node count ({}) doesn't match mesh node count ({})",
+            displacement_info.num_nodes, original_mesh.num_nodes
+        ));
+    }
+
+    // Create new mesh data with deformed coordinates
+    let mut deformed_mesh = original_mesh.clone();
+
+    // Apply displacements to each node
+    for (i, original_node) in original_mesh.nodes.iter().enumerate() {
+        // Find corresponding displacement values
+        if let Some(displacement_node) = node_value_data.node_values
+            .iter()
+            .skip(displacement_info.start_index)
+            .take(displacement_info.num_nodes)
+            .find(|nv| nv.id == original_node.id) {
+            
+            // Apply displacement to original coordinates
+            let mut new_coordinates = original_node.coordinates.clone();
+            
+            // Add displacement values (ensure we don't exceed coordinate dimensions)
+            let disp_components = displacement_node.values.len().min(new_coordinates.len());
+            for j in 0..disp_components {
+                new_coordinates[j] += displacement_node.values[j];
+            }
+            
+            // Update the deformed mesh node coordinates
+            deformed_mesh.nodes[i].coordinates = new_coordinates;
+        } else {
+            return Err(format!("No displacement data found for node {}", original_node.id));
+        }
+    }
+
+    Ok(deformed_mesh)
+}
+*/
+
+/// Perform mesh quality analysis and print detailed results 
+fn analyze_mesh_quality(mesh_data: &MeshData, mesh_name: &str) -> Result<(), String> {
+    println!("\n{}", "=".repeat(60));
+    println!("MESH QUALITY ANALYSIS: {}", mesh_name);
+    println!("{}", "=".repeat(60));
+
+    match GeometricAnalysis::analyse_mesh_quality(mesh_data) {
+        Ok(quality_report) => {
+            println!("Analysis completed successfully!");
+            println!("Total elements analyzed: {}", quality_report.total_elements);
+            
+            // Print detailed statistics from the quality report
+            println!("\nJacobian Determinant Statistics:");
+            println!("  Minimum:     {:.6e}", quality_report.statistics.min_jacobian);
+            println!("  Maximum:     {:.6e}", quality_report.statistics.max_jacobian);
+            println!("  Average:     {:.6e}", quality_report.statistics.avg_jacobian);
+            println!("  Negative:    {} elements ({:.2}%)", 
+                quality_report.statistics.negative_jacobian_count,
+                (quality_report.statistics.negative_jacobian_count as f64 / quality_report.total_elements as f64) * 100.0
+            );
+
+            // Additional quality analysis
+            if quality_report.statistics.negative_jacobian_count > 0 {
+                println!("  WARNING: {} elements have negative Jacobian determinants (inverted elements)!", 
+                    quality_report.statistics.negative_jacobian_count);
+                
+                // Show details of the worst elements
+                let mut worst_elements: Vec<_> = quality_report.element_qualities
+                    .iter()
+                    .filter(|q| q.det_jacobian < 0.0)
+                    .collect();
+                worst_elements.sort_by(|a, b| a.det_jacobian.partial_cmp(&b.det_jacobian).unwrap());
+                
+                println!("\n  Worst inverted elements (up to 5):");
+                for (i, elem) in worst_elements.iter().take(5).enumerate() {
+                    println!("    {}: Element {} - Jacobian det: {:.6e}", 
+                        i + 1, elem.element_id, elem.det_jacobian);
+                }
+            }
+
+            // Quality classification
+            let very_poor_count = quality_report.element_qualities.iter()
+                .filter(|q| q.det_jacobian > 0.0 && q.det_jacobian < 0.1)
+                .count();
+            let poor_count = quality_report.element_qualities.iter()
+                .filter(|q| q.det_jacobian >= 0.1 && q.det_jacobian < 0.5)
+                .count();
+            let good_count = quality_report.element_qualities.iter()
+                .filter(|q| q.det_jacobian >= 0.5)
+                .count();
+
+            println!("\nElement Quality Distribution:");
+            println!("  Excellent (det ≥ 0.5):     {} elements ({:.1}%)", 
+                good_count, (good_count as f64 / quality_report.total_elements as f64) * 100.0);
+            println!("  Poor (0.1 ≤ det < 0.5):    {} elements ({:.1}%)", 
+                poor_count, (poor_count as f64 / quality_report.total_elements as f64) * 100.0);
+            println!("  Very Poor (0 < det < 0.1): {} elements ({:.1}%)", 
+                very_poor_count, (very_poor_count as f64 / quality_report.total_elements as f64) * 100.0);
+            println!("  Inverted (det < 0):        {} elements ({:.1}%)", 
+                quality_report.statistics.negative_jacobian_count,
+                (quality_report.statistics.negative_jacobian_count as f64 / quality_report.total_elements as f64) * 100.0);
+
+            // Overall mesh quality assessment
+            let quality_percentage = ((quality_report.total_elements - quality_report.statistics.negative_jacobian_count - very_poor_count) as f64 
+                / quality_report.total_elements as f64) * 100.0;
+            
+            println!("\nOverall Mesh Quality Assessment:");
+            if quality_percentage >= 90.0 {
+                println!("  ✓ EXCELLENT: {:.1}% of elements have acceptable quality", quality_percentage);
+            } else if quality_percentage >= 75.0 {
+                println!("  ⚠ GOOD: {:.1}% of elements have acceptable quality", quality_percentage);
+            } else if quality_percentage >= 50.0 {
+                println!("  ⚠ FAIR: {:.1}% of elements have acceptable quality", quality_percentage);
+            } else {
+                println!("  ✗ POOR: Only {:.1}% of elements have acceptable quality", quality_percentage);
+            }
+
+            println!("{}", "=".repeat(60));
+            Ok(())
+        },
+        Err(e) => {
+            println!("Analysis failed: {:?}", e);
+            println!("{}", "=".repeat(60));
+            Err(format!("Mesh analysis failed: {:?}", e))
+        }
+    }
 }
 
 /// Main entry point - the function that runs when the program starts
@@ -207,6 +357,45 @@ fn main() {
     if node_value_data.is_some() || element_value_data.is_some() {
         println!("{}", "=".repeat(50));                         // Print visual separator line
         print_result_summary(&node_value_data, &element_value_data); // Display field values information
+    }
+
+    // MESH QUALITY ANALYSIS SECTION
+    // Always perform undeformed mesh analysis if requested
+    if cmd_args.analyze_mesh {
+        // Analyze original (undeformed) mesh
+        if let Err(e) = analyze_mesh_quality(&mesh_data, "ORIGINAL MESH") {
+            eprintln!("Warning: Original mesh analysis failed: {}", e);
+        }
+
+        // FUTURE: Deformed mesh analysis (commented out for now)
+        // Uncomment the section below when you want to add deformed mesh analysis
+        /*
+        // If we have displacement data, also analyze the deformed mesh
+        if let Some(ref node_data) = node_value_data {
+            // Check if displacement data is available
+            let has_displacement = node_data.node_value_type_info
+                .iter()
+                .any(|info| matches!(info.nodevalue_type, ValueType::Displacement));
+
+            if has_displacement {
+                println!("\nDisplacement data detected - analyzing deformed mesh...");
+                match create_deformed_mesh(&mesh_data, node_data) {
+                    Ok(deformed_mesh) => {
+                        if let Err(e) = analyze_mesh_quality(&deformed_mesh, "DEFORMED MESH") {
+                            eprintln!("Warning: Deformed mesh analysis failed: {}", e);
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("Warning: Could not create deformed mesh: {}", e);
+                    }
+                }
+            } else {
+                println!("\nNote: No displacement data found, skipping deformed mesh analysis.");
+            }
+        } else {
+            println!("\nNote: No node data provided, analyzing undeformed mesh only.");
+        }
+        */
     }
 
     // Generate output file name based on input mesh file name

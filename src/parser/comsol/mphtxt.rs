@@ -25,7 +25,7 @@ impl ElementType {
             "tet" => Some(ElementType::Tetra),  
             "tet2" => Some(ElementType::QuadraticTetra),   
             "pyr" => Some(ElementType::Pyramid),   
-            "pyr2" => Some(ElementType::QuadraticPyramid),   //?
+            //"pyr2" => Some(ElementType::QuadraticPyramid),   //?
             "prism" => Some(ElementType::Wedge),  
             "prism2" => Some(ElementType::BiquadraticQuadraticWedge),   
             "hex" => Some(ElementType::Hexahedron),  
@@ -383,11 +383,11 @@ impl MphtxtParser {
                         comsol_nodes[0], comsol_nodes[1], comsol_nodes[3], comsol_nodes[2],
                         comsol_nodes[4]
                     ];
-            }
+            }/* 
             ElementType::QuadraticPyramid => {   // ?? node padding or ignoring etc.
                 // Quadratic pyramid: 13 nodes
                 element.nodes = comsol_nodes; // Keep original for now, adjust as needed
-            }
+            } */
             ElementType::Wedge => {
                 // Wedge (prism) elements: COMSOL and VTK have same ordering
                 element.nodes = comsol_nodes; // Keep original for now, adjust as needed
