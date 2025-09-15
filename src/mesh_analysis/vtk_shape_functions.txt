@@ -1,0 +1,1503 @@
+vtkLine
+
+// Compute interpolation functions
+//
+void vtkLine::InterpolationFunctions(const double pcoords[3], double weights[2])
+{
+  weights[0] = 1.0 - pcoords[0];
+  weights[1] = pcoords[0];
+}
+
+//------------------------------------------------------------------------------
+void vtkLine::InterpolationDerivs(const double vtkNotUsed(pcoords)[3], double derivs[2])
+{
+  derivs[0] = -1.0;
+  derivs[1] = 1.0;
+}
+
+//------------------------------------------------------------------------------
+static double vtkLineCellPCoords[6] = { 0.0, 0.0, 0.0, 1.0, 0.0, 0.0 };
+
+-------------------------------------------------------------------------------------------
+
+vtkQuadraticEdge
+
+// Compute interpolation functions. Node [2] is the mid-edge node.
+void vtkQuadraticEdge::InterpolationFunctions(const double pcoords[3], double weights[3])
+{
+  double r = pcoords[0];
+
+  weights[0] = 2.0 * (r - 0.5) * (r - 1.0);
+  weights[1] = 2.0 * r * (r - 0.5);
+  weights[2] = 4.0 * r * (1.0 - r);
+}
+
+//------------------------------------------------------------------------------
+// Derivatives in parametric space.
+void vtkQuadraticEdge::InterpolationDerivs(const double pcoords[3], double derivs[3])
+{
+  double r = pcoords[0];
+
+  derivs[0] = 4.0 * r - 3.0;
+  derivs[1] = 4.0 * r - 1.0;
+  derivs[2] = 4.0 - r * 8.0;
+}
+
+//------------------------------------------------------------------------------
+static double vtkQEdgeCellPCoords[9] = { 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 0.0, 0.0 };
+
+-------------------------------------------------------------------------------------------
+
+vtkTriangle
+
+// Compute iso-parametric interpolation functions
+//
+void vtkTriangle::InterpolationFunctions(const double pcoords[3], double sf[3])
+{
+  sf[0] = 1.0 - pcoords[0] - pcoords[1];
+  sf[1] = pcoords[0];
+  sf[2] = pcoords[1];
+}
+
+//------------------------------------------------------------------------------
+void vtkTriangle::InterpolationDerivs(const double*, double derivs[6])
+{
+  // r-derivatives
+  derivs[0] = -1.0;
+  derivs[1] = 1.0;
+  derivs[2] = 0.0;
+
+  // s-derivatives
+  derivs[3] = -1.0;
+  derivs[4] = 0.0;
+  derivs[5] = 1.0;
+}
+
+//------------------------------------------------------------------------------
+static double vtkTriangleCellPCoords[9] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  0.0, 1.0, 0.0  //
+};
+
+-------------------------------------------------------------------------------------------
+
+vtkQuadraticTriangle
+
+// Compute interpolation functions. The first three nodes are the triangle
+// vertices; the others are mid-edge nodes.
+void vtkQuadraticTriangle::InterpolationFunctions(const double pcoords[3], double weights[6])
+{
+  double r = pcoords[0];
+  double s = pcoords[1];
+  double t = 1.0 - r - s;
+
+  weights[0] = t * (2.0 * t - 1.0);
+  weights[1] = r * (2.0 * r - 1.0);
+  weights[2] = s * (2.0 * s - 1.0);
+  weights[3] = 4.0 * r * t;
+  weights[4] = 4.0 * r * s;
+  weights[5] = 4.0 * s * t;
+}
+
+//------------------------------------------------------------------------------
+// Derivatives in parametric space.
+void vtkQuadraticTriangle::InterpolationDerivs(const double pcoords[3], double derivs[12])
+{
+  double r = pcoords[0];
+  double s = pcoords[1];
+
+  // r-derivatives
+  derivs[0] = 4.0 * r + 4.0 * s - 3.0;
+  derivs[1] = 4.0 * r - 1.0;
+  derivs[2] = 0.0;
+  derivs[3] = 4.0 - 8.0 * r - 4.0 * s;
+  derivs[4] = 4.0 * s;
+  derivs[5] = -4.0 * s;
+
+  // s-derivatives
+  derivs[6] = 4.0 * r + 4.0 * s - 3.0;
+  derivs[7] = 0.0;
+  derivs[8] = 4.0 * s - 1.0;
+  derivs[9] = -4.0 * r;
+  derivs[10] = 4.0 * r;
+  derivs[11] = 4.0 - 8.0 * s - 4.0 * r;
+}
+
+//------------------------------------------------------------------------------
+static double vtkQTriangleCellPCoords[18] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  0.5, 0.0, 0.0, //
+  0.5, 0.5, 0.0, //
+  0.0, 0.5, 0.0  //
+};
+
+-------------------------------------------------------------------------------------------
+
+vtkQuad
+
+// Compute iso-parametric interpolation functions
+//
+void vtkQuad::InterpolationFunctions(const double pcoords[3], double sf[4])
+{
+  double rm, sm;
+
+  rm = 1. - pcoords[0];
+  sm = 1. - pcoords[1];
+
+  sf[0] = rm * sm;
+  sf[1] = pcoords[0] * sm;
+  sf[2] = pcoords[0] * pcoords[1];
+  sf[3] = rm * pcoords[1];
+}
+
+//------------------------------------------------------------------------------
+void vtkQuad::InterpolationDerivs(const double pcoords[3], double derivs[8])
+{
+  double rm, sm;
+
+  rm = 1. - pcoords[0];
+  sm = 1. - pcoords[1];
+
+  derivs[0] = -sm;
+  derivs[1] = sm;
+  derivs[2] = pcoords[1];
+  derivs[3] = -pcoords[1];
+  derivs[4] = -rm;
+  derivs[5] = -pcoords[0];
+  derivs[6] = pcoords[0];
+  derivs[7] = rm;
+}
+
+static double vtkQuadCellPCoords[12] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  1.0, 1.0, 0.0, //
+  0.0, 1.0, 0.0  //
+};
+
+-------------------------------------------------------------------------------------------
+
+vtkQuadraticQuad
+
+// Compute interpolation functions. The first four nodes are the corner
+// vertices; the others are mid-edge nodes.
+void vtkQuadraticQuad::InterpolationFunctions(const double pcoords[3], double weights[8])
+{
+  double r = pcoords[0];
+  double s = pcoords[1];
+
+  // midedge weights
+  weights[4] = 4 * r * (1.0 - r) * (1.0 - s);
+  weights[5] = 4 * r * (1.0 - s) * s;
+  weights[6] = 4 * r * (1.0 - r) * s;
+  weights[7] = 4 * (1.0 - r) * (1.0 - s) * s;
+
+  // corner
+  weights[0] = (1.0 - r) * (1.0 - s) - 0.5 * (weights[4] + weights[7]);
+  weights[1] = r * (1.0 - s) - 0.5 * (weights[4] + weights[5]);
+  weights[2] = r * s - 0.5 * (weights[5] + weights[6]);
+  weights[3] = (1.0 - r) * s - 0.5 * (weights[6] + weights[7]);
+}
+
+//------------------------------------------------------------------------------
+// Derivatives in parametric space.
+void vtkQuadraticQuad::InterpolationDerivs(const double pcoords[3], double derivs[16])
+{
+  // Coordinate conversion
+  double r = pcoords[0];
+  double s = pcoords[1];
+
+  // Derivatives in the r-direction
+  // midedge
+  derivs[4] = 4 * (1.0 - s) * (1.0 - 2 * r);
+  derivs[5] = 4 * (1.0 - s) * s;
+  derivs[6] = 4 * s * (1.0 - 2 * r);
+  derivs[7] = -4 * (1.0 - s) * s;
+  derivs[0] = -(1.0 - s) - 0.5 * (derivs[4] + derivs[7]);
+  derivs[1] = (1.0 - s) - 0.5 * (derivs[4] + derivs[5]);
+  derivs[2] = s - 0.5 * (derivs[5] + derivs[6]);
+  derivs[3] = -s - 0.5 * (derivs[6] + derivs[7]);
+
+  // Derivatives in the s-direction
+  // midedge
+  derivs[12] = -4 * r * (1.0 - r);
+  derivs[13] = 4 * r * (1.0 - 2 * s);
+  derivs[14] = 4 * r * (1.0 - r);
+  derivs[15] = 4 * (1.0 - r) * (1.0 - 2 * s);
+  derivs[8] = -(1.0 - r) - 0.5 * (derivs[12] + derivs[15]);
+  derivs[9] = -r - 0.5 * (derivs[12] + derivs[13]);
+  derivs[10] = r - 0.5 * (derivs[13] + derivs[14]);
+  derivs[11] = (1.0 - r) - 0.5 * (derivs[14] + derivs[15]);
+}
+
+//------------------------------------------------------------------------------
+static double vtkQQuadCellPCoords[24] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  1.0, 1.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  0.5, 0.0, 0.0, //
+  1.0, 0.5, 0.0, //
+  0.5, 1.0, 0.0, //
+  0.0, 0.5, 0.0  //
+};
+
+-------------------------------------------------------------------------------------------
+
+vtkBiquadraticQuad
+
+// Compute interpolation functions. The first four nodes are the corner
+// vertices; the others are mid-edge nodes, the last one is the mid-center
+// node.
+void vtkBiQuadraticQuad::InterpolationFunctionsPrivate(const double pcoords[3], double weights[9])
+{
+  // Normally these coordinates are named r and s, but I chose x and y,
+  // because you can easily mark and paste these functions to the
+  // gnuplot splot function. :D
+  double x = pcoords[0];
+  double y = pcoords[1];
+
+  // midedge weights
+  weights[0] = 4.0 * (1.0 - x) * (x - 0.5) * (1.0 - y) * (y - 0.5);
+  weights[1] = -4.0 * (x) * (x - 0.5) * (1.0 - y) * (y - 0.5);
+  weights[2] = 4.0 * (x) * (x - 0.5) * (y) * (y - 0.5);
+  weights[3] = -4.0 * (1.0 - x) * (x - 0.5) * (y) * (y - 0.5);
+  // corner weights
+  weights[4] = 8.0 * (x) * (1.0 - x) * (1.0 - y) * (0.5 - y);
+  weights[5] = -8.0 * (x) * (0.5 - x) * (1.0 - y) * (y);
+  weights[6] = -8.0 * (x) * (1.0 - x) * (y) * (0.5 - y);
+  weights[7] = 8.0 * (1.0 - x) * (0.5 - x) * (1.0 - y) * (y);
+  // surface center weight
+  weights[8] = 16.0 * (x) * (1.0 - x) * (1.0 - y) * (y);
+}
+
+//------------------------------------------------------------------------------
+// Derivatives in parametric space.
+void vtkBiQuadraticQuad::InterpolationDerivsPrivate(const double pcoords[3], double derivs[18])
+{
+  // Coordinate conversion
+  double x = pcoords[0];
+  double y = pcoords[1];
+
+  // Derivatives in the x-direction
+  // edge
+  derivs[0] = 4.0 * (1.5 - 2.0 * x) * (1.0 - y) * (y - 0.5);
+  derivs[1] = -4.0 * (2.0 * x - 0.5) * (1.0 - y) * (y - 0.5);
+  derivs[2] = 4.0 * (2.0 * x - 0.5) * (y) * (y - 0.5);
+  derivs[3] = -4.0 * (1.5 - 2.0 * x) * (y) * (y - 0.5);
+  // midedge
+  derivs[4] = 8.0 * (1.0 - 2.0 * x) * (1.0 - y) * (0.5 - y);
+  derivs[5] = -8.0 * (0.5 - 2.0 * x) * (1.0 - y) * (y);
+  derivs[6] = -8.0 * (1.0 - 2.0 * x) * (y) * (0.5 - y);
+  derivs[7] = 8.0 * (2.0 * x - 1.5) * (1.0 - y) * (y);
+  // center
+  derivs[8] = 16.0 * (1.0 - 2.0 * x) * (1.0 - y) * (y);
+
+  // Derivatives in the y-direction
+  // edge
+  derivs[9] = 4.0 * (1.0 - x) * (x - 0.5) * (1.5 - 2.0 * y);
+  derivs[10] = -4.0 * (x) * (x - 0.5) * (1.5 - 2.0 * y);
+  derivs[11] = 4.0 * (x) * (x - 0.5) * (2.0 * y - 0.5);
+  derivs[12] = -4.0 * (1.0 - x) * (x - 0.5) * (2.0 * y - 0.5);
+  // midedge
+  derivs[13] = 8.0 * (x) * (1.0 - x) * (2.0 * y - 1.5);
+  derivs[14] = -8.0 * (x) * (0.5 - x) * (1.0 - 2.0 * y);
+  derivs[15] = -8.0 * (x) * (1.0 - x) * (0.5 - 2.0 * y);
+  derivs[16] = 8.0 * (1.0 - x) * (0.5 - x) * (1.0 - 2.0 * y);
+  // center
+  derivs[17] = 16.0 * (x) * (1.0 - x) * (1.0 - 2.0 * y);
+}
+
+//------------------------------------------------------------------------------
+static double vtkQQuadCellPCoords[27] = { 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0,
+  0.0, 0.5, 0.0, 0.0, 1.0, 0.5, 0.0, 0.5, 1.0, 0.0, 0.0, 0.5, 0.0, 0.5, 0.5, 0.0 };
+
+
+-------------------------------------------------------------------------------------------
+
+vtkTetra
+
+// Compute iso-parametric interpolation functions
+//
+void vtkTetra::InterpolationFunctions(const double pcoords[3], double sf[4])
+{
+  sf[0] = 1.0 - pcoords[0] - pcoords[1] - pcoords[2];
+  sf[1] = pcoords[0];
+  sf[2] = pcoords[1];
+  sf[3] = pcoords[2];
+}
+
+//------------------------------------------------------------------------------
+void vtkTetra::InterpolationDerivs(const double pcoords[3], double derivs[12])
+{
+  (void)pcoords;
+  // r-derivatives
+  derivs[0] = -1.0;
+  derivs[1] = 1.0;
+  derivs[2] = 0.0;
+  derivs[3] = 0.0;
+
+  // s-derivatives
+  derivs[4] = -1.0;
+  derivs[5] = 0.0;
+  derivs[6] = 1.0;
+  derivs[7] = 0.0;
+
+  // t-derivatives
+  derivs[8] = -1.0;
+  derivs[9] = 0.0;
+  derivs[10] = 0.0;
+  derivs[11] = 1.0;
+}
+
+static double vtkTetraCellPCoords[12] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  0.0, 0.0, 1.0  //
+};
+
+-------------------------------------------------------------------------------------------
+
+vtkQuadraticTetra
+
+// Compute interpolation functions. First four nodes are the
+// tetrahedron corner vertices; the others are mid-edge nodes.
+void vtkQuadraticTetra::InterpolationFunctions(const double pcoords[3], double weights[10])
+{
+  double r = pcoords[0];
+  double s = pcoords[1];
+  double t = pcoords[2];
+  double u = 1.0 - r - s - t;
+
+  // corners
+  weights[0] = u * (2.0 * u - 1.0);
+  weights[1] = r * (2.0 * r - 1.0);
+  weights[2] = s * (2.0 * s - 1.0);
+  weights[3] = t * (2.0 * t - 1.0);
+
+  // midedge
+  weights[4] = 4.0 * u * r;
+  weights[5] = 4.0 * r * s;
+  weights[6] = 4.0 * s * u;
+  weights[7] = 4.0 * u * t;
+  weights[8] = 4.0 * r * t;
+  weights[9] = 4.0 * s * t;
+}
+
+//------------------------------------------------------------------------------
+// Derivatives in parametric space.
+void vtkQuadraticTetra::InterpolationDerivs(const double pcoords[3], double derivs[30])
+{
+  double r = pcoords[0];
+  double s = pcoords[1];
+  double t = pcoords[2];
+
+  // r-derivatives: dW0/dr to dW9/dr
+  derivs[0] = 4.0 * (r + s + t) - 3.0;
+  derivs[1] = 4.0 * r - 1.0;
+  derivs[2] = 0.0;
+  derivs[3] = 0.0;
+  derivs[4] = 4.0 - 8.0 * r - 4.0 * s - 4.0 * t;
+  derivs[5] = 4.0 * s;
+  derivs[6] = -4.0 * s;
+  derivs[7] = -4.0 * t;
+  derivs[8] = 4.0 * t;
+  derivs[9] = 0.0;
+
+  // s-derivatives: dW0/ds to dW9/ds
+  derivs[10] = 4.0 * (r + s + t) - 3.0;
+  derivs[11] = 0.0;
+  derivs[12] = 4.0 * s - 1.0;
+  derivs[13] = 0.0;
+  derivs[14] = -4.0 * r;
+  derivs[15] = 4.0 * r;
+  derivs[16] = 4.0 - 4.0 * r - 8.0 * s - 4.0 * t;
+  derivs[17] = -4.0 * t;
+  derivs[18] = 0.0;
+  derivs[19] = 4.0 * t;
+
+  // t-derivatives: dW0/dt to dW9/dt
+  derivs[20] = 4.0 * (r + s + t) - 3.0;
+  derivs[21] = 0.0;
+  derivs[22] = 0.0;
+  derivs[23] = 4.0 * t - 1.0;
+  derivs[24] = -4.0 * r;
+  derivs[25] = 0.0;
+  derivs[26] = -4.0 * s;
+  derivs[27] = 4.0 - 4.0 * r - 4.0 * s - 8.0 * t;
+  derivs[28] = 4.0 * r;
+  derivs[29] = 4.0 * s;
+}
+
+static double vtkQTetraCellPCoords[30] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  0.0, 0.0, 1.0, //
+  0.5, 0.0, 0.0, //
+  0.5, 0.5, 0.0, //
+  0.0, 0.5, 0.0, //
+  0.0, 0.0, 0.5, //
+  0.5, 0.0, 0.5, //
+  0.0, 0.5, 0.5  //
+};
+
+-------------------------------------------------------------------------------------------
+
+vtkPyramid
+
+// Compute iso-parametric interpolation functions for pyramid
+//
+void vtkPyramid::InterpolationFunctions(const double pcoords[3], double sf[5])
+{
+  double rm, sm, tm;
+
+  rm = 1. - pcoords[0];
+  sm = 1. - pcoords[1];
+  tm = 1. - pcoords[2];
+
+  sf[0] = rm * sm * tm;
+  sf[1] = pcoords[0] * sm * tm;
+  sf[2] = pcoords[0] * pcoords[1] * tm;
+  sf[3] = rm * pcoords[1] * tm;
+  sf[4] = pcoords[2];
+}
+
+//------------------------------------------------------------------------------
+void vtkPyramid::InterpolationDerivs(const double pcoords[3], double derivs[15])
+{
+  double rm, sm, tm;
+
+  rm = 1. - pcoords[0];
+  sm = 1. - pcoords[1];
+  tm = 1. - pcoords[2];
+
+  // r-derivatives
+  derivs[0] = -sm * tm;
+  derivs[1] = sm * tm;
+  derivs[2] = pcoords[1] * tm;
+  derivs[3] = -pcoords[1] * tm;
+  derivs[4] = 0.0;
+
+  // s-derivatives
+  derivs[5] = -rm * tm;
+  derivs[6] = -pcoords[0] * tm;
+  derivs[7] = pcoords[0] * tm;
+  derivs[8] = rm * tm;
+  derivs[9] = 0.0;
+
+  // t-derivatives
+  derivs[10] = -rm * sm;
+  derivs[11] = -pcoords[0] * sm;
+  derivs[12] = -pcoords[0] * pcoords[1];
+  derivs[13] = -rm * pcoords[1];
+  derivs[14] = 1.0;
+}
+
+static double vtkPyramidCellPCoords[15] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  1.0, 1.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  0.0, 0.0, 1.0  //
+};
+
+
+-------------------------------------------------------------------------------------------
+
+vtkWedge
+
+// Compute iso-parametric interpolation functions
+//
+void vtkWedge::InterpolationFunctions(const double pcoords[3], double sf[6])
+{
+  sf[0] = (1.0 - pcoords[0] - pcoords[1]) * (1.0 - pcoords[2]);
+  sf[1] = pcoords[0] * (1.0 - pcoords[2]);
+  sf[2] = pcoords[1] * (1.0 - pcoords[2]);
+  sf[3] = (1.0 - pcoords[0] - pcoords[1]) * pcoords[2];
+  sf[4] = pcoords[0] * pcoords[2];
+  sf[5] = pcoords[1] * pcoords[2];
+}
+
+//------------------------------------------------------------------------------
+void vtkWedge::InterpolationDerivs(const double pcoords[3], double derivs[18])
+{
+  // r-derivatives
+  derivs[0] = -1.0 + pcoords[2];
+  derivs[1] = 1.0 - pcoords[2];
+  derivs[2] = 0.0;
+  derivs[3] = -pcoords[2];
+  derivs[4] = pcoords[2];
+  derivs[5] = 0.0;
+
+  // s-derivatives
+  derivs[6] = -1.0 + pcoords[2];
+  derivs[7] = 0.0;
+  derivs[8] = 1.0 - pcoords[2];
+  derivs[9] = -pcoords[2];
+  derivs[10] = 0.0;
+  derivs[11] = pcoords[2];
+
+  // t-derivatives
+  derivs[12] = -1.0 + pcoords[0] + pcoords[1];
+  derivs[13] = -pcoords[0];
+  derivs[14] = -pcoords[1];
+  derivs[15] = 1.0 - pcoords[0] - pcoords[1];
+  derivs[16] = pcoords[0];
+  derivs[17] = pcoords[1];
+}
+
+static double vtkWedgeCellPCoords[18] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  0.0, 0.0, 1.0, //
+  1.0, 0.0, 1.0, //
+  0.0, 1.0, 1.0  //
+};
+
+
+-------------------------------------------------------------------------------------------
+
+vtkQuadraticWedge
+
+// Compute interpolation functions for the fifteen nodes.
+void vtkQuadraticWedge::InterpolationFunctions(const double pcoords[3], double weights[15])
+{
+  // VTK needs parametric coordinates to be between (0,1). Isoparametric
+  // shape functions are formulated between (-1,1). Here we do a
+  // coordinate system conversion from (0,1) to (-1,1).
+  double r = pcoords[0];
+  double s = pcoords[1];
+  double t = pcoords[2];
+  // corners
+  weights[0] = 2 * (1 - r - s) * (1 - t) * (.5 - r - s - t);
+  weights[1] = 2 * r * (1 - t) * (r - t - 0.5);
+  weights[2] = 2 * s * (1 - t) * (s - t - 0.5);
+  weights[3] = 2 * (1 - r - s) * t * (t - r - s - 0.5);
+  weights[4] = 2 * r * t * (r + t - 1.5);
+  weights[5] = 2 * s * t * (s + t - 1.5);
+
+  // midsides of triangles
+  weights[6] = 4 * r * (1 - r - s) * (1 - t);
+  weights[7] = 4 * r * s * (1 - t);
+  weights[8] = 4 * (1 - r - s) * s * (1 - t);
+  weights[9] = 4 * r * (1 - r - s) * t;
+  weights[10] = 4 * r * s * t;
+  weights[11] = 4 * (1 - r - s) * s * t;
+
+  // midsides of rectangles
+  weights[12] = 4 * t * (1 - r - s) * (1 - t);
+  weights[13] = 4 * t * r * (1 - t);
+  weights[14] = 4 * t * s * (1 - t);
+}
+
+//------------------------------------------------------------------------------
+// Derivatives in parametric space.
+void vtkQuadraticWedge::InterpolationDerivs(const double pcoords[3], double derivs[45])
+{
+  // VTK needs parametric coordinates to be between (0,1). Isoparametric
+  // shape functions are formulated between (-1,1). Here we do a
+  // coordinate system conversion from (0,1) to (-1,1).
+  double r = pcoords[0];
+  double s = pcoords[1];
+  double t = pcoords[2];
+  // r-derivatives
+  // corners
+  derivs[0] = 2 * (1 - t) * (-1.5 + 2 * r + 2 * s + t);
+  derivs[1] = 2 * (1 - t) * (-0.5 + 2 * r - t);
+  derivs[2] = 0;
+  derivs[3] = 2 * t * (-0.5 + 2 * r + 2 * s - t);
+  derivs[4] = 2 * t * (-1.5 + 2 * r + t);
+  derivs[5] = 0;
+  // midsides of triangles
+  derivs[6] = 4 * (1 - t) * (1 - 2 * r - s);
+  derivs[7] = 4 * (1 - t) * s;
+  derivs[8] = -derivs[7];
+  derivs[9] = 4 * t * (1 - 2 * r - s);
+  derivs[10] = 4 * s * t;
+  derivs[11] = -derivs[10];
+  // midsides of rectangles
+  derivs[12] = -4 * t * (1 - t);
+  derivs[13] = -derivs[12];
+  derivs[14] = 0;
+
+  // s-derivatives
+  // corners
+  derivs[15] = derivs[0];
+  derivs[16] = 0;
+  derivs[17] = 2 * (1 - t) * (-0.5 + 2 * s - t);
+  derivs[18] = derivs[3];
+  derivs[19] = 0;
+  derivs[20] = 2 * t * (-1.5 + 2 * s + t);
+  // midsides of triangles
+  derivs[21] = -4 * (1 - t) * r;
+  derivs[22] = -derivs[21];
+  derivs[23] = 4 * (1 - t) * (1 - r - 2 * s);
+  derivs[24] = -4 * r * t;
+  derivs[25] = -derivs[24];
+  derivs[26] = 4 * t * (1 - r - 2 * s);
+  // midsides of rectangles
+  derivs[27] = derivs[12];
+  derivs[28] = 0;
+  derivs[29] = -derivs[27];
+
+  // t-derivatives
+  // corners
+  derivs[30] = 2 * (1 - r - s) * (-1.5 + r + s + 2 * t);
+  derivs[31] = 2 * r * (-0.5 - r + 2 * t);
+  derivs[32] = 2 * s * (-0.5 - s + 2 * t);
+  derivs[33] = 2 * (1 - r - s) * (-0.5 - r - s + 2 * t);
+  derivs[34] = 2 * r * (-1.5 + r + 2 * t);
+  derivs[35] = 2 * s * (-1.5 + s + 2 * t);
+  // midsides of triangles
+  derivs[36] = -4 * r * (1 - r - s);
+  derivs[37] = -4 * r * s;
+  derivs[38] = -4 * s * (1 - r - s);
+  derivs[39] = -derivs[36];
+  derivs[40] = -derivs[37];
+  derivs[41] = -derivs[38];
+  // midsides of rectangles
+  derivs[42] = 4 * (1 - 2 * t) * (1 - r - s);
+  derivs[43] = 4 * (1 - 2 * t) * r;
+  derivs[44] = 4 * (1 - 2 * t) * s;
+}
+
+//------------------------------------------------------------------------------
+static double vtkQWedgeCellPCoords[45] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  0.0, 0.0, 1.0, //
+  1.0, 0.0, 1.0, //
+  0.0, 1.0, 1.0, //
+  0.5, 0.0, 0.0, //
+  0.5, 0.5, 0.0, //
+  0.0, 0.5, 0.0, //
+  0.5, 0.0, 1.0, //
+  0.5, 0.5, 1.0, //
+  0.0, 0.5, 1.0, //
+  0.0, 0.0, 0.5, //
+  1.0, 0.0, 0.5, //
+  0.0, 1.0, 0.5  //
+};
+
+
+-------------------------------------------------------------------------------------------
+
+vtkBiquadraticQuadraticWedge
+
+// Compute interpolation functions for the fifteen nodes.
+void vtkBiQuadraticQuadraticWedge::InterpolationFunctions(
+  const double pcoords[3], double weights[18])
+{
+  // VTK needs parametric coordinates to be between (0,1). Isoparametric
+  // shape functions are formulated between (-1,1). Here we do a
+  // coordinate system conversion from (0,1) to (-1,1).
+  double x = 2 * (pcoords[0] - 0.5);
+  double y = 2 * (pcoords[1] - 0.5);
+  double z = 2 * (pcoords[2] - 0.5);
+
+  // clang-format off
+  // corners
+  weights[0] =-0.25 * (x + y) * (x + y + 1) * z * (1 - z);
+  weights[1] =-0.25 *  x      * (x + 1)     * z * (1 - z);
+  weights[2] =-0.25 *      y  * (1 + y)     * z * (1 - z);
+  weights[3] = 0.25 * (x + y) * (x + y + 1) * z * (1 + z);
+  weights[4] = 0.25 *  x      * (x + 1)     * z * (1 + z);
+  weights[5] = 0.25 *      y  * (1 + y)     * z * (1 + z);
+
+  // midsides of quadratic triangles
+  weights[6] =  (x + 1) * (x + y) *  0.5 * z * (1 - z);
+  weights[7] = -(x + 1) * (y + 1) *  0.5 * z * (1 - z);
+  weights[8] =  (y + 1) * (x + y) *  0.5 * z * (1 - z);
+  weights[9] = -(x + 1) * (x + y) *  0.5 * z * (1 + z);
+  weights[10]=  (x + 1) * (y + 1) *  0.5 * z * (1 + z);
+  weights[11]= -(y + 1) * (x + y) *  0.5 * z * (1 + z);
+
+  // midsides of edges between the two triangles
+  weights[12] = 0.5 * (x + y) * (x + y + 1) * (1 + z) * (1 - z);
+  weights[13] = 0.5 *  x      * (x + 1)     * (1 + z) * (1 - z);
+  weights[14] = 0.5 *      y  * (1 + y)     * (1 + z) * (1 - z);
+
+  //Centerpoints of the biquadratic quads
+  weights[15] = -(x + 1)*(x + y) * (1 + z) * (1 - z);
+  weights[16] =  (x + 1)*(y + 1) * (1 + z) * (1 - z);
+  weights[17] = -(y + 1)*(x + y) * (1 + z) * (1 - z);
+  // clang-format on
+}
+
+//------------------------------------------------------------------------------
+// Derivatives in parametric space.
+void vtkBiQuadraticQuadraticWedge::InterpolationDerivs(const double pcoords[3], double derivs[54])
+{
+  // VTK needs parametric coordinates to be between (0,1). Isoparametric
+  // shape functions are formulated between (-1,1). Here we do a
+  // coordinate system conversion from (0,1) to (-1,1).
+  double x = 2 * (pcoords[0] - 0.5);
+  double y = 2 * (pcoords[1] - 0.5);
+  double z = 2 * (pcoords[2] - 0.5);
+
+  // clang-format off
+  // Derivatives in x-direction
+  // corners
+  derivs[0] = -0.25 * (2 * x + 2 * y + 1) * z * (1 - z);
+  derivs[1] = -0.25 * (2 * x + 1)         * z * (1 - z);
+  derivs[2] =  0;
+  derivs[3] =  0.25 * (2 * x + 2 * y + 1) * z * (1 + z);
+  derivs[4] =  0.25 * (2 * x + 1)         * z * (1 + z);
+  derivs[5] =  0;
+  // midsides of quadratic triangles
+  derivs[6] =  (2 * x + y + 1) * 0.5 * z * (1 - z);
+  derivs[7] = -(y + 1)         * 0.5 * z * (1 - z);
+  derivs[8] =  (y + 1)         * 0.5 * z * (1 - z);
+  derivs[9] = -(2 * x + y + 1) * 0.5 * z * (1 + z);
+  derivs[10] = (y + 1)         * 0.5 * z * (1 + z) ;
+  derivs[11] =-(y + 1)         * 0.5 * z * (1 + z) ;
+  // midsides of edges between the two triangles
+  derivs[12] = 0.5 * (2 * x + 2 * y + 1) * (1 + z)*(1 - z);
+  derivs[13] = 0.5 * (2 * x + 1)         * (1 + z)*(1 - z);
+  derivs[14] = 0;
+  // Centerpoints of the biquadratic quads
+  derivs[15] = -(2 * x + y + 1) * (1 + z) * (1 - z);
+  derivs[16] =  (y + 1)         * (1 + z) * (1 - z);
+  derivs[17] = -(y + 1)         * (1 + z) * (1 - z);
+
+  // Derivatives in y-direction
+  // corners
+  derivs[18] = -0.25 * (2 * y + 2 * x + 1) * z * (1 - z);
+  derivs[19] =  0;
+  derivs[20] = -0.25 * (2 * y + 1)         * z * (1 - z);
+  derivs[21] =  0.25 * (2 * y + 2 * x + 1) * z * (1 + z);
+  derivs[22] =  0;
+  derivs[23] =  0.25 * (2 * y + 1)         * z * (1 + z);
+  // midsides of quadratic triangles
+  derivs[24] =  (x + 1)         * 0.5 * z * (1 - z);
+  derivs[25] = -(x + 1)         * 0.5 * z * (1 - z);
+  derivs[26] =  (2 * y + x + 1) * 0.5 * z * (1 - z);
+  derivs[27] = -(x + 1)         * 0.5 * z * (1 + z);
+  derivs[28] =  (x + 1)         * 0.5 * z * (1 + z);
+  derivs[29] = -(2 * y + x + 1) * 0.5 * z * (1 + z);
+  // midsides of edges between the two triangles
+  derivs[30] = 0.5 * (2 * y + 2 * x + 1) * (1 + z) * (1 - z);
+  derivs[31] = 0;
+  derivs[32] = 0.5 * (2 * y + 1)         * (1 + z) * (1 - z);
+  // Centerpoints of the biquadratic quads
+  derivs[33] = -(x + 1)         * (1 + z) * (1 - z);
+  derivs[34] =  (x + 1)         * (1 + z) * (1 - z);
+  derivs[35] = -(2 * y + x + 1) * (1 + z) * (1 - z);
+
+  // Derivatives in z-direction
+  // corners
+  derivs[36] = -0.25 * (x + y) * (x + y + 1) * (1 - 2 * z);
+  derivs[37] = -0.25 *  x      * (x + 1)     * (1 - 2 * z);
+  derivs[38] = -0.25 *      y  * (1 + y)     * (1 - 2 * z);
+  derivs[39] =  0.25 * (x + y) * (x + y + 1) * (1 + 2 * z);
+  derivs[40] =  0.25 *  x      * (x + 1)     * (1 + 2 * z);
+  derivs[41] =  0.25 *      y  * (1 + y)     * (1 + 2 * z);
+  // midsides of quadratic triangles
+  derivs[42] =  (x + 1) * (x + y) *  0.5 * (1 - 2 * z);
+  derivs[43] = -(x + 1) * (y + 1) *  0.5 * (1 - 2 * z);
+  derivs[44] =  (y + 1) * (x + y) *  0.5 * (1 - 2 * z);
+  derivs[45] = -(x + 1) * (x + y) *  0.5 * (1 + 2 * z);
+  derivs[46] =  (x + 1) * (y + 1) *  0.5 * (1 + 2 * z);
+  derivs[47] = -(y + 1) * (x + y) *  0.5 * (1 + 2 * z);
+  // midsides of edges between the two triangles
+  derivs[48] = 0.5 * (x + y) * (x + y + 1) * (-2 * z);
+  derivs[49] = 0.5 *  x      * (x + 1)     * (-2 * z);
+  derivs[50] = 0.5 *      y  * (1 + y)     * (-2 * z);
+  // Centerpoints of the biquadratic quads
+  derivs[51] = -(x + 1) * (x + y) * (-2 * z);
+  derivs[52] =  (x + 1) * (y + 1) * (-2 * z);
+  derivs[53] = -(y + 1) * (x + y) * (-2 * z);
+  // clang-format off
+
+  // we compute derivatives in [-1; 1] but we need them in [ 0; 1]
+  for(int i = 0; i < 54; i++)
+    derivs[i] *= 2;
+}
+
+//------------------------------------------------------------------------------
+static double vtkQWedgeCellPCoords[54] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  0.0, 0.0, 1.0, //
+  1.0, 0.0, 1.0, //
+  0.0, 1.0, 1.0, //
+  0.5, 0.0, 0.0, //
+  0.5, 0.5, 0.0, //
+  0.0, 0.5, 0.0, //
+  0.5, 0.0, 1.0, //
+  0.5, 0.5, 1.0, //
+  0.0, 0.5, 1.0, //
+  0.0, 0.0, 0.5, //
+  1.0, 0.0, 0.5, //
+  0.0, 1.0, 0.5, //
+  0.5, 0.0, 0.5, //
+  0.5, 0.5, 0.5, //
+  0.0, 0.5, 0.5  //
+};
+
+-------------------------------------------------------------------------------------------
+
+vtkHexahedron
+
+
+// Compute iso-parametric interpolation functions
+//
+void vtkHexahedron::InterpolationFunctions(const double pcoords[3], double sf[8])
+{
+  double rm, sm, tm;
+
+  rm = 1. - pcoords[0];
+  sm = 1. - pcoords[1];
+  tm = 1. - pcoords[2];
+
+  const auto rmXsm = rm * sm;
+  const auto p0Xsm = pcoords[0] * sm;
+  const auto p0Xp1 = pcoords[0] * pcoords[1];
+  const auto rmXp1 = rm * pcoords[1];
+
+  sf[0] = rmXsm * tm;
+  sf[1] = p0Xsm * tm;
+  sf[2] = p0Xp1 * tm;
+  sf[3] = rmXp1 * tm;
+  sf[4] = rmXsm * pcoords[2];
+  sf[5] = p0Xsm * pcoords[2];
+  sf[6] = p0Xp1 * pcoords[2];
+  sf[7] = rmXp1 * pcoords[2];
+}
+
+//------------------------------------------------------------------------------
+void vtkHexahedron::InterpolationDerivs(const double pcoords[3], double derivs[24])
+{
+  double rm, sm, tm;
+
+  rm = 1. - pcoords[0];
+  sm = 1. - pcoords[1];
+  tm = 1. - pcoords[2];
+
+  // r-derivatives
+  derivs[0] = -sm * tm;
+  derivs[1] = -derivs[0];
+  derivs[2] = pcoords[1] * tm;
+  derivs[3] = -derivs[2];
+  derivs[4] = -sm * pcoords[2];
+  derivs[5] = -derivs[4];
+  derivs[6] = pcoords[1] * pcoords[2];
+  derivs[7] = -derivs[6];
+
+  // s-derivatives
+  derivs[8] = -rm * tm;
+  derivs[9] = -pcoords[0] * tm;
+  derivs[10] = -derivs[9];
+  derivs[11] = -derivs[8];
+  derivs[12] = -rm * pcoords[2];
+  derivs[13] = -pcoords[0] * pcoords[2];
+  derivs[14] = -derivs[13];
+  derivs[15] = -derivs[12];
+
+  // t-derivatives
+  derivs[16] = -rm * sm;
+  derivs[17] = -pcoords[0] * sm;
+  derivs[18] = -pcoords[0] * pcoords[1];
+  derivs[19] = -rm * pcoords[1];
+  derivs[20] = -derivs[16];
+  derivs[21] = -derivs[17];
+  derivs[22] = -derivs[18];
+  derivs[23] = -derivs[19];
+}
+
+static double vtkHexahedronCellPCoords[24] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  1.0, 1.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  0.0, 0.0, 1.0, //
+  1.0, 0.0, 1.0, //
+  1.0, 1.0, 1.0, //
+  0.0, 1.0, 1.0  //
+};
+
+
+-------------------------------------------------------------------------------------------
+
+vtkQuadraticHexahedron
+
+// Compute interpolation functions for the twenty nodes.
+void vtkQuadraticHexahedron::InterpolationFunctions(const double pcoords[3], double weights[20])
+{
+  // VTK needs parametric coordinates to be between (0,1). Isoparametric
+  // shape functions are formulated between (-1,1). Here we do a
+  // coordinate system conversion from (0,1) to (-1,1).
+  double r = 2.0 * (pcoords[0] - 0.5);
+  double s = 2.0 * (pcoords[1] - 0.5);
+  double t = 2.0 * (pcoords[2] - 0.5);
+
+  double rm = 1.0 - r;
+  double rp = 1.0 + r;
+  double sm = 1.0 - s;
+  double sp = 1.0 + s;
+  double tm = 1.0 - t;
+  double tp = 1.0 + t;
+  double r2 = 1.0 - r * r;
+  double s2 = 1.0 - s * s;
+  double t2 = 1.0 - t * t;
+
+  // The eight corner points
+  weights[0] = 0.125 * rm * sm * tm * (-r - s - t - 2.0);
+  weights[1] = 0.125 * rp * sm * tm * (r - s - t - 2.0);
+  weights[2] = 0.125 * rp * sp * tm * (r + s - t - 2.0);
+  weights[3] = 0.125 * rm * sp * tm * (-r + s - t - 2.0);
+  weights[4] = 0.125 * rm * sm * tp * (-r - s + t - 2.0);
+  weights[5] = 0.125 * rp * sm * tp * (r - s + t - 2.0);
+  weights[6] = 0.125 * rp * sp * tp * (r + s + t - 2.0);
+  weights[7] = 0.125 * rm * sp * tp * (-r + s + t - 2.0);
+
+  // The mid-edge nodes
+  weights[8] = 0.25 * r2 * sm * tm;
+  weights[9] = 0.25 * s2 * rp * tm;
+  weights[10] = 0.25 * r2 * sp * tm;
+  weights[11] = 0.25 * s2 * rm * tm;
+  weights[12] = 0.25 * r2 * sm * tp;
+  weights[13] = 0.25 * s2 * rp * tp;
+  weights[14] = 0.25 * r2 * sp * tp;
+  weights[15] = 0.25 * s2 * rm * tp;
+  weights[16] = 0.25 * t2 * rm * sm;
+  weights[17] = 0.25 * t2 * rp * sm;
+  weights[18] = 0.25 * t2 * rp * sp;
+  weights[19] = 0.25 * t2 * rm * sp;
+}
+
+//------------------------------------------------------------------------------
+// Derivatives in parametric space.
+void vtkQuadraticHexahedron::InterpolationDerivs(const double pcoords[3], double derivs[60])
+{
+  // VTK needs parametric coordinates to be between (0,1). Isoparametric
+  // shape functions are formulated between (-1,1). Here we do a
+  // coordinate system conversion from (0,1) to (-1,1).
+  double r = 2.0 * (pcoords[0] - 0.5);
+  double s = 2.0 * (pcoords[1] - 0.5);
+  double t = 2.0 * (pcoords[2] - 0.5);
+
+  double rm = 1.0 - r;
+  double rp = 1.0 + r;
+  double sm = 1.0 - s;
+  double sp = 1.0 + s;
+  double tm = 1.0 - t;
+  double tp = 1.0 + t;
+
+  // r-derivatives
+  derivs[0] = -0.125 * (sm * tm - 2.0 * r * sm * tm - s * sm * tm - t * sm * tm - 2.0 * sm * tm);
+  derivs[1] = 0.125 * (sm * tm + 2.0 * r * sm * tm - s * sm * tm - t * sm * tm - 2.0 * sm * tm);
+  derivs[2] = 0.125 * (sp * tm + 2.0 * r * sp * tm + s * sp * tm - t * sp * tm - 2.0 * sp * tm);
+  derivs[3] = -0.125 * (sp * tm - 2.0 * r * sp * tm + s * sp * tm - t * sp * tm - 2.0 * sp * tm);
+  derivs[4] = -0.125 * (sm * tp - 2.0 * r * sm * tp - s * sm * tp + t * sm * tp - 2.0 * sm * tp);
+  derivs[5] = 0.125 * (sm * tp + 2.0 * r * sm * tp - s * sm * tp + t * sm * tp - 2.0 * sm * tp);
+  derivs[6] = 0.125 * (sp * tp + 2.0 * r * sp * tp + s * sp * tp + t * sp * tp - 2.0 * sp * tp);
+  derivs[7] = -0.125 * (sp * tp - 2.0 * r * sp * tp + s * sp * tp + t * sp * tp - 2.0 * sp * tp);
+  derivs[8] = -0.5 * r * sm * tm;
+  derivs[9] = 0.25 * (tm - s * s * tm);
+  derivs[10] = -0.5 * r * sp * tm;
+  derivs[11] = -0.25 * (tm - s * s * tm);
+  derivs[12] = -0.5 * r * sm * tp;
+  derivs[13] = 0.25 * (tp - s * s * tp);
+  derivs[14] = -0.5 * r * sp * tp;
+  derivs[15] = -0.25 * (tp - s * s * tp);
+  derivs[16] = -0.25 * (sm - t * t * sm);
+  derivs[17] = 0.25 * (sm - t * t * sm);
+  derivs[18] = 0.25 * (sp - t * t * sp);
+  derivs[19] = -0.25 * (sp - t * t * sp);
+
+  // s-derivatives
+  derivs[20] = -0.125 * (rm * tm - 2.0 * s * rm * tm - r * rm * tm - t * rm * tm - 2.0 * rm * tm);
+  derivs[21] = -0.125 * (rp * tm - 2.0 * s * rp * tm + r * rp * tm - t * rp * tm - 2.0 * rp * tm);
+  derivs[22] = 0.125 * (rp * tm + 2.0 * s * rp * tm + r * rp * tm - t * rp * tm - 2.0 * rp * tm);
+  derivs[23] = 0.125 * (rm * tm + 2.0 * s * rm * tm - r * rm * tm - t * rm * tm - 2.0 * rm * tm);
+  derivs[24] = -0.125 * (rm * tp - 2.0 * s * rm * tp - r * rm * tp + t * rm * tp - 2.0 * rm * tp);
+  derivs[25] = -0.125 * (rp * tp - 2.0 * s * rp * tp + r * rp * tp + t * rp * tp - 2.0 * rp * tp);
+  derivs[26] = 0.125 * (rp * tp + 2.0 * s * rp * tp + r * rp * tp + t * rp * tp - 2.0 * rp * tp);
+  derivs[27] = 0.125 * (rm * tp + 2.0 * s * rm * tp - r * rm * tp + t * rm * tp - 2.0 * rm * tp);
+  derivs[28] = -0.25 * (tm - r * r * tm);
+  derivs[29] = -0.5 * s * rp * tm;
+  derivs[30] = 0.25 * (tm - r * r * tm);
+  derivs[31] = -0.5 * s * rm * tm;
+  derivs[32] = -0.25 * (tp - r * r * tp);
+  derivs[33] = -0.5 * s * rp * tp;
+  derivs[34] = 0.25 * (tp - r * r * tp);
+  derivs[35] = -0.5 * s * rm * tp;
+  derivs[36] = -0.25 * (rm - t * t * rm);
+  derivs[37] = -0.25 * (rp - t * t * rp);
+  derivs[38] = 0.25 * (rp - t * t * rp);
+  derivs[39] = 0.25 * (rm - t * t * rm);
+
+  // t-derivatives
+  derivs[40] = -0.125 * (rm * sm - 2.0 * t * rm * sm - r * rm * sm - s * rm * sm - 2.0 * rm * sm);
+  derivs[41] = -0.125 * (rp * sm - 2.0 * t * rp * sm + r * rp * sm - s * rp * sm - 2.0 * rp * sm);
+  derivs[42] = -0.125 * (rp * sp - 2.0 * t * rp * sp + r * rp * sp + s * rp * sp - 2.0 * rp * sp);
+  derivs[43] = -0.125 * (rm * sp - 2.0 * t * rm * sp - r * rm * sp + s * rm * sp - 2.0 * rm * sp);
+  derivs[44] = 0.125 * (rm * sm + 2.0 * t * rm * sm - r * rm * sm - s * rm * sm - 2.0 * rm * sm);
+  derivs[45] = 0.125 * (rp * sm + 2.0 * t * rp * sm + r * rp * sm - s * rp * sm - 2.0 * rp * sm);
+  derivs[46] = 0.125 * (rp * sp + 2.0 * t * rp * sp + r * rp * sp + s * rp * sp - 2.0 * rp * sp);
+  derivs[47] = 0.125 * (rm * sp + 2.0 * t * rm * sp - r * rm * sp + s * rm * sp - 2.0 * rm * sp);
+  derivs[48] = -0.25 * (sm - r * r * sm);
+  derivs[49] = -0.25 * (rp - s * s * rp);
+  derivs[50] = -0.25 * (sp - r * r * sp);
+  derivs[51] = -0.25 * (rm - s * s * rm);
+  derivs[52] = 0.25 * (sm - r * r * sm);
+  derivs[53] = 0.25 * (rp - s * s * rp);
+  derivs[54] = 0.25 * (sp - r * r * sp);
+  derivs[55] = 0.25 * (rm - s * s * rm);
+  derivs[56] = -0.5 * t * rm * sm;
+  derivs[57] = -0.5 * t * rp * sm;
+  derivs[58] = -0.5 * t * rp * sp;
+  derivs[59] = -0.5 * t * rm * sp;
+
+  // we compute derivatives in [-1; 1] but we need them in [ 0; 1]
+  for (int i = 0; i < 60; i++)
+    derivs[i] *= 2;
+}
+
+//------------------------------------------------------------------------------
+static double vtkQHexCellPCoords[60] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  1.0, 1.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  0.0, 0.0, 1.0, //
+  1.0, 0.0, 1.0, //
+  1.0, 1.0, 1.0, //
+  0.0, 1.0, 1.0, //
+  0.5, 0.0, 0.0, //
+  1.0, 0.5, 0.0, //
+  0.5, 1.0, 0.0, //
+  0.0, 0.5, 0.0, //
+  0.5, 0.0, 1.0, //
+  1.0, 0.5, 1.0, //
+  0.5, 1.0, 1.0, //
+  0.0, 0.5, 1.0, //
+  0.0, 0.0, 0.5, //
+  1.0, 0.0, 0.5, //
+  1.0, 1.0, 0.5, //
+  0.0, 1.0, 0.5  //
+};
+
+
+-------------------------------------------------------------------------------------------
+
+vtkBiQuadraticQuadraticHexahedron
+
+// Compute interpolation functions for the twenty four nodes.
+void vtkBiQuadraticQuadraticHexahedron::InterpolationFunctions(
+  const double pcoords[3], double weights[24])
+{
+  // VTK needs parametric coordinates to be between (0,1). Isoparametric
+  // shape functions are formulated between (-1,1). Here we do a
+  // coordinate system conversion from (0,1) to (-1,1).
+  double x = 2.0 * (pcoords[0] - 0.5);
+  double y = 2.0 * (pcoords[1] - 0.5);
+  double z = 2.0 * (pcoords[2] - 0.5);
+
+  // clang-format off
+  //The eight corner points
+  weights[0] = ( 0.25*(x*(1-x))*(y*(1-y)) - 0.25*(1+x)*(1-x)*(1+y)*(1-y))*(-0.5*z*(1-z));
+  weights[1] = (-0.25*(x*(1+x))*(y*(1-y)) - 0.25*(1+x)*(1-x)*(1+y)*(1-y))*(-0.5*z*(1-z));
+  weights[2] = ( 0.25*(x*(1+x))*(y*(1+y)) - 0.25*(1+x)*(1-x)*(1+y)*(1-y))*(-0.5*z*(1-z));
+  weights[3] = (-0.25*(x*(1-x))*(y*(1+y)) - 0.25*(1+x)*(1-x)*(1+y)*(1-y))*(-0.5*z*(1-z));
+  weights[4] = ( 0.25*(x*(1-x))*(y*(1-y)) - 0.25*(1+x)*(1-x)*(1+y)*(1-y))*( 0.5*z*(1+z));
+  weights[5] = (-0.25*(x*(1+x))*(y*(1-y)) - 0.25*(1+x)*(1-x)*(1+y)*(1-y))*( 0.5*z*(1+z));
+  weights[6] = ( 0.25*(x*(1+x))*(y*(1+y)) - 0.25*(1+x)*(1-x)*(1+y)*(1-y))*( 0.5*z*(1+z));
+  weights[7] = (-0.25*(x*(1-x))*(y*(1+y)) - 0.25*(1+x)*(1-x)*(1+y)*(1-y))*( 0.5*z*(1+z));
+
+  //The mid-edge nodes
+  weights[8] =  0.5*((1+x)*(1-x))*(1-y) *(-0.5*z*(1-z));
+  weights[9] =  0.5*((1+y)*(1-y))*(1+x) *(-0.5*z*(1-z));
+  weights[10] = 0.5*((1+x)*(1-x))*(1+y) *(-0.5*z*(1-z));
+  weights[11] = 0.5*((1+y)*(1-y))*(1-x) *(-0.5*z*(1-z));
+  weights[12] = 0.5*((1+x)*(1-x))*(1-y) *( 0.5*z*(1+z));
+  weights[13] = 0.5*((1+y)*(1-y))*(1+x) *( 0.5*z*(1+z));
+  weights[14] = 0.5*((1+x)*(1-x))*(1+y) *( 0.5*z*(1+z));
+  weights[15] = 0.5*((1+y)*(1-y))*(1-x) *( 0.5*z*(1+z));
+  weights[16] =( 0.25*(x*(1-x))*(y*(1-y)) - 0.25*(1+x)*(1-x)*(1+y)*(1-y)) *((1+z)*(1-z));
+  weights[17] =(-0.25*(x*(1+x))*(y*(1-y)) - 0.25*(1+x)*(1-x)*(1+y)*(1-y)) *((1+z)*(1-z));
+  weights[18] =( 0.25*(x*(1+x))*(y*(1+y)) - 0.25*(1+x)*(1-x)*(1+y)*(1-y)) *((1+z)*(1-z));
+  weights[19] =(-0.25*(x*(1-x))*(y*(1+y)) - 0.25*(1+x)*(1-x)*(1+y)*(1-y)) *((1+z)*(1-z));
+
+  //Face center Nodes in xz and yz direction
+  weights[20] = 0.5*((1+y)*(1-y))*(1-x)  *((1+z)*(1-z));
+  weights[21] = 0.5*((1+y)*(1-y))*(1+x)  *((1+z)*(1-z));
+  weights[22] = 0.5*((1+x)*(1-x))*(1-y)  *((1+z)*(1-z));
+  weights[23] = 0.5*((1+x)*(1-x))*(1+y)  *((1+z)*(1-z));
+  // clang-format on
+}
+
+//------------------------------------------------------------------------------
+// Derivatives in parametric space.
+void vtkBiQuadraticQuadraticHexahedron::InterpolationDerivs(
+  const double pcoords[3], double derivs[72])
+{
+  // VTK needs parametric coordinates to be between (0,1). Isoparametric
+  // shape functions are formulated between (-1,1). Here we do a
+  // coordinate system conversion from (0,1) to (-1,1).
+  double x = 2.0 * (pcoords[0] - 0.5);
+  double y = 2.0 * (pcoords[1] - 0.5);
+  double z = 2.0 * (pcoords[2] - 0.5);
+
+  // x direction
+  derivs[0] =
+    -((y * y + (2 * x - 1) * y - 2 * x) * z * z + (-y * y + (1 - 2 * x) * y + 2 * x) * z) / 8;
+  derivs[1] =
+    ((y * y + (-2 * x - 1) * y + 2 * x) * z * z + (-y * y + (2 * x + 1) * y - 2 * x) * z) / 8;
+  derivs[2] =
+    ((y * y + (2 * x + 1) * y + 2 * x) * z * z + (-y * y + (-2 * x - 1) * y - 2 * x) * z) / 8;
+  derivs[3] =
+    -((y * y + (1 - 2 * x) * y - 2 * x) * z * z + (-y * y + (2 * x - 1) * y + 2 * x) * z) / 8;
+  derivs[4] =
+    -((y * y + (2 * x - 1) * y - 2 * x) * z * z + (y * y + (2 * x - 1) * y - 2 * x) * z) / 8;
+  derivs[5] =
+    ((y * y + (-2 * x - 1) * y + 2 * x) * z * z + (y * y + (-2 * x - 1) * y + 2 * x) * z) / 8;
+  derivs[6] =
+    ((y * y + (2 * x + 1) * y + 2 * x) * z * z + (y * y + (2 * x + 1) * y + 2 * x) * z) / 8;
+  derivs[7] =
+    -((y * y + (1 - 2 * x) * y - 2 * x) * z * z + (y * y + (1 - 2 * x) * y - 2 * x) * z) / 8;
+  derivs[8] = ((x * y - x) * z * z + (x - x * y) * z) / 2;
+  derivs[9] = -((y * y - 1) * z * z + (1 - y * y) * z) / 4;
+  derivs[10] = -((x * y + x) * z * z + (-x * y - x) * z) / 2;
+  derivs[11] = ((y * y - 1) * z * z + (1 - y * y) * z) / 4;
+  derivs[12] = ((x * y - x) * z * z + (x * y - x) * z) / 2;
+  derivs[13] = -((y * y - 1) * z * z + (y * y - 1) * z) / 4;
+  derivs[14] = -((x * y + x) * z * z + (x * y + x) * z) / 2;
+  derivs[15] = ((y * y - 1) * z * z + (y * y - 1) * z) / 4;
+  derivs[16] = ((y * y + (2 * x - 1) * y - 2 * x) * z * z - y * y + (1 - 2 * x) * y + 2 * x) / 4;
+  derivs[17] = -((y * y + (-2 * x - 1) * y + 2 * x) * z * z - y * y + (2 * x + 1) * y - 2 * x) / 4;
+  derivs[18] = -((y * y + (2 * x + 1) * y + 2 * x) * z * z - y * y + (-2 * x - 1) * y - 2 * x) / 4;
+  derivs[19] = ((y * y + (1 - 2 * x) * y - 2 * x) * z * z - y * y + (2 * x - 1) * y + 2 * x) / 4;
+  derivs[20] = -((y * y - 1) * z * z - y * y + 1) / 2;
+  derivs[21] = ((y * y - 1) * z * z - y * y + 1) / 2;
+  derivs[22] = (x - x * y) * z * z + x * y - x;
+  derivs[23] = (x * y + x) * z * z - x * y - x;
+  // y direction
+  derivs[24] = -(((2 * x - 2) * y + x * x - x) * z * z + ((2 - 2 * x) * y - x * x + x) * z) / 8;
+  derivs[25] = (((2 * x + 2) * y - x * x - x) * z * z + ((-2 * x - 2) * y + x * x + x) * z) / 8;
+  derivs[26] = (((2 * x + 2) * y + x * x + x) * z * z + ((-2 * x - 2) * y - x * x - x) * z) / 8;
+  derivs[27] = -(((2 * x - 2) * y - x * x + x) * z * z + ((2 - 2 * x) * y + x * x - x) * z) / 8;
+  derivs[28] = -(((2 * x - 2) * y + x * x - x) * z * z + ((2 * x - 2) * y + x * x - x) * z) / 8;
+  derivs[29] = (((2 * x + 2) * y - x * x - x) * z * z + ((2 * x + 2) * y - x * x - x) * z) / 8;
+  derivs[30] = (((2 * x + 2) * y + x * x + x) * z * z + ((2 * x + 2) * y + x * x + x) * z) / 8;
+  derivs[31] = -(((2 * x - 2) * y - x * x + x) * z * z + ((2 * x - 2) * y - x * x + x) * z) / 8;
+  derivs[32] = ((x * x - 1) * z * z + (1 - x * x) * z) / 4;
+  derivs[33] = -((x + 1) * y * z * z + (-x - 1) * y * z) / 2;
+  derivs[34] = -((x * x - 1) * z * z + (1 - x * x) * z) / 4;
+  derivs[35] = ((x - 1) * y * z * z + (1 - x) * y * z) / 2;
+  derivs[36] = ((x * x - 1) * z * z + (x * x - 1) * z) / 4;
+  derivs[37] = -((x + 1) * y * z * z + (x + 1) * y * z) / 2;
+  derivs[38] = -((x * x - 1) * z * z + (x * x - 1) * z) / 4;
+  derivs[39] = ((x - 1) * y * z * z + (x - 1) * y * z) / 2;
+  derivs[40] = (((2 * x - 2) * y + x * x - x) * z * z + (2 - 2 * x) * y - x * x + x) / 4;
+  derivs[41] = -(((2 * x + 2) * y - x * x - x) * z * z + (-2 * x - 2) * y + x * x + x) / 4;
+  derivs[42] = -(((2 * x + 2) * y + x * x + x) * z * z + (-2 * x - 2) * y - x * x - x) / 4;
+  derivs[43] = (((2 * x - 2) * y - x * x + x) * z * z + (2 - 2 * x) * y + x * x - x) / 4;
+  derivs[44] = (1 - x) * y * z * z + (x - 1) * y;
+  derivs[45] = (x + 1) * y * z * z + (-x - 1) * y;
+  derivs[46] = -((x * x - 1) * z * z - x * x + 1) / 2;
+  derivs[47] = ((x * x - 1) * z * z - x * x + 1) / 2;
+  // z direction
+  derivs[48] = -(((2 * x - 2) * y * y + (2 * x * x - 2 * x) * y - 2 * x * x + 2) * z +
+                 (1 - x) * y * y + (x - x * x) * y + x * x - 1) /
+    8;
+  derivs[49] = (((2 * x + 2) * y * y + (-2 * x * x - 2 * x) * y + 2 * x * x - 2) * z +
+                 (-x - 1) * y * y + (x * x + x) * y - x * x + 1) /
+    8;
+  derivs[50] = (((2 * x + 2) * y * y + (2 * x * x + 2 * x) * y + 2 * x * x - 2) * z +
+                 (-x - 1) * y * y + (-x * x - x) * y - x * x + 1) /
+    8;
+  derivs[51] = -(((2 * x - 2) * y * y + (2 * x - 2 * x * x) * y - 2 * x * x + 2) * z +
+                 (1 - x) * y * y + (x * x - x) * y + x * x - 1) /
+    8;
+  derivs[52] = -(((2 * x - 2) * y * y + (2 * x * x - 2 * x) * y - 2 * x * x + 2) * z +
+                 (x - 1) * y * y + (x * x - x) * y - x * x + 1) /
+    8;
+  derivs[53] = (((2 * x + 2) * y * y + (-2 * x * x - 2 * x) * y + 2 * x * x - 2) * z +
+                 (x + 1) * y * y + (-x * x - x) * y + x * x - 1) /
+    8;
+  derivs[54] = (((2 * x + 2) * y * y + (2 * x * x + 2 * x) * y + 2 * x * x - 2) * z +
+                 (x + 1) * y * y + (x * x + x) * y + x * x - 1) /
+    8;
+  derivs[55] = -(((2 * x - 2) * y * y + (2 * x - 2 * x * x) * y - 2 * x * x + 2) * z +
+                 (x - 1) * y * y + (x - x * x) * y - x * x + 1) /
+    8;
+  derivs[56] = (((2 * x * x - 2) * y - 2 * x * x + 2) * z + (1 - x * x) * y + x * x - 1) / 4;
+  derivs[57] = -(((2 * x + 2) * y * y - 2 * x - 2) * z + (-x - 1) * y * y + x + 1) / 4;
+  derivs[58] = -(((2 * x * x - 2) * y + 2 * x * x - 2) * z + (1 - x * x) * y - x * x + 1) / 4;
+  derivs[59] = (((2 * x - 2) * y * y - 2 * x + 2) * z + (1 - x) * y * y + x - 1) / 4;
+  derivs[60] = (((2 * x * x - 2) * y - 2 * x * x + 2) * z + (x * x - 1) * y - x * x + 1) / 4;
+  derivs[61] = -(((2 * x + 2) * y * y - 2 * x - 2) * z + (x + 1) * y * y - x - 1) / 4;
+  derivs[62] = -(((2 * x * x - 2) * y + 2 * x * x - 2) * z + (x * x - 1) * y + x * x - 1) / 4;
+  derivs[63] = (((2 * x - 2) * y * y - 2 * x + 2) * z + (x - 1) * y * y - x + 1) / 4;
+  derivs[64] = ((x - 1) * y * y + (x * x - x) * y - x * x + 1) * z / 2;
+  derivs[65] = -((x + 1) * y * y + (-x * x - x) * y + x * x - 1) * z / 2;
+  derivs[66] = -((x + 1) * y * y + (x * x + x) * y + x * x - 1) * z / 2;
+  derivs[67] = ((x - 1) * y * y + (x - x * x) * y - x * x + 1) * z / 2;
+  derivs[68] = ((1 - x) * y * y + x - 1) * z;
+  derivs[69] = ((x + 1) * y * y - x - 1) * z;
+  derivs[70] = ((1 - x * x) * y + x * x - 1) * z;
+  derivs[71] = ((x * x - 1) * y + x * x - 1) * z;
+
+  // we compute derivatives in [-1; 1] but we need them in [ 0; 1]
+  for (int i = 0; i < 72; i++)
+    derivs[i] *= 2;
+}
+
+//------------------------------------------------------------------------------
+static double vtkQHexCellPCoords[72] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  1.0, 1.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  0.0, 0.0, 1.0, //
+  1.0, 0.0, 1.0, //
+  1.0, 1.0, 1.0, //
+  0.0, 1.0, 1.0, //
+  0.5, 0.0, 0.0, //
+  1.0, 0.5, 0.0, //
+  0.5, 1.0, 0.0, //
+  0.0, 0.5, 0.0, //
+  0.5, 0.0, 1.0, //
+  1.0, 0.5, 1.0, //
+  0.5, 1.0, 1.0, //
+  0.0, 0.5, 1.0, //
+  0.0, 0.0, 0.5, //
+  1.0, 0.0, 0.5, //
+  1.0, 1.0, 0.5, //
+  0.0, 1.0, 0.5, //
+  0.0, 0.5, 0.5, // 20
+  1.0, 0.5, 0.5, // 21
+  0.5, 0.0, 0.5, // 22
+  0.5, 1.0, 0.5  // 23
+};
+
+
+-------------------------------------------------------------------------------------------
+
+vtkTriquadraticHexahedron
+
+// Compute interpolation functions for the 27 nodes.
+void vtkTriQuadraticHexahedron::InterpolationFunctions(const double pcoords[3], double weights[27])
+{
+  // VTK needs parametric coordinates to be between (0,1). Isoparametric
+  // shape functions are formulated between (-1,1). Here we do a
+  // coordinate system conversion from (0,1) to (-1,1).
+  double r = 2.0 * (pcoords[0] - 0.5);
+  double s = 2.0 * (pcoords[1] - 0.5);
+  double t = 2.0 * (pcoords[2] - 0.5);
+
+  double g1r = -0.5 * r * (1 - r);
+  double g1s = -0.5 * s * (1 - s);
+  double g1t = -0.5 * t * (1 - t);
+
+  double g2r = (1 + r) * (1 - r);
+  double g2s = (1 + s) * (1 - s);
+  double g2t = (1 + t) * (1 - t);
+
+  double g3r = 0.5 * r * (1 + r);
+  double g3s = 0.5 * s * (1 + s);
+  double g3t = 0.5 * t * (1 + t);
+
+  // The eight corner points
+  weights[0] = g1r * g1s * g1t;
+  weights[1] = g3r * g1s * g1t;
+  weights[2] = g3r * g3s * g1t;
+  weights[3] = g1r * g3s * g1t;
+  weights[4] = g1r * g1s * g3t;
+  weights[5] = g3r * g1s * g3t;
+  weights[6] = g3r * g3s * g3t;
+  weights[7] = g1r * g3s * g3t;
+
+  // The mid-edge nodes
+  weights[8] = g2r * g1s * g1t;
+  weights[9] = g3r * g2s * g1t;
+  weights[10] = g2r * g3s * g1t;
+  weights[11] = g1r * g2s * g1t;
+  weights[12] = g2r * g1s * g3t;
+  weights[13] = g3r * g2s * g3t;
+  weights[14] = g2r * g3s * g3t;
+  weights[15] = g1r * g2s * g3t;
+  weights[16] = g1r * g1s * g2t;
+  weights[17] = g3r * g1s * g2t;
+  weights[18] = g3r * g3s * g2t;
+  weights[19] = g1r * g3s * g2t;
+
+  // face center nodes
+  weights[22] = g2r * g1s * g2t;
+  weights[21] = g3r * g2s * g2t;
+  weights[23] = g2r * g3s * g2t;
+  weights[20] = g1r * g2s * g2t;
+  weights[24] = g2r * g2s * g1t;
+  weights[25] = g2r * g2s * g3t;
+
+  // Cell center node
+  weights[26] = g2r * g2s * g2t;
+}
+
+//------------------------------------------------------------------------------
+// Derivatives in parametric space.
+void vtkTriQuadraticHexahedron::InterpolationDerivs(const double pcoords[3], double derivs[81])
+{
+  // VTK needs parametric coordinates to be between (0,1). Isoparametric
+  // shape functions are formulated between (-1,1). Here we do a
+  // coordinate system conversion from (0,1) to (-1,1).
+  double r = 2.0 * (pcoords[0] - 0.5);
+  double s = 2.0 * (pcoords[1] - 0.5);
+  double t = 2.0 * (pcoords[2] - 0.5);
+
+  double g1r = -0.5 * r * (1 - r);
+  double g1s = -0.5 * s * (1 - s);
+  double g1t = -0.5 * t * (1 - t);
+
+  double g2r = (1 + r) * (1 - r);
+  double g2s = (1 + s) * (1 - s);
+  double g2t = (1 + t) * (1 - t);
+
+  double g3r = 0.5 * r * (1 + r);
+  double g3s = 0.5 * s * (1 + s);
+  double g3t = 0.5 * t * (1 + t);
+
+  double g1r_r = r - 0.5;
+  double g1s_s = s - 0.5;
+  double g1t_t = t - 0.5;
+
+  double g2r_r = -2 * r;
+  double g2s_s = -2 * s;
+  double g2t_t = -2 * t;
+
+  double g3r_r = r + 0.5;
+  double g3s_s = s + 0.5;
+  double g3t_t = t + 0.5;
+
+  // r-derivatives
+  derivs[0] = g1r_r * g1s * g1t;
+  derivs[1] = g3r_r * g1s * g1t;
+  derivs[2] = g3r_r * g3s * g1t;
+  derivs[3] = g1r_r * g3s * g1t;
+  derivs[4] = g1r_r * g1s * g3t;
+  derivs[5] = g3r_r * g1s * g3t;
+  derivs[6] = g3r_r * g3s * g3t;
+  derivs[7] = g1r_r * g3s * g3t;
+  derivs[8] = g2r_r * g1s * g1t;
+  derivs[9] = g3r_r * g2s * g1t;
+  derivs[10] = g2r_r * g3s * g1t;
+  derivs[11] = g1r_r * g2s * g1t;
+  derivs[12] = g2r_r * g1s * g3t;
+  derivs[13] = g3r_r * g2s * g3t;
+  derivs[14] = g2r_r * g3s * g3t;
+  derivs[15] = g1r_r * g2s * g3t;
+  derivs[16] = g1r_r * g1s * g2t;
+  derivs[17] = g3r_r * g1s * g2t;
+  derivs[18] = g3r_r * g3s * g2t;
+  derivs[19] = g1r_r * g3s * g2t;
+  derivs[20] = g1r_r * g2s * g2t;
+  derivs[21] = g3r_r * g2s * g2t;
+  derivs[22] = g2r_r * g1s * g2t;
+  derivs[23] = g2r_r * g3s * g2t;
+  derivs[24] = g2r_r * g2s * g1t;
+  derivs[25] = g2r_r * g2s * g3t;
+  derivs[26] = g2r_r * g2s * g2t;
+
+  // s-derivatives
+  derivs[27] = g1r * g1s_s * g1t;
+  derivs[28] = g3r * g1s_s * g1t;
+  derivs[29] = g3r * g3s_s * g1t;
+  derivs[30] = g1r * g3s_s * g1t;
+  derivs[31] = g1r * g1s_s * g3t;
+  derivs[32] = g3r * g1s_s * g3t;
+  derivs[33] = g3r * g3s_s * g3t;
+  derivs[34] = g1r * g3s_s * g3t;
+  derivs[35] = g2r * g1s_s * g1t;
+  derivs[36] = g3r * g2s_s * g1t;
+  derivs[37] = g2r * g3s_s * g1t;
+  derivs[38] = g1r * g2s_s * g1t;
+  derivs[39] = g2r * g1s_s * g3t;
+  derivs[40] = g3r * g2s_s * g3t;
+  derivs[41] = g2r * g3s_s * g3t;
+  derivs[42] = g1r * g2s_s * g3t;
+  derivs[43] = g1r * g1s_s * g2t;
+  derivs[44] = g3r * g1s_s * g2t;
+  derivs[45] = g3r * g3s_s * g2t;
+  derivs[46] = g1r * g3s_s * g2t;
+  derivs[47] = g1r * g2s_s * g2t;
+  derivs[48] = g3r * g2s_s * g2t;
+  derivs[49] = g2r * g1s_s * g2t;
+  derivs[50] = g2r * g3s_s * g2t;
+  derivs[51] = g2r * g2s_s * g1t;
+  derivs[52] = g2r * g2s_s * g3t;
+  derivs[53] = g2r * g2s_s * g2t;
+
+  // t-derivatives
+  derivs[54] = g1r * g1s * g1t_t;
+  derivs[55] = g3r * g1s * g1t_t;
+  derivs[56] = g3r * g3s * g1t_t;
+  derivs[57] = g1r * g3s * g1t_t;
+  derivs[58] = g1r * g1s * g3t_t;
+  derivs[59] = g3r * g1s * g3t_t;
+  derivs[60] = g3r * g3s * g3t_t;
+  derivs[61] = g1r * g3s * g3t_t;
+  derivs[62] = g2r * g1s * g1t_t;
+  derivs[63] = g3r * g2s * g1t_t;
+  derivs[64] = g2r * g3s * g1t_t;
+  derivs[65] = g1r * g2s * g1t_t;
+  derivs[66] = g2r * g1s * g3t_t;
+  derivs[67] = g3r * g2s * g3t_t;
+  derivs[68] = g2r * g3s * g3t_t;
+  derivs[69] = g1r * g2s * g3t_t;
+  derivs[70] = g1r * g1s * g2t_t;
+  derivs[71] = g3r * g1s * g2t_t;
+  derivs[72] = g3r * g3s * g2t_t;
+  derivs[73] = g1r * g3s * g2t_t;
+  derivs[74] = g1r * g2s * g2t_t;
+  derivs[75] = g3r * g2s * g2t_t;
+  derivs[76] = g2r * g1s * g2t_t;
+  derivs[77] = g2r * g3s * g2t_t;
+  derivs[78] = g2r * g2s * g1t_t;
+  derivs[79] = g2r * g2s * g3t_t;
+  derivs[80] = g2r * g2s * g2t_t;
+
+  // we compute derivatives in [-1; 1] but we need them in [ 0; 1]
+  for (int i = 0; i < 81; i++)
+    derivs[i] *= 2;
+}
+
+//------------------------------------------------------------------------------
+static double vtkQHexCellPCoords[81] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  1.0, 1.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  0.0, 0.0, 1.0, //
+  1.0, 0.0, 1.0, //
+  1.0, 1.0, 1.0, //
+  0.0, 1.0, 1.0, //
+  0.5, 0.0, 0.0, //
+  1.0, 0.5, 0.0, //
+  0.5, 1.0, 0.0, //
+  0.0, 0.5, 0.0, //
+  0.5, 0.0, 1.0, //
+  1.0, 0.5, 1.0, //
+  0.5, 1.0, 1.0, //
+  0.0, 0.5, 1.0, //
+  0.0, 0.0, 0.5, //
+  1.0, 0.0, 0.5, //
+  1.0, 1.0, 0.5, //
+  0.0, 1.0, 0.5, //
+  0.0, 0.5, 0.5, // 20
+  1.0, 0.5, 0.5, // 21
+  0.5, 0.0, 0.5, // 22
+  0.5, 1.0, 0.5, // 23
+  0.5, 0.5, 0.0, // 24
+  0.5, 0.5, 1.0, // 25
+  0.5, 0.5, 0.5  // 26
+};

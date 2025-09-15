@@ -204,4 +204,40 @@ pub struct ElementValueData {
 }
 
 
+/// Geometric analysis module
+#[derive(Debug, Clone)]
+pub struct ShapeFunction {
+    pub values: Vec<f64>,
+    pub derivatives: Vec<Vec<f64>>, // derivatives[node][dimension]
+}
 
+#[derive(Debug, Clone)]
+pub struct Jacobian {
+    pub matrix: Vec<Vec<f64>>, // Jacobian matrix J[i][j] = dx_i/dxi_j
+    pub determinant: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ElementQuality {
+    pub element_id: usize,      // ID of the element being analyzed
+    pub det_jacobian: f64,      // determinant of the Jacobian matrix
+
+    // more quality metrics can be added here
+}
+
+// Structure to hold the complete mesh quality analysis results
+#[derive(Debug, Clone)]
+pub struct MeshQualityReport {
+    pub total_elements: usize,                    // Total number of elements that were successfully analyzed
+    pub element_qualities: Vec<ElementQuality>,   // Quality metrics for each individual element
+    pub statistics: QualityStatistics,           // Overall statistical summary of mesh quality
+}
+ 
+// Structure to hold statistical summary of mesh quality metrics
+#[derive(Debug, Clone)]
+pub struct QualityStatistics {
+    pub min_jacobian: f64,              // Minimum Jacobian determinant in the mesh
+    pub max_jacobian: f64,              // Maximum Jacobian determinant in the mesh
+    pub avg_jacobian: f64,              // Average Jacobian determinant across all elements
+    pub negative_jacobian_count: usize, // Number of elements with negative Jacobian (invalid elements)
+}

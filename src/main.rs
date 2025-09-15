@@ -225,7 +225,7 @@ fn create_deformed_mesh(original_mesh: &MeshData, node_value_data: &NodeValueDat
     Ok(deformed_mesh)
 }
 */
-
+ 
 /// Perform mesh quality analysis and print detailed results 
 fn analyze_mesh_quality(mesh_data: &MeshData, mesh_name: &str) -> Result<(), String> {
     println!("\n{}", "=".repeat(60));
@@ -247,6 +247,19 @@ fn analyze_mesh_quality(mesh_data: &MeshData, mesh_name: &str) -> Result<(), Str
                 (quality_report.statistics.negative_jacobian_count as f64 / quality_report.total_elements as f64) * 100.0
             );
 
+            // Print determinant for every element
+            println!("\nDeterminant Results for All Elements:");
+            println!("{}", "-".repeat(50));
+            for (i, elem_quality) in quality_report.element_qualities.iter().enumerate() {
+                println!("Element {}: {:.6e}", elem_quality.element_id, elem_quality.det_jacobian);
+                
+                // Optional: Add a separator every 10 elements for readability
+                if (i + 1) % 10 == 0 && i + 1 < quality_report.element_qualities.len() {
+                    println!("{}", "-".repeat(20));
+                }
+            }
+            println!("{}", "-".repeat(50));
+
             // Additional quality analysis
             if quality_report.statistics.negative_jacobian_count > 0 {
                 println!("  WARNING: {} elements have negative Jacobian determinants (inverted elements)!", 
@@ -266,7 +279,7 @@ fn analyze_mesh_quality(mesh_data: &MeshData, mesh_name: &str) -> Result<(), Str
                 }
             }
 
-            // Quality classification
+            // Quality classification (for console output)
             let very_poor_count = quality_report.element_qualities.iter()
                 .filter(|q| q.det_jacobian > 0.0 && q.det_jacobian < 0.1)
                 .count();

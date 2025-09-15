@@ -7,44 +7,6 @@ use std::f64;            // Import f64 constants like INFINITY
 use crate::lib::*;                  // Import mesh data structures and error types from lib module
 use crate::error::*;                     // Import mesh data structures and error types from error module
 
-
-#[derive(Debug, Clone)]
-struct ShapeFunction {
-    values: Vec<f64>,
-    derivatives: Vec<Vec<f64>>, // derivatives[node][dimension]
-}
-
-#[derive(Debug, Clone)]
-pub struct Jacobian {
-    pub matrix: Vec<Vec<f64>>, // Jacobian matrix J[i][j] = dx_i/dxi_j
-    pub determinant: f64,
-}
-
-#[derive(Debug, Clone)]
-pub struct ElementQuality {
-    pub element_id: usize,      // ID of the element being analyzed
-    pub det_jacobian: f64,      // determinant of the Jacobian matrix
-
-    // more quality metrics can be added here
-}
-
-// Structure to hold the complete mesh quality analysis results
-#[derive(Debug, Clone)]
-pub struct MeshQualityReport {
-    pub total_elements: usize,                    // Total number of elements that were successfully analyzed
-    pub element_qualities: Vec<ElementQuality>,   // Quality metrics for each individual element
-    pub statistics: QualityStatistics,           // Overall statistical summary of mesh quality
-}
- 
-// Structure to hold statistical summary of mesh quality metrics
-#[derive(Debug, Clone)]
-pub struct QualityStatistics {
-    pub min_jacobian: f64,              // Minimum Jacobian determinant in the mesh
-    pub max_jacobian: f64,              // Maximum Jacobian determinant in the mesh
-    pub avg_jacobian: f64,              // Average Jacobian determinant across all elements
-    pub negative_jacobian_count: usize, // Number of elements with negative Jacobian (invalid elements)
-}
-
 pub struct GeometricAnalysis;  // Defines a structure to represent the geometric analysis for the mesh elements
 
 impl GeometricAnalysis {
@@ -128,7 +90,7 @@ impl GeometricAnalysis {
     }
 
     /// Create shape functions for reference elements
-    fn get_shape_functions(element_type: &ElementType) -> Result<ShapeFunction, ParseError> {  //ShapeFunctionError
+    pub fn get_shape_functions(element_type: &ElementType) -> Result<ShapeFunction, ParseError> {  //ShapeFunctionError
         match element_type {
             ElementType::Line => {
                 let reference_coords = vec![
@@ -137,13 +99,11 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 2;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
+                let xi = 0.2113 ;
                 
                 let values = vec![
-                    1.0 - xi[0],   // N0: node at xi = 0
-                    xi[1],         // N1: node at xi = 1
+                    1.0 - xi,   // N0: node at xi = 0
+                    xi,         // N1: node at xi = 1
                 ];
                 let derivatives = vec![
                     vec![-1.0], // dN0/dxi
@@ -161,19 +121,17 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 3;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
+                let xi = 0.1127;
                 
                 let values = vec![
-                    2.0 * (xi[0] - 0.5) * (xi[0] - 1.0),      // N0: node at xi = 0
-                    2.0 * xi[1] * (xi[1] - 0.5),              // N1: node at xi = 1
-                    4.0 * xi[2] * (1.0 - xi[2]),              // N2: node at xi = 0.5
+                    2.0 * (xi - 0.5) * (xi - 1.0),      // N0: node at xi = 0
+                    2.0 * xi * (xi - 0.5),              // N1: node at xi = 1
+                    4.0 * xi * (1.0 - xi),              // N2: node at xi = 0.5
                 ];
                 let derivatives = vec![
-                    vec![4.0 * xi[0] - 3.0],               // dN0/dxi
-                    vec![4.0 * xi[1] - 1.0],               // dN1/dxi
-                    vec![4.0 - xi[2] * 8.0],               // dN2/dxi
+                    vec![4.0 * xi - 3.0],               // dN0/dxi
+                    vec![4.0 * xi - 1.0],               // dN1/dxi
+                    vec![4.0 - xi * 8.0],               // dN2/dxi
                 ];
 
                 Ok(ShapeFunction {values, derivatives})
@@ -187,17 +145,13 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 3;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
-                
+                let xi = 1.0/3.0;
+                let eta = 1.0/3.0;
+
                 let values = vec![
-                    1.0 - xi[0] - eta[0],               // N0: node at (0,0)
-                    xi[1],                              // N1: node at (1,0)
-                    eta[2],                             // N2: node at (0,1)
+                    1.0 - xi - eta,               // N0: node at (0,0)
+                    xi,                              // N1: node at (1,0)
+                    eta,                             // N2: node at (0,1)
                 ];
                 let derivatives = vec![
                     vec![-1.0, -1.0],       // dN0/dxi, dN0/deta
@@ -219,33 +173,26 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 6;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
+                let xi = 2.0 / 3.0;
+                let eta = 1.0 / 6.0;
 
-                let lambda: Vec<f64> = xi.iter()
-                    .zip(eta.iter())
-                    .map(|(&x, &e)| 1.0 - x - e)
-                    .collect();
+                let lambda = 1.0 - xi - eta;
                 
                 let values = vec![
-                    lambda[0] * (2.0 * lambda[0] - 1.0),      // N0: corner at 
-                    xi[1] * (2.0 * xi[1] - 1.0),              // N1: corner at 
-                    eta[2] * (2.0 * eta[2] - 1.0),            // N2: corner at 
-                    4.0 * xi[3] * lambda[3],                  // N3: mid-edge at 
-                    4.0 * xi[4] * eta[4],                     // N4: mid-edge at 
-                    4.0 * eta[5] * lambda[5],                 // N5: mid-edge at 
+                    lambda * (2.0 * lambda - 1.0),      // N0: corner at 
+                    xi * (2.0 * xi - 1.0),              // N1: corner at 
+                    eta * (2.0 * eta - 1.0),            // N2: corner at 
+                    4.0 * xi * lambda,                  // N3: mid-edge at 
+                    4.0 * xi * eta,                     // N4: mid-edge at 
+                    4.0 * eta * lambda,                 // N5: mid-edge at 
                 ];
                 let derivatives = vec![
-                    vec![4.0 * xi[0] + 4.0 * eta[0] - 3.0, 4.0 * xi[0] + 4.0 * eta[0] - 3.0],       // dN0
-                    vec![4.0 * xi[1] - 1.0, 0.0],                                          // dN1
-                    vec![0.0, 4.0 * eta[2] - 1.0],                                         // dN2
-                    vec![4.0 - 8.0 * xi[3] - 4.0 * eta[3], -4.0 * xi[3]],                        // dN3
-                    vec![4.0 * eta[4],  4.0 * xi[4]],                                         // dN4
-                    vec![-4.0 * xi[5], 4.0 - 8.0 * eta[5] - 4.0 * xi[5]],                        // dN5
+                    vec![4.0 * xi + 4.0 * eta - 3.0, 4.0 * xi + 4.0 * eta - 3.0],       // dN0
+                    vec![4.0 * xi - 1.0, 0.0],                                          // dN1
+                    vec![0.0, 4.0 * eta - 1.0],                                         // dN2
+                    vec![4.0 - 8.0 * xi - 4.0 * eta, -4.0 * xi],                        // dN3
+                    vec![4.0 * eta,  4.0 * xi],                                         // dN4
+                    vec![-4.0 * eta, 4.0 - 8.0 * eta - 4.0 * xi],                        // dN5
                 ];
 
                 Ok(ShapeFunction {values, derivatives})
@@ -260,31 +207,23 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 4;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
+                let xi = 0.2113;
+                let eta = 0.7887;
 
-                let xim: Vec<f64> = xi.iter()
-                    .map(|&x| 1.0 - x)
-                    .collect();
-                let etam: Vec<f64> = eta.iter()
-                    .map(|&e| 1.0 - e)
-                    .collect();
+                let xim = 1.0 - xi;
+                let etam = 1.0 - eta;
                 
                 let values = vec![
-                    xim[0] * etam[0],         // N0: 
-                    xi[1] * etam[1],          // N1: 
-                    xi[2] * eta[2],           // N2: 
-                    xim[3] * eta[3],          // N3: 
+                    xim * etam,         // N0: 
+                    xi * etam,          // N1: 
+                    xi * eta,           // N2: 
+                    xim * eta,          // N3: 
                 ];
                 let derivatives = vec![
-                    vec![-etam[0], -xim[0]],      // dN0
-                    vec![etam[1], -xi[1]],        // dN1
-                    vec![eta[2], xi[2]],          // dN2
-                    vec![-eta[3], xim[3]],        // dN3
+                    vec![-etam, -xim],      // dN0
+                    vec![etam, -xi],        // dN1
+                    vec![eta, xi],          // dN2
+                    vec![-eta, xim],        // dN3
                 ];
 
                 Ok(ShapeFunction {values, derivatives})
@@ -303,32 +242,28 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 8;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
+                let xi = 0.1127;
+                let eta = 0.7887;
 
                 let values = vec![
-                    (1.0 - xi[0]) * (1.0 - eta[0]) - 0.5 * (4.0 * xi[0] * (1.0 - xi[0]) * (1.0 - eta[0]) + 4.0 * (1.0 - xi[0]) * (1.0 - eta[0]) * eta[0]),          // N0: corner
-                    xi[1] * (1.0 - eta[1]) - 0.5 * (4.0 * xi[1] * (1.0 - xi[1]) * (1.0 - eta[1]) + 4.0 * xi[1] * (1.0 - eta[1]) * eta[1]),                          // N1: corner
-                    xi[2] * eta[2] - 0.5 * (4.0 * xi[2] * (1.0 - eta[2]) * eta[2] + 4.0 * xi[2] * (1.0 - xi[2]) * eta[2]),                                          // N2: corner
-                    (1.0 - xi[3]) * eta[3] - 0.5 * (4.0 * xi[3] * (1.0 - xi[3]) * eta[3] + 4.0 * (1.0 - xi[3]) * (1.0 - eta[3]) * eta[3]),                          // N3: corner
-                    4.0 * xi[4] * (1.0 - xi[4]) * (1.0 - eta[4]),                                                                                  // N4: mid-edge bottom
-                    4.0 * xi[5] * (1.0 - eta[5]) * eta[5],                                                                                         // N5: mid-edge right
-                    4.0 * xi[6] * (1.0 - xi[6]) * eta[6],                                                                                          // N6: mid-edge top
-                    4.0 * (1.0 - xi[7]) * (1.0 - eta[7]) * eta[7],                                                                                 // N7: mid-edge left
+                    (1.0 - xi) * (1.0 - eta) - 0.5 * (4.0 * xi * (1.0 - xi) * (1.0 - eta) + 4.0 * (1.0 - xi) * (1.0 - eta) * eta),          // N0: corner
+                    xi * (1.0 - eta) - 0.5 * (4.0 * xi * (1.0 - xi) * (1.0 - eta) + 4.0 * xi * (1.0 - eta) * eta),                          // N1: corner
+                    xi * eta - 0.5 * (4.0 * xi * (1.0 - eta) * eta + 4.0 * xi * (1.0 - xi) * eta),                                          // N2: corner
+                    (1.0 - xi) * eta - 0.5 * (4.0 * xi * (1.0 - xi) * eta + 4.0 * (1.0 - xi) * (1.0 - eta) * eta),                          // N3: corner
+                    4.0 * xi * (1.0 - xi) * (1.0 - eta),                                                                                  // N4: mid-edge bottom
+                    4.0 * xi * (1.0 - eta) * eta,                                                                                         // N5: mid-edge right
+                    4.0 * xi * (1.0 - xi) * eta,                                                                                          // N6: mid-edge top
+                    4.0 * (1.0 - xi) * (1.0 - eta) * eta,                                                                                 // N7: mid-edge left
                 ];
                 let derivatives = vec![
-                    vec![-(1.0 - eta[0]) - 0.5 * (4.0 * (1.0 - eta[0]) * (1.0 - 2.0 * xi[0]) - 4.0 * (1.0 - eta[0]) * eta[0]), -(1.0 - xi[0]) - 0.5 * (-4.0 * xi[0] * (1.0 - xi[0]) +  4.0 * (1.0 - xi[0]) * (1.0 - 2.0 * eta[0]))],      // dN0
-                    vec![(1.0 - eta[1]) - 0.5 * (4.0 * (1.0 - eta[1]) * (1.0 - 2.0 * xi[1]) + 4.0 * (1.0 - eta[1]) * eta[1]), -xi[1] - 0.5 * (-4.0 * xi[1] * (1.0 - xi[1]) +  4.0 * (1.0 - xi[1]) * (1.0 - 2.0 * eta[1]))],               // dN1
-                    vec![eta[2] - 0.5 * (4.0 * (1.0 - eta[2]) * eta[2] +  4.0 * eta[2] * (1.0 - 2.0 * xi[2])), xi[2] - 0.5 * (4.0 * xi[2] * (1.0 - 2.0 * eta[2]) + 4.0 * xi[2] * (1.0 - xi[2]))],                                         // dN2
-                    vec![-eta[3] - 0.5 * (4.0 * (1.0 - eta[3]) * (1.0 - 2.0 * xi[3]) - 4.0 * (1.0 - eta[3]) * eta[3]), (1.0 - xi[3]) - 0.5 * (4.0 * xi[3] * (1.0 - xi[3]) +  4.0 * (1.0 - xi[3]) * (1.0 - 2.0 * eta[3]))],                // dN3
-                    vec![4.0 * (1.0 - eta[4]) * (1.0 - 2.0 * xi[4]), -4.0 * (1.0 - xi[4]) * (1.0 - xi[4])],                                                                                                             // dN4
-                    vec![4.0 * (1.0 - eta[5]) * eta[5], 4.0 * xi[5] * (1.0 - 2.0 * eta[5])],                                                                                                                            // dN5
-                    vec![4.0 * (1.0 - eta[6]) * (1.0 - 2.0 * xi[6]), 4.0 * xi[6] * (1.0 - xi[6])],                                                                                                                      // dN6
-                    vec![-4.0 * (1.0 - eta[7]) * eta[7], 4.0 * (1.0 - xi[7]) * (1.0 - 2.0 * eta[7])],                                                                                                                   // dN7
+                    vec![-(1.0 - eta) - 0.5 * (4.0 * (1.0 - eta) * (1.0 - 2.0 * xi) - 4.0 * (1.0 - eta) * eta), -(1.0 - xi) - 0.5 * (-4.0 * xi * (1.0 - xi) +  4.0 * (1.0 - xi) * (1.0 - 2.0 * eta))],      // dN0
+                    vec![(1.0 - eta) - 0.5 * (4.0 * (1.0 - eta) * (1.0 - 2.0 * xi) + 4.0 * (1.0 - eta) * eta), - xi - 0.5 * (-4.0 * xi * (1.0 - xi) +  4.0 * xi * (1.0 - 2.0 * eta))],               // dN1
+                    vec![eta - 0.5 * (4.0 * (1.0 - eta) * eta +  4.0 * eta * (1.0 - 2.0 * xi)), xi - 0.5 * (4.0 * xi * (1.0 - 2.0 * eta) + 4.0 * xi * (1.0 - xi))],                                         // dN2
+                    vec![-eta - 0.5 * (4.0 * eta * (1.0 - 2.0 * xi) + (-4.0) * (1.0 - eta) * eta), (1.0 - xi) - 0.5 * (4.0 * xi * (1.0 - xi) +  4.0 * (1.0 - xi) * (1.0 - 2.0 * eta))],                // dN3
+                    vec![4.0 * (1.0 - eta) * (1.0 - 2.0 * xi), -4.0 * xi * (1.0 - xi)],                                                                                                             // dN4
+                    vec![4.0 * (1.0 - eta) * eta, 4.0 * xi * (1.0 - 2.0 * eta)],                                                                                                                            // dN5
+                    vec![4.0 * eta * (1.0 - 2.0 * xi), 4.0 * xi * (1.0 - xi)],                                                                                                                      // dN6
+                    vec![-4.0 * (1.0 - eta) * eta, 4.0 * (1.0 - xi) * (1.0 - 2.0 * eta)],                                                                                                                   // dN7
                 ];
 
                 Ok(ShapeFunction {values, derivatives})
@@ -348,34 +283,30 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 9;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
+                let xi = 0.1127;
+                let eta = 0.7887;
 
                 let values = vec![
-                    4.0 * (1.0 - xi[0]) * (xi[0] - 0.5) * (1.0 - eta[0]) * (eta[0] - 0.5),      // N0:  
-                    -4.0 * xi[1] * (xi[1] - 0.5) * (1.0 - eta[1]) * (eta[1] - 0.5),             // N1:  
-                    4.0 * xi[2] * (xi[2] - 0.5) * eta[2] * (eta[2] - 0.5),                      // N2:  
-                    -4.0 * (1.0 - xi[3]) * (xi[3] - 0.5) * eta[3] * (eta[3] - 0.5),             // N3:  
-                    8.0 * xi[4] * (1.0 - xi[4]) * (1.0 - eta[4]) * (0.5 - eta[4]),              // N4:  
-                    -8.0 * xi[5] * (0.5 - xi[5]) * (1.0 - eta[5]) * eta[5],                     // N5:  
-                    -8.0 * xi[6] * (1.0 - xi[6]) * eta[6] * (0.5 - eta[6]),                     // N6:  
-                    8.0 * (1.0 - xi[7]) * (0.5 - xi[7]) * (1.0 - eta[7]) * eta[7],              // N7:  
-                    16.0 * xi[8] * (1.0 - xi[8]) * (1.0 - eta[8]) * eta[8],                     // N8: 
+                    4.0 * (1.0 - xi) * (xi - 0.5) * (1.0 - eta) * (eta - 0.5),      // N0:  
+                    -4.0 * xi * (xi - 0.5) * (1.0 - eta) * (eta - 0.5),             // N1:  
+                    4.0 * xi * (xi - 0.5) * eta * (eta - 0.5),                      // N2:  
+                    -4.0 * (1.0 - xi) * (xi - 0.5) * eta * (eta - 0.5),             // N3:  
+                    8.0 * xi * (1.0 - xi) * (1.0 - eta) * (0.5 - eta),              // N4:  
+                    -8.0 * xi * (0.5 - xi) * (1.0 - eta) * eta,                     // N5:  
+                    -8.0 * xi * (1.0 - xi) * eta * (0.5 - eta),                     // N6:  
+                    8.0 * (1.0 - xi) * (0.5 - xi) * (1.0 - eta) * eta,              // N7:  
+                    16.0 * xi * (1.0 - xi) * (1.0 - eta) * eta,                     // N8: 
                 ];
                 let derivatives = vec![
-                    vec![4.0 * (1.5 - 2.0 * xi[0]) * (1.0 - eta[0]) * (eta[0] - 0.5), 4.0 * (1.0 - xi[0]) * (xi[0] - 0.5) * (1.5 - 2.0 * eta[0])],    // dN0
-                    vec![-4.0 * (2.0 * xi[1] - 0.5) * (1.0 - eta[1]) * (eta[1] - 0.5), -4.0 * xi[1] * (xi[1] - 0.5) * (1.5 - 2.0 * eta[1])],          // dN1
-                    vec![4.0 * (2.0 * xi[2] - 0.5) * eta[2] * (eta[2] - 0.5), 4.0 * xi[2] * (xi[2] - 0.5) * (2.0 * eta[2] - 0.5)],                    // dN2
-                    vec![-4.0 * (1.5 - 2.0 * xi[3]) * eta[3] * (eta[3] - 0.5), -4.0 * (1.0 - xi[3]) * (xi[3] - 0.5) * (2.0 * eta[3] - 0.5)],          // dN3
-                    vec![8.0 * (1.0 - 2.0 * xi[4]) * (1.0 - eta[4]) * (0.5 - eta[4]), 8.0 * xi[4] * (1.0 - xi[4]) * (2.0 * eta[4] - 1.5)],            // dN4
-                    vec![-8.0 * (0.5 - 2.0 * xi[5]) * (1.0 - eta[5]) * eta[5], -8.0 * xi[5] * (0.5 - xi[5]) * (1.0 - 2.0 * eta[5])],                  // dN5
-                    vec![-8.0 * (1.0 - 2.0 * xi[6]) * eta[6] * (0.5 - eta[6]), -8.0 * xi[6] * (1.0 - xi[6]) * (0.5 - 2.0 * eta[6])],                  // dN6
-                    vec![8.0 * (2.0 * xi[7] - 1.5) * (1.0 - eta[7]) * eta[7], 8.0 * (1.0 - xi[7]) * (0.5 - xi[7]) * (1.0 - 2.0 * eta[7])],            // dN7
-                    vec![16.0 * (1.0 - 2.0 * xi[8]) * (1.0 - eta[8]) * eta[8], 16.0 * xi[8] * (1.0 - xi[8]) * (1.0 - 2.0 * eta[8])],                  // dN8
+                    vec![4.0 * (1.5 - 2.0 * xi) * (1.0 - eta) * (eta - 0.5), 4.0 * (1.0 - xi) * (xi - 0.5) * (1.5 - 2.0 * eta)],    // dN0
+                    vec![-4.0 * (2.0 * xi - 0.5) * (1.0 - eta) * (eta - 0.5), -4.0 * xi * (xi - 0.5) * (1.5 - 2.0 * eta)],          // dN1
+                    vec![4.0 * (2.0 * xi - 0.5) * eta * (eta - 0.5), 4.0 * xi * (xi - 0.5) * (2.0 * eta - 0.5)],                    // dN2
+                    vec![-4.0 * (1.5 - 2.0 * xi) * eta * (eta - 0.5), -4.0 * (1.0 - xi) * (xi - 0.5) * (2.0 * eta - 0.5)],          // dN3
+                    vec![8.0 * (1.0 - 2.0 * xi) * (1.0 - eta) * (0.5 - eta), 8.0 * xi * (1.0 - xi) * (2.0 * eta - 1.5)],            // dN4
+                    vec![-8.0 * (0.5 - 2.0 * xi) * (1.0 - eta) * eta, -8.0 * xi * (0.5 - xi) * (1.0 - 2.0 * eta)],                  // dN5
+                    vec![-8.0 * (1.0 - 2.0 * xi) * eta * (0.5 - eta), -8.0 * xi * (1.0 - xi) * (0.5 - 2.0 * eta)],                  // dN6
+                    vec![8.0 * (2.0 * xi - 1.5) * (1.0 - eta) * eta, 8.0 * (1.0 - xi) * (0.5 - xi) * (1.0 - 2.0 * eta)],            // dN7
+                    vec![16.0 * (1.0 - 2.0 * xi) * (1.0 - eta) * eta, 16.0 * xi * (1.0 - xi) * (1.0 - 2.0 * eta)],                  // dN8
                 ];
 
                 Ok(ShapeFunction {values, derivatives})
@@ -390,21 +321,15 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 4;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
-                let psi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[2])
-                    .collect();
+                let xi = 0.25;
+                let eta = 0.25;
+                let psi = 0.25;
 
                 let values = vec![
-                    1.0 - xi[0] - eta[0] - psi[0],       // N0: node at 
-                    xi[1],                         // N1: node at 
-                    eta[2],                        // N2: node at 
-                    psi[3],                        // N3: node at
+                    1.0 - xi - eta - psi,       // N0: node at 
+                    xi,                         // N1: node at 
+                    eta,                        // N2: node at 
+                    psi,                        // N3: node at
                 ];
                 let derivatives = vec![
                     vec![-1.0, -1.0, -1.0],     // dN0
@@ -431,45 +356,35 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 10;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
-                let psi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[2])
-                    .collect();
+                let xi = 0.5854;
+                let eta = 0.1382;
+                let psi = 0.1382;
 
-                let lambda: Vec<f64> = xi.iter()
-                    .zip(eta.iter())
-                    .zip(psi.iter())
-                    .map(|((&x, &e), &p)| 1.0 - x - e - p)
-                    .collect();
+                let lambda = 1.0 - xi - eta - psi;
 
                 let values = vec![
-                    lambda[0] * (2.0 * lambda[0] - 1.0),          // N0: corner
-                    xi[1] * (2.0 * xi[1] - 1.0),                  // N1: corner  
-                    eta[2] * (2.0 * eta[2] - 1.0),                // N2: corner 
-                    psi[3] * (2.0 * psi[3] - 1.0),                // N3: corner 
-                    4.0 * lambda[4] * xi[4],                      // N4: mid-edge 
-                    4.0 * xi[5] * eta[5],                         // N5: mid-edge 
-                    4.0 * eta[6] * lambda[6],                     // N6: mid-edge 
-                    4.0 * lambda[7] * psi[7],                     // N7: mid-edge 
-                    4.0 * xi[8] * psi[8],                         // N8: mid-edge 
-                    4.0 * eta[9] * psi[9],                        // N9: mid-edge 
+                    lambda * (2.0 * lambda - 1.0),          // N0: corner
+                    xi * (2.0 * xi - 1.0),                  // N1: corner
+                    eta * (2.0 * eta - 1.0),                // N2: corner
+                    psi * (2.0 * psi - 1.0),                // N3: corner
+                    4.0 * lambda * xi,                      // N4: mid-edge
+                    4.0 * xi * eta,                         // N5: mid-edge
+                    4.0 * eta * lambda,                     // N6: mid-edge
+                    4.0 * lambda * psi,                     // N7: mid-edge
+                    4.0 * xi * psi,                         // N8: mid-edge
+                    4.0 * eta * psi,                        // N9: mid-edge
                 ];
                 let derivatives = vec![
-                    vec![4.0 * (xi[0] + eta[0] + psi[0]) - 3.0, 4.0 * (xi[0] + eta[0] + psi[0]) - 3.0, 4.0 * (xi[0] + eta[0] + psi[0]) - 3.0], // dN0
-                    vec![4.0 * xi[1] - 1.0, 0.0, 0.0],                                                                 // dN1
-                    vec![0.0, 4.0 * eta[2] - 1.0, 0.0],                                                                // dN2
-                    vec![0.0, 0.0, 4.0 * psi[3] - 1.0],                                                                // dN3
-                    vec![4.0 - 8.0 * xi[4] - 4.0 * eta[4] - 4.0 * psi[4], -4.0 * xi[4], -4.0 * xi[4]],                             // dN4
-                    vec![4.0 * eta[5], 4.0 * xi[5], 0.0],                                                                 // dN5
-                    vec![-4.0 * eta[6], 4.0 - 4.0 * xi[6] - 8.0 * eta[6] - 4.0 * psi[6], -4.0 * eta[6]],                           // dN6
-                    vec![-4.0 * psi[7], -4.0 * psi[7], 4.0 - 4.0 * xi[7] - 4.0 * eta[7] - 8.0 * psi[7]],                           // dN7
-                    vec![4.0 * psi[8], 0.0, 4.0 * xi[8]],                                                                 // dN8
-                    vec![0.0, 4.0 * psi[9], 4.0 * eta[9]],                                                                // dN9
+                    vec![4.0 * (xi + eta + psi) - 3.0, 4.0 * (xi + eta + psi) - 3.0, 4.0 * (xi + eta + psi) - 3.0], // dN0
+                    vec![4.0 * xi - 1.0, 0.0, 0.0],                                                                 // dN1
+                    vec![0.0, 4.0 * eta - 1.0, 0.0],                                                                // dN2
+                    vec![0.0, 0.0, 4.0 * psi - 1.0],                                                                // dN3
+                    vec![4.0 - 8.0 * xi - 4.0 * eta - 4.0 * psi, -4.0 * xi, -4.0 * xi],                             // dN4
+                    vec![4.0 * eta, 4.0 * xi, 0.0],                                                                 // dN5
+                    vec![-4.0 * eta, 4.0 - 4.0 * xi - 8.0 * eta - 4.0 * psi, -4.0 * eta],                           // dN6
+                    vec![-4.0 * psi, -4.0 * psi, 4.0 - 4.0 * xi - 4.0 * eta - 8.0 * psi],                           // dN7
+                    vec![4.0 * psi, 0.0, 4.0 * xi],                                                                 // dN8
+                    vec![0.0, 4.0 * psi, 4.0 * eta],                                                                // dN9
                 ];
 
                 Ok(ShapeFunction {values, derivatives})
@@ -485,38 +400,26 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 5;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
-                let psi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[2])
-                    .collect();
+                let xi = 1.0/3.0;
+                let eta = 1.0/3.0;
+                let psi = 0.2113;
 
-                let xim: Vec<f64> = xi.iter()
-                    .map(|&x| 1.0 - x)
-                    .collect();
-                let etam: Vec<f64> = eta.iter()
-                    .map(|&e| 1.0 - e)
-                    .collect();
-                let psim: Vec<f64> = psi.iter()
-                    .map(|&p| 1.0 - p)
-                    .collect();
+                let xim = 1.0 - xi;
+                let etam = 1.0 - eta;
+                let psim = 1.0 - psi;
 
                 let values = vec![
-                    xim[0] * etam[0] * psim[0],      // N0: base 
-                    xi[1] * etam[1] * psim[1],       // N1: base 
-                    xi[2] * eta[2] * psim[2],        // N2: base 
-                    xim[3] * eta[3] * psim[3],       // N3: base 
-                    psi[4],                    // N4: apex 
+                    xim * etam * psim,      // N0: base 
+                    xi * etam * psim,       // N1: base 
+                    xi * eta * psim,        // N2: base 
+                    xim * eta * psim,       // N3: base 
+                    psi,                    // N4: apex 
                 ];
                 let derivatives = vec![
-                    vec![-etam[0] * psim[0], -xim[0] * psim[0], -xim[0] * etam[0]],   // dN0
-                    vec![etam[1] * psim[1], -xi[1] * psim[1], -xi[1] * etam[1]],      // dN1
-                    vec![eta[2] * psim[2], xi[2] * psim[2], -xi[2] * eta[2]],         // dN2
-                    vec![-eta[3] * psim[3], xim[3] * psim[3], -xim[3] * eta[3]],      // dN3
+                    vec![-etam * psim, -xim * psim, -xim * etam],   // dN0
+                    vec![etam * psim, -xi * psim, -xi * etam],      // dN1
+                    vec![eta * psim, xi * psim, -xi * eta],         // dN2
+                    vec![-eta * psim, xim * psim, -xim * eta],      // dN3
                     vec![0.0, 0.0, 1.0],                            // dN4
                 ];
 
@@ -562,31 +465,25 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 6;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
-                let psi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[2])
-                    .collect();
+                let xi = 1.0/3.0;
+                let eta = 1.0/3.0;
+                let psi = 0.2113;
 
                 let values = vec![
-                    (1.0 - xi[0] - eta[0]) * (1.0 - psi[0]),     // N0: bottom
-                    xi[1] * (1.0 - psi[1]),                   // N1: bottom
-                    eta[2] * (1.0 - psi[2]),                  // N2: bottom
-                    (1.0 - xi[3] - eta[3]) * psi[3],             // N3: top
-                    xi[4] * psi[4],                           // N4: top
-                    eta[5] * psi[5],                          // N5: top
+                    (1.0 - xi - eta) * (1.0 - psi),     // N0: bottom
+                    xi * (1.0 - psi),                   // N1: bottom
+                    eta * (1.0 - psi),                  // N2: bottom
+                    (1.0 - xi - eta) * psi,             // N3: top
+                    xi * psi,                           // N4: top
+                    eta * psi,                          // N5: top
                 ];
                 let derivatives = vec![
-                    vec![-1.0 + psi[0], -1.0 + psi[0], -1.0 + xi[0] + eta[0]],  // dN0
-                    vec![1.0 - psi[1], 0.0, -xi[1]],                      // dN1
-                    vec![0.0, 1.0 - psi[2], -eta[2]],                     // dN2
-                    vec![-psi[3], -psi[3], 1.0 - xi[3] - eta[3]],               // dN3
-                    vec![psi[4], 0.0, xi[4]],                             // dN4
-                    vec![0.0, psi[5], eta[5]],                            // dN5
+                    vec![-1.0 + psi, -1.0 + psi, -1.0 + xi + eta],  // dN0
+                    vec![1.0 - psi, 0.0, -xi],                      // dN1
+                    vec![0.0, 1.0 - psi, -eta],                     // dN2
+                    vec![-psi, -psi, 1.0 - xi - eta],               // dN3
+                    vec![psi, 0.0, xi],                             // dN4
+                    vec![0.0, psi, eta],                            // dN5
                 ];
 
                 Ok(ShapeFunction {values, derivatives})
@@ -613,55 +510,49 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 15;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
-                let psi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[2])
-                    .collect();
+                let xi = 0.1127;
+                let eta = 0.5;
+                let psi = 0.8873;
 
                 let values = vec![
                     // Corner nodes
-                    2.0 * (1.0 - xi[0] - eta[0]) * (1.0 - psi[0]) * (0.5 - xi[0] - eta[0] - psi[0]),    // N0: bottom corner
-                    2.0 * xi[1] * (1.0 - psi[1]) * (xi[1] - psi[1] - 0.5),                      // N1: bottom corner
-                    2.0 * eta[2] * (1.0 - psi[2]) * (eta[2] - psi[2] - 0.5),                    // N2: bottom corner
-                    2.0 * (1.0 - xi[3] - eta[3]) * psi[3] * (psi[3] - xi[3] - eta[3] - 0.5),          // N3: top corner
-                    2.0 * xi[4] * psi[4] * (xi[4] + psi[4] - 1.5),                            // N4: top corner
-                    2.0 * eta[5] * psi[5] * (eta[5] + psi[5] - 1.5),                          // N5: top corner
+                    2.0 * (1.0 - xi - eta) * (1.0 - psi) * (0.5 - xi - eta - psi),    // N0: bottom corner
+                    2.0 * xi * (1.0 - psi) * (xi - psi - 0.5),                      // N1: bottom corner
+                    2.0 * eta * (1.0 - psi) * (eta - psi - 0.5),                    // N2: bottom corner
+                    2.0 * (1.0 - xi - eta) * psi * (psi - xi - eta - 0.5),          // N3: top corner
+                    2.0 * xi * psi * (xi + psi - 1.5),                            // N4: top corner
+                    2.0 * eta * psi * (eta + psi - 1.5),                          // N5: top corner
                     // Mid-edge nodes on faces
-                    4.0 * xi[6] * (1.0 - xi[6] - eta[6]) * (1.0 - psi[6]),                        // N6: bottom face
-                    4.0 * xi[7] * eta[7] * (1.0 - psi[7]),                                   // N7: bottom face
-                    4.0 * (1.0 - xi[8] - eta[8]) * eta[8] * (1.0 - psi[8]),                       // N8: bottom face
-                    4.0 * xi[9] * (1.0 - xi[9] - eta[9]) * psi[9],                              // N9: top face
-                    4.0 * xi[10] * eta[10] * psi[10],                                         // N10: top face
-                    4.0 * (1.0 - xi[11] - eta[11]) * eta[11] * psi[11],                             // N11: top face
+                    4.0 * xi * (1.0 - xi - eta) * (1.0 - psi),                        // N6: bottom face
+                    4.0 * xi * eta * (1.0 - psi),                                   // N7: bottom face
+                    4.0 * (1.0 - xi - eta) * eta * (1.0 - psi),                       // N8: bottom face
+                    4.0 * xi * (1.0 - xi - eta) * psi,                              // N9: top face
+                    4.0 * xi * eta * psi,                                         // N10: top face
+                    4.0 * (1.0 - xi - eta) * eta * psi,                             // N11: top face
                     // Vertical mid-edge nodes
-                    4.0 * psi[12] * (1.0 - xi[12] - eta[12]) * (1.0 - psi[12]),                       // N12: vertical
-                    4.0 * psi[13] * xi[13] * (1.0 - psi[13]),                                   // N13: vertical
-                    4.0 * psi[14] * eta[14] * (1.0 - psi[14]),                                  // N14: vertical
+                    4.0 * psi * (1.0 - xi - eta) * (1.0 - psi),                       // N12: vertical
+                    4.0 * psi * xi * (1.0 - psi),                                   // N13: vertical
+                    4.0 * psi * eta * (1.0 - psi),                                  // N14: vertical
                 ];
                 let derivatives = vec![
                     // Corner nodes
-                    vec![2.0 * (1.0 - psi[0]) * (-1.5 + 2.0 * xi[0] + 2.0 * eta[0] + psi[0]), 2.0 * (1.0 - psi[0]) * (-1.5 + 2.0 * xi[0] + 2.0 * eta[0] + psi[0]), 2.0 * (1.0 - xi[0] - eta[0]) * (-1.5 + xi[0] + eta[0] + 2.0 * psi[0])], // dN0
-                    vec![2.0 * (1.0 - psi[1]) * (-0.5 + 2.0 * xi[1] - psi[1]), 0.0, 2.0 * xi[1] * (-0.5 - xi[1] + 2.0 * psi[1])], // dN1
-                    vec![0.0, 2.0 * (1.0 - psi[2]) * (-0.5 + 2.0 * eta[2] - psi[2]), 2.0 * eta[2] * (-0.5 - eta[2] + 2.0 * psi[2])], // dN2
-                    vec![2.0 * psi[3] * (-0.5 + 2.0 * xi[3] + 2.0 * eta[3] - psi[3]), 2.0 * psi[3] * (-0.5 + 2.0 * xi[3] + 2.0 * eta[3] - psi[3]), 2.0 * (1.0 - xi[3] - eta[3]) * (-0.5 - xi[3] - eta[3] + 2.0 * psi[3])], // dN3
-                    vec![2.0 * psi[4] * (-1.5 + 2.0 * xi[4] + psi[4]), 0.0, 2.0 * xi[4] * (-1.5 + xi[4] + 2.0 * psi[4])], // dN4
-                    vec![0.0, 2.0 * psi[5] * (-1.5 + 2.0 * eta[5] + psi[5]), 2.0 * eta[5] * (-1.5 + eta[5] + 2.0 * psi[5])], // dN5
+                    vec![2.0 * (1.0 - psi) * (-1.5 + 2.0 * xi + 2.0 * eta + psi), 2.0 * (1.0 - psi) * (-1.5 + 2.0 * xi + 2.0 * eta + psi), 2.0 * (1.0 - xi - eta) * (-1.5 + xi + eta + 2.0 * psi)], // dN0
+                    vec![2.0 * (1.0 - psi) * (-0.5 + 2.0 * xi + 2.0 * eta - psi), 0.0, 2.0 * xi * (-0.5 - xi + 2.0 * psi)], // dN1
+                    vec![0.0, 2.0 * (1.0 - psi) * (-0.5 + 2.0 * eta - psi), 2.0 * eta * (-0.5 - eta + 2.0 * psi)], // dN2
+                    vec![2.0 * psi * (-0.5 + 2.0 * xi + 2.0 * eta - psi), 2.0 * psi * (-0.5 + 2.0 * xi + 2.0 * eta - psi), 2.0 * (1.0 - xi - eta) * (-0.5 - xi - eta + 2.0 * psi)], // dN3
+                    vec![2.0 * psi * (-1.5 + 2.0 * xi + psi), 0.0, 2.0 * xi * (-1.5 + xi + 2.0 * psi)], // dN4
+                    vec![0.0, 2.0 * psi * (-1.5 + 2.0 * eta + psi), 2.0 * eta * (-1.5 + eta + 2.0 * psi)], // dN5
                     // Mid-edge derivatives
-                    vec![4.0 * (1.0 - psi[6]) * (1.0 - 2.0 * xi[6] - eta[6]), -4.0 * (1.0 - psi[6]) * xi[6], -4.0 * xi[6] * (1.0 - xi[6] - eta[6])], // dN6
-                    vec![4.0 * (1.0 - psi[7]) * eta[7], 4.0 * (1.0 - psi[7]) * xi[7], -4.0 * xi[7] * eta[7]], // dN7
-                    vec![-4.0 * (1.0 - psi[8]) * eta[8], 4.0 * (1.0 - psi[8]) * (1.0 - xi[8] - 2.0 * eta[8]), -4.0 * eta[8] * (1.0 - xi[8] - eta[8])], // dN8
-                    vec![4.0 * psi[9] * (1.0 - 2.0 * xi[9] - eta[9]), -4.0 * xi[9] * psi[9], 4.0 * xi[9] * (1.0 - xi[9] - eta[9])], // dN9
-                    vec![4.0 * eta[10] * psi[10], 4.0 * xi[10] * psi[10], 4.0 * xi[10] * eta[10]], // dN10
-                    vec![-4.0 * eta[11] * psi[11], 4.0 * psi[11] * (1.0 - xi[11] - 2.0 * eta[11]), 4.0 * eta[11] * (1.0 - xi[11] - eta[11])], // dN11
+                    vec![4.0 * (1.0 - psi) * (1.0 - 2.0 * xi - eta), -4.0 * (1.0 - psi) * xi, -4.0 * xi * (1.0 - xi - eta)], // dN6
+                    vec![4.0 * (1.0 - psi) * eta, 4.0 * (1.0 - psi) * xi, -4.0 * xi * eta], // dN7
+                    vec![-4.0 * (1.0 - psi) * eta, 4.0 * (1.0 - psi) * (1.0 - xi - 2.0 * eta), -4.0 * eta * (1.0 - xi - eta)], // dN8
+                    vec![4.0 * psi * (1.0 - 2.0 * xi - eta), -4.0 * xi * psi, 4.0 * xi * (1.0 - xi - eta)], // dN9
+                    vec![4.0 * eta * psi, 4.0 * xi * psi, 4.0 * xi * eta], // dN10
+                    vec![-4.0 * eta * psi, 4.0 * psi * (1.0 - xi - 2.0 * eta), 4.0 * eta * (1.0 - xi - eta)], // dN11
                     // Vertical mid-edge derivatives
-                    vec![-4.0 * psi[12] * (1.0 - psi[12]), -4.0 * psi[12] * (1.0 - psi[12]), 4.0 * (1.0 - 2.0 * psi[12]) * (1.0 - xi[12] - eta[12])], // dN12
-                    vec![4.0 * psi[13] * (1.0 - psi[13]), 0.0, 4.0 * (1.0 - 2.0 * psi[13]) * xi[13]], // dN13
-                    vec![0.0, 4.0 * psi[14] * (1.0 - psi[14]), 4.0 * (1.0 - 2.0 * psi[14]) * eta[14]], // dN14
+                    vec![-4.0 * psi * (1.0 - psi), -4.0 * psi * (1.0 - psi), 4.0 * (1.0 - 2.0 * psi) * (1.0 - xi - eta)], // dN12
+                    vec![4.0 * psi * (1.0 - psi), 0.0, 4.0 * (1.0 - 2.0 * psi) * xi], // dN13
+                    vec![0.0, 4.0 * psi * (1.0 - psi), 4.0 * (1.0 - 2.0 * psi) * eta], // dN14
                 ];
 
                 Ok(ShapeFunction {values, derivatives})
@@ -692,49 +583,37 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 18;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
-                let psi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[2])
-                    .collect();
+                let xi = 0.1127;
+                let eta = 0.5;
+                let psi = 0.8873;
 
-                let xim: Vec<f64> = xi.iter()
-                    .map(|&x| 2.0 * (x - 0.5))
-                    .collect();
-                let etam: Vec<f64> = eta.iter()
-                    .map(|&e| 2.0 * (e - 0.5))
-                    .collect();
-                let psim: Vec<f64> = psi.iter()
-                    .map(|&p| 2.0 * (p - 0.5))
-                    .collect();
+                let xim = 2.0 * (xi - 0.5);
+                let etam = 2.0 * (eta - 0.5);
+                let psim = 2.0 * (psi - 0.5);
 
                 let values = vec![
                     // Corner nodes
-                    -0.25 * (xim[0] + etam[0]) * (xim[0] + etam[0] + 1.0) * psim[0] * (1.0 - psim[0]),    // N0: bottom corner
-                    -0.25 * xim[1] * (xim[1] + 1.0) * psim[1] * (1.0 - psim[1]),                    // N1: bottom corner
-                    -0.25 * etam[2] * (1.0 + etam[2]) * psim[2] * (1.0 - psim[2]),                  // N2: bottom corner
-                    0.25 * (xim[3] + etam[3]) * (xim[3] + etam[3] + 1.0) * psim[3] * (1.0 + psim[3]),     // N3: top corner
-                    0.25 * xim[4] * (xim[4] + 1.0) * psim[4] * (1.0 + psim[4]),                     // N4: top corner
-                    0.25 * etam[5] * (1.0 + etam[5]) * psim[5] * (1.0 + psim[5]),                   // N5: top corner
+                    -0.25 * (xim + etam) * (xim + etam + 1.0) * psim * (1.0 - psim),    // N0: bottom corner
+                    -0.25 * xim * (xim + 1.0) * psim * (1.0 - psim),                    // N1: bottom corner
+                    -0.25 * etam * (1.0 + etam) * psim * (1.0 - psim),                  // N2: bottom corner
+                    0.25 * (xim + etam) * (xim + etam + 1.0) * psim * (1.0 + psim),     // N3: top corner
+                    0.25 * xim * (xim + 1.0) * psim * (1.0 + psim),                     // N4: top corner
+                    0.25 * etam * (1.0 + etam) * psim * (1.0 + psim),                   // N5: top corner
                     // Mid-edge nodes on faces
-                    (xim[6] + 1.0) * (xim[6] + etam[6]) * 0.5 * psim[6] * (1.0 - psim[6]),                 // N6: bottom face
-                    -(xim[7] + 1.0) * (etam[7] + 1.0) * 0.5 * psim[7] * (1.0 - psim[7]),                  // N7: bottom face
-                    (etam[8] + 1.0) * (xim[8] + etam[8]) * 0.5 * psim[8] * (1.0 - psim[8]),                // N8: bottom face
-                    -(xim[9] + 1.0) * (xim[9] + etam[9]) * 0.5 * psim[9] * (1.0 + psim[9]),                // N9: top face
-                    (xim[10] + 1.0) * (etam[10] + 1.0) * 0.5 * psim[10] * (1.0 + psim[10]),                   // N10: top face
-                    -(etam[11] + 1.0) * (xim[11] + etam[11]) * 0.5 * psim[11] * (1.0 + psim[11]),               // N11: top face
+                    (xim + 1.0) * (xim + etam) * 0.5 * psim * (1.0 - psim),                 // N6: bottom face
+                    -(xim + 1.0) * (etam + 1.0) * 0.5 * psim * (1.0 - psim),                  // N7: bottom face
+                    (etam + 1.0) * (xim + etam) * 0.5 * psim * (1.0 - psim),                // N8: bottom face
+                    -(xim + 1.0) * (xim + etam) * 0.5 * psim * (1.0 + psim),                // N9: top face
+                    (xim + 1.0) * (etam + 1.0) * 0.5 * psim * (1.0 + psim),                   // N10: top face
+                    -(etam + 1.0) * (xim + etam) * 0.5 * psim * (1.0 + psim),               // N11: top face
                     // Vertical mid-edge nodes
-                    0.5 * (xim[12] + etam[12]) * (xim[12] + etam[12] + 1.0) * (1.0 + psim[12]) * (1.0 - psim[12]),    // N12: vertical
-                    0.5 * xim[13] * (xim[13] + 1.0) * (1.0 + psim[13]) * (1.0 - psim[13]),                    // N13: vertical
-                    0.5 * etam[14] * (1.0 + etam[14]) * (1.0 + psim[14]) * (1.0 - psim[14]),                  // N14: vertical
+                    0.5 * (xim + etam) * (xim + etam + 1.0) * (1.0 + psim) * (1.0 - psim),    // N12: vertical
+                    0.5 * xim * (xim + 1.0) * (1.0 + psim) * (1.0 - psim),                    // N13: vertical
+                    0.5 * etam * (1.0 + etam) * (1.0 + psim) * (1.0 - psim),                  // N14: vertical
                     // Mid-face nodes
-                    -(xim[15] + 1.0)*(xim[15] + etam[15]) * (1.0 + psim[15]) * (1.0 - psim[15]),                  // N15: mid-face
-                    (xim[16] + 1.0)*(etam[16] + 1.0) * (1.0 + psim[16]) * (1.0 - psim[16]),                   // N16: mid-face
-                    -(etam[17] + 1.0)*(xim[17] + etam[17]) * (1.0 + psim[17]) * (1.0 - psim[17]),                 // N17: mid-face
+                    -(xim + 1.0)*(xim + etam) * (1.0 + psim) * (1.0 - psim),                  // N15: mid-face
+                    (xim + 1.0)*(etam + 1.0) * (1.0 + psim) * (1.0 - psim),                   // N16: mid-face
+                    -(etam + 1.0)*(xim + etam) * (1.0 + psim) * (1.0 - psim),                 // N17: mid-face
                 ];
                 let derivatives = vec![
                     // we compute derivatives in [-1; 1] but we need them in [ 0; 1]
@@ -742,63 +621,63 @@ impl GeometricAnalysis {
                             // derivs[i] *= 2;
 
                     // Corner derivatives
-                    vec![2.0 * (-0.25 * (2.0 * xim[0] + 2.0 * etam[0] + 1.0) * psim[0] * (1.0 - psim[0])), 
-                        2.0 * (-0.25 * (2.0 * etam[0] + 2.0 * xim[0] + 1.0) * psim[0] * (1.0 - psim[0])), 
-                        2.0 * (-0.25 * (xim[0] + etam[0]) * (xim[0] + etam[0] + 1.0) * (1.0 - 2.0 * psim[0]))],   // dN0
-                    vec![2.0 * (-0.25 * (2.0 * xim[1] + 1.0) * psim[1] * (1.0 - psim[1])), 
+                    vec![2.0 * (-0.25 * (2.0 * xim + 2.0 * etam + 1.0) * psim * (1.0 - psim)), 
+                        2.0 * (-0.25 * (2.0 * etam + 2.0 * xim + 1.0) * psim * (1.0 - psim)), 
+                        2.0 * (-0.25 * (xim + etam) * (xim + etam + 1.0) * (1.0 - 2.0 * psim))],   // dN0
+                    vec![2.0 * (-0.25 * (2.0 * xim + 1.0) * psim * (1.0 - psim)), 
                         2.0 * 0.0, 
-                        2.0 * (-0.25 * xim[1] * (xim[1] + 1.0) * (1.0 - 2.0 * psim[1]))],                   // dN1
+                        2.0 * (-0.25 * xim * (xim + 1.0) * (1.0 - 2.0 * psim))],                   // dN1
                     vec![2.0 * 0.0, 
-                        2.0 * (-0.25 * (2.0 * etam[2] + 1.0) * psim[2] * (1.0 - psim[2])), 
-                        2.0 * (-0.25 * etam[2] * (1.0 + etam[2]) * (1.0 - 2.0 * psim[2]))],                 // dN2
-                    vec![2.0 * (0.25 * (2.0 * xim[3] + 2.0 * etam[3] + 1.0) * psim[3] * (1.0 + psim[3])), 
-                        2.0 * (0.25 * (2.0 * etam[3] + 2.0 * xim[3] + 1.0) * psim[3] * (1.0 + psim[3])), 
-                        2.0 * (0.25 * (xim[3] + etam[3]) * (xim[3] + etam[3] + 1.0) * (1.0 + 2.0 * psim[3]))],    // dN3
-                    vec![2.0 * (0.25 * (2.0 * xim[4] + 1.0) * psim[4] * (1.0 + psim[4])), 
+                        2.0 * (-0.25 * (2.0 * etam + 1.0) * psim * (1.0 - psim)), 
+                        2.0 * (-0.25 * etam * (1.0 + etam) * (1.0 - 2.0 * psim))],                 // dN2
+                    vec![2.0 * (0.25 * (2.0 * xim + 2.0 * etam + 1.0) * psim * (1.0 + psim)), 
+                        2.0 * (0.25 * (2.0 * etam + 2.0 * xim + 1.0) * psim * (1.0 + psim)), 
+                        2.0 * (0.25 * (xim + etam) * (xim + etam + 1.0) * (1.0 + 2.0 * psim))],    // dN3
+                    vec![2.0 * (0.25 * (2.0 * xim + 1.0) * psim * (1.0 + psim)), 
                         2.0 * 0.0, 
-                        2.0 * (0.25 * xim[4] * (xim[4] + 1.0) * (1.0 + 2.0 * psim[4]))],                    // dN4
+                        2.0 * (0.25 * xim * (xim + 1.0) * (1.0 + 2.0 * psim))],                    // dN4
                     vec![2.0 * 0.0, 
-                        2.0 * (0.25 * (2.0 * etam[5] + 1.0) * psim[5] * (1.0 + psim[5])), 
-                        2.0 * (0.25 * etam[5] * (1.0 + etam[5]) * (1.0 + 2.0 * psim[5]))],                  // dN5
+                        2.0 * (0.25 * (2.0 * etam + 1.0) * psim * (1.0 + psim)), 
+                        2.0 * (0.25 * etam * (1.0 + etam) * (1.0 + 2.0 * psim))],                  // dN5
                     // Face mid-edge derivatives
-                    vec![2.0 * ((2.0 * xim[6] + etam[6] + 1.0) * 0.5 * psim[6] * (1.0 - psim[6])), 
-                        2.0 * ((xim[6] + 1.0) * 0.5 * psim[6] * (1.0 - psim[6])), 
-                        2.0 * ((xim[6] + 1.0) * (xim[6] + etam[6]) *  0.5 * (1.0 - 2.0 * psim[6]))],           // dN6
-                    vec![2.0 * (-(etam[7] + 1.0) * 0.5 * psim[7] * (1.0 - psim[7])), 
-                        2.0 * (-(xim[7] + 1.0) * 0.5 * psim[7] * (1.0 - psim[7])), 
-                        2.0 * (-(xim[7] + 1.0) * (etam[7] + 1.0) *  0.5 * (1.0 - 2.0 * psim[7]))],          // dN7
-                    vec![2.0 * ((etam[8] + 1.0) * 0.5 * psim[8] * (1.0 - psim[8])), 
-                        2.0 * ((2.0 * etam[8] + xim[8] + 1.0) * 0.5 * psim[8] * (1.0 - psim[8])), 
-                        2.0 * ((etam[8] + 1.0) * (xim[8] + etam[8]) *  0.5 * (1.0 - 2.0 * psim[8]))],          // dN8
-                    vec![2.0 * (-(2.0 * xim[9] + etam[9] + 1.0) * 0.5 * psim[9] * (1.0 + psim[9])), 
-                        2.0 * (-(xim[9] + 1.0) * 0.5 * psim[9] * (1.0 + psim[9])), 
-                        2.0 * (-(xim[9] + 1.0) * (xim[9] + etam[9]) *  0.5 * (1.0 + 2.0 * psim[9]))],          // dN9
-                    vec![2.0 * ((etam[10] + 1.0) * 0.5 * psim[10] * (1.0 + psim[10])), 
-                        2.0 * ((xim[10] + 1.0) * 0.5 * psim[10] * (1.0 + psim[10])), 
-                        2.0 * ((xim[10] + 1.0) * (etam[10] + 1.0) *  0.5 * (1.0 + 2.0 * psim[10]))],           // dN10
-                    vec![2.0 * (-(etam[11] + 1.0) * 0.5 * psim[11] * (1.0 + psim[11])), 
-                        2.0 * (-(2.0 * etam[11] + xim[11] + 1.0) * 0.5 * psim[11] * (1.0 + psim[11])), 
-                        2.0 * (-(etam[11] + 1.0) * (xim[11] + etam[11]) *  0.5 * (1.0 + 2.0 * psim[11]))],         // dN11
+                    vec![2.0 * ((2.0 * xim + etam + 1.0) * 0.5 * psim * (1.0 - psim)), 
+                        2.0 * ((xim + 1.0) * 0.5 * psim * (1.0 - psim)), 
+                        2.0 * ((xim + 1.0) * (xim + etam) *  0.5 * (1.0 - 2.0 * psim))],           // dN6
+                    vec![2.0 * (-(etam + 1.0) * 0.5 * psim * (1.0 - psim)), 
+                        2.0 * (-(xim + 1.0) * 0.5 * psim * (1.0 - psim)), 
+                        2.0 * (-(xim + 1.0) * (etam + 1.0) *  0.5 * (1.0 - 2.0 * psim))],          // dN7
+                    vec![2.0 * ((etam + 1.0) * 0.5 * psim * (1.0 - psim)), 
+                        2.0 * ((2.0 * etam + xim + 1.0) * 0.5 * psim * (1.0 - psim)), 
+                        2.0 * ((etam + 1.0) * (xim + etam) *  0.5 * (1.0 - 2.0 * psim))],          // dN8
+                    vec![2.0 * (-(2.0 * xim + etam + 1.0) * 0.5 * psim * (1.0 + psim)), 
+                        2.0 * (-(xim + 1.0) * 0.5 * psim * (1.0 + psim)), 
+                        2.0 * (-(xim + 1.0) * (xim + etam) *  0.5 * (1.0 + 2.0 * psim))],          // dN9
+                    vec![2.0 * ((etam + 1.0) * 0.5 * psim * (1.0 + psim)), 
+                        2.0 * ((xim + 1.0) * 0.5 * psim * (1.0 + psim)), 
+                        2.0 * ((xim + 1.0) * (etam + 1.0) *  0.5 * (1.0 + 2.0 * psim))],           // dN10
+                    vec![2.0 * (-(etam + 1.0) * 0.5 * psim * (1.0 + psim)), 
+                        2.0 * (-(2.0 * etam + xim + 1.0) * 0.5 * psim * (1.0 + psim)), 
+                        2.0 * (-(etam + 1.0) * (xim + etam) *  0.5 * (1.0 + 2.0 * psim))],         // dN11
                     // Vertical mid-edge derivatives
-                    vec![2.0 * (0.5 * (2.0 * xim[12] + 2.0 * etam[12] + 1.0) * (1.0 + psim[12]) * (1.0 - psim[12])),  
-                        2.0 * (0.5 * (2.0 * etam[12] + 2.0 * xim[12] + 1.0) * (1.0 + psim[12]) * (1.0 - psim[12])), 
-                        2.0 * (0.5 * (xim[12] + etam[12]) * (xim[12] + etam[12] + 1.0) * (-2.0 * psim[12]))],          // dN12
-                    vec![2.0 * (0.5 * (2.0 * xim[13] + 1.0) * (1.0 + psim[13]) * (1.0 - psim[13])), 
+                    vec![2.0 * (0.5 * (2.0 * xim + 2.0 * etam + 1.0) * (1.0 + psim) * (1.0 - psim)),  
+                        2.0 * (0.5 * (2.0 * etam + 2.0 * xim + 1.0) * (1.0 + psim) * (1.0 - psim)), 
+                        2.0 * (0.5 * (xim + etam) * (xim + etam + 1.0) * (-2.0 * psim))],          // dN12
+                    vec![2.0 * (0.5 * (2.0 * xim + 1.0) * (1.0 + psim) * (1.0 - psim)), 
                         2.0 * 0.0, 
-                        2.0 * (0.5 * xim[13] * (xim[13] + 1.0) * (-2.0 * psim[13]))],                          // dN13
+                        2.0 * (0.5 * xim * (xim + 1.0) * (-2.0 * psim))],                          // dN13
                     vec![2.0 * 0.0, 
-                        2.0 * (0.5 * (2.0 * etam[14] + 1.0) * (1.0 + psim[14]) * (1.0 - psim[14])), 
-                        2.0 * (0.5 * etam[14] * (1.0 + etam[14]) * (-2.0 * psim[14]))],                        // dN14
+                        2.0 * (0.5 * (2.0 * etam + 1.0) * (1.0 + psim) * (1.0 - psim)), 
+                        2.0 * (0.5 * etam * (1.0 + etam) * (-2.0 * psim))],                        // dN14
                     // Mid-face derivatives
-                    vec![2.0 * (-(2.0 * xim[15] + etam[15] + 1.0) * (1.0 + psim[15]) * (1.0 - psim[15])), 
-                        2.0 * (-(xim[15] + 1.0) * (1.0 + psim[15]) * (1.0 - psim[15])), 
-                        2.0 * (-(xim[15] + 1.0) * (xim[15] + etam[15]) * (-2.0 * psim[15]))],                      // dN15
-                    vec![2.0 * ((etam[16] + 1.0) * (1.0 + psim[16]) * (1.0 - psim[16])), 
-                        2.0 * ((xim[16] + 1.0) * (1.0 + psim[16]) * (1.0 - psim[16])), 
-                        2.0 * ((xim[16] + 1.0) * (etam[16] + 1.0) * (-2.0 * psim[16]))],                       // dN16
-                    vec![2.0 * (-(etam[17] + 1.0) * (1.0 + psim[17]) * (1.0 - psim[17])), 
-                        2.0 * (-(2.0 * etam[17] + xim[17] + 1.0) * (1.0 + psim[17]) * (1.0 - psim[17])), 
-                        2.0 * (-(etam[17] + 1.0) * (xim[17] + etam[17]) * (-2.0 * psim[17]))],                     // dN17
+                    vec![2.0 * (-(2.0 * xim + etam + 1.0) * (1.0 + psim) * (1.0 - psim)), 
+                        2.0 * (-(xim + 1.0) * (1.0 + psim) * (1.0 - psim)), 
+                        2.0 * (-(xim + 1.0) * (xim + etam) * (-2.0 * psim))],                      // dN15
+                    vec![2.0 * ((etam + 1.0) * (1.0 + psim) * (1.0 - psim)), 
+                        2.0 * ((xim + 1.0) * (1.0 + psim) * (1.0 - psim)), 
+                        2.0 * ((xim + 1.0) * (etam + 1.0) * (-2.0 * psim))],                       // dN16
+                    vec![2.0 * (-(etam + 1.0) * (1.0 + psim) * (1.0 - psim)), 
+                        2.0 * (-(2.0 * etam + xim + 1.0) * (1.0 + psim) * (1.0 - psim)), 
+                        2.0 * (-(etam + 1.0) * (xim + etam) * (-2.0 * psim))],                     // dN17
                 ];
 
                 Ok(ShapeFunction {values, derivatives})
@@ -817,45 +696,33 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 8;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
-                let psi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[2])
-                    .collect();
+                let xi = 0.2113;
+                let eta = 0.2113;
+                let psi = 0.7887;
 
-                let xim: Vec<f64> = xi.iter()
-                    .map(|&x| 1.0 - x)
-                    .collect();
-                let etam: Vec<f64> = eta.iter()
-                    .map(|&e| 1.0 - e)
-                    .collect();
-                let psim: Vec<f64> = psi.iter()
-                    .map(|&p| 1.0 - p)
-                    .collect();
+                let xim = 1.0 - xi;
+                let etam = 1.0 - eta;
+                let psim = 1.0 - psi;
 
                 let values = vec![
-                    xim[0] * etam[0] * psim[0],      // N0: 
-                    xi[1] * etam[1] * psim[1],       // N1: 
-                    xi[2] * eta[2] * psim[2],        // N2: 
-                    xim[3] * eta[3] * psim[3],       // N3: 
-                    xim[4] * etam[4] * psi[4],       // N4: 
-                    xi[5] * etam[5] * psi[5],        // N5: 
-                    xi[6] * eta[6] * psi[6],         // N6: 
-                    xim[7] * eta[7] * psi[7],        // N7: 
+                    xim * etam * psim,      // N0: 
+                    xi * etam * psim,       // N1: 
+                    xi * eta * psim,        // N2: 
+                    xim * eta * psim,       // N3: 
+                    xim * etam * psi,       // N4: 
+                    xi * etam * psi,        // N5: 
+                    xi * eta * psi,         // N6: 
+                    xim * eta * psi,       // N7: 
                 ];
                 let derivatives = vec![
-                    vec![-etam[0] * psim[0], -xim[0] * psim[0], -xim[0] * etam[0]], // dN0
-                    vec![etam[1] * psim[1], -xi[1] * psim[1], -xi[1] * etam[1]], // dN1
-                    vec![eta[2] * psim[2], xi[2] * psim[2], -xi[2] * eta[2]], // dN2
-                    vec![-eta[3] * psim[3], xim[3] * psim[3], -xim[3] * eta[3]], // dN3
-                    vec![-etam[4] * psi[4], -xim[4] * psi[4], xim[4] * etam[4]], // dN4
-                    vec![etam[5] * psi[5], -xi[5] * psi[5], xi[5] * etam[5]], // dN5
-                    vec![eta[6] * psi[6], xi[6] * psi[6], xi[6] * eta[6]], // dN6
-                    vec![-eta[7] * psi[7], xim[7] * psi[7], xim[7] * eta[7]], // dN7
+                    vec![-etam * psim, -xim * psim, -xim * etam], // dN0
+                    vec![etam * psim, -xi * psim, -xi * etam], // dN1
+                    vec![eta * psim, xi * psim, -xi * eta], // dN2
+                    vec![-eta * psim, xim * psim, -xim * eta], // dN3
+                    vec![-etam * psi, -xim * psi, xim * etam], // dN4
+                    vec![etam * psi, -xi * psi, xi * etam], // dN5
+                    vec![eta * psi, xi * psi, xi * eta], // dN6
+                    vec![-eta * psi, xim * psi, xim * eta], // dN7
                 ];
 
                 Ok(ShapeFunction {values, derivatives})
@@ -888,116 +755,86 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 20;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
-                let psi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[2])
-                    .collect();
+                let xi = 0.1127;
+                let eta = 0.5;
+                let psi = 0.8873;
 
-                let xik: Vec<f64> = xi.iter()
-                    .map(|&x| 2.0 * (x - 0.5))
-                    .collect();
-                let etak: Vec<f64> = eta.iter()
-                    .map(|&e| 2.0 * (e - 0.5))
-                    .collect();
-                let psik: Vec<f64> = psi.iter()
-                    .map(|&p| 2.0 * (p - 0.5))
-                    .collect();
+                let xik = 2.0 * (xi - 0.5);
+                let etak = 2.0 * (eta - 0.5);
+                let psik = 2.0 * (psi - 0.5);
 
-                let xim: Vec<f64> = xik.iter()
-                    .map(|&x2| 1.0 - x2)
-                    .collect();
-                let xip: Vec<f64> = xik.iter()
-                    .map(|&x2| 1.0 + x2)
-                    .collect();
-                let etam: Vec<f64> = etak.iter()
-                    .map(|&e2| 1.0 - e2)
-                    .collect();
-                let etap: Vec<f64> = etak.iter()
-                    .map(|&e2| 1.0 + e2)
-                    .collect();
-                let psim: Vec<f64> = psik.iter()
-                    .map(|&p2| 1.0 - p2)
-                    .collect();
-                let psip: Vec<f64> = psik.iter()
-                    .map(|&p2| 1.0 + p2)
-                    .collect();
+                let xim = 1.0 - xik;
+                let xip = 1.0 + xik;
+                let etam = 1.0 - etak;
+                let etap = 1.0 + etak;
+                let psim = 1.0 - psik;
+                let psip = 1.0 + psik;
 
-                let xi2: Vec<f64> = xik.iter()
-                    .map(|&x2| 1.0 - x2 * x2)
-                    .collect();
-                let eta2: Vec<f64> = etak.iter()
-                    .map(|&e2| 1.0 - e2 * e2)
-                    .collect();
-                let psi2: Vec<f64> = psik.iter()
-                    .map(|&p2| 1.0 - p2 * p2)
-                    .collect();
+                let xi2 = 1.0 - xik * xik;
+                let eta2 = 1.0 - etak * etak;
+                let psi2 = 1.0 - psik * psik;
 
                 let values = vec![
                     // Corner nodes
-                    0.125 * xim[0] * etam[0] * psim[0] * (-xik[0] - etak[0] - psik[0] - 2.0),     // N0: 
-                    0.125 * xip[1] * etam[1] * psim[1] * (xik[1] - etak[1] - psik[1] - 2.0),      // N1: 
-                    0.125 * xip[2] * etap[2] * psim[2] * (xik[2] + etak[2] - psik[2] - 2.0),      // N2: 
-                    0.125 * xim[3] * etap[3] * psim[3] * (-xik[3] + etak[3] - psik[3] - 2.0),     // N3: 
-                    0.125 * xim[4] * etam[4] * psip[4] * (-xik[4] - etak[4] + psik[4] - 2.0),     // N4: 
-                    0.125 * xip[5] * etam[5] * psip[5] * (xik[5] - etak[5] + psik[5] - 2.0),      // N5: 
-                    0.125 * xip[6] * etap[6] * psip[6] * (xik[6] + etak[6] + psik[6] - 2.0),      // N6: 
-                    0.125 * xim[7] * etap[7] * psip[7] * (-xik[7] + etak[7] + psik[7] - 2.0),     // N7: 
+                    0.125 * xim * etam * psim * (-xik - etak - psik - 2.0),     // N0: 
+                    0.125 * xip * etam * psim * (xik - etak - psik - 2.0),      // N1: 
+                    0.125 * xip * etap * psim * (xik + etak - psik - 2.0),      // N2: 
+                    0.125 * xim * etap * psim * (-xik + etak - psik - 2.0),     // N3: 
+                    0.125 * xim * etam * psip * (-xik - etak + psik - 2.0),     // N4: 
+                    0.125 * xip * etam * psip * (xik - etak + psik - 2.0),      // N5: 
+                    0.125 * xip * etap * psip * (xik + etak + psik - 2.0),      // N6: 
+                    0.125 * xim * etap * psip * (-xik + etak + psik - 2.0),     // N7: 
                     // Mid-edge nodes
-                    0.25 * xi2[8] * etam[8] * psim[8],       // N8:  
-                    0.25 * eta2[9] * xip[9] * psim[9],       // N9:
-                    0.25 * xi2[10] * etap[10] * psim[10],       // N10:
-                    0.25 * eta2[11] * xim[11] * psim[11],       // N11:
-                    0.25 * xi2[12] * etam[12] * psip[12],       // N12:
-                    0.25 * eta2[13] * xip[13] * psip[13],       // N13:
-                    0.25 * xi2[14] * etap[14] * psip[14],       // N14:
-                    0.25 * eta2[15] * xim[15] * psip[15],       // N15:
-                    0.25 * psi2[16] * xim[16] * etam[16],       // N16:
-                    0.25 * psi2[17] * xip[17] * etam[17],       // N17:
-                    0.25 * psi2[18] * xip[18] * etap[18],       // N18:
-                    0.25 * psi2[19] * xim[19] * etap[19],       // N19:
+                    0.25 * xi2 * etam * psim,       // N8:  
+                    0.25 * eta2 * xip * psim,       // N9:
+                    0.25 * xi2 * etap * psim,       // N10:
+                    0.25 * eta2 * xim * psim,       // N11:
+                    0.25 * xi2 * etam * psip,       // N12:
+                    0.25 * eta2 * xip * psip,       // N13:
+                    0.25 * xi2 * etap * psip,       // N14:
+                    0.25 * eta2 * xim * psip,       // N15:
+                    0.25 * psi2 * xim * etam,       // N16:
+                    0.25 * psi2 * xip * etam,       // N17:
+                    0.25 * psi2 * xip * etap,       // N18:
+                    0.25 * psi2 * xim * etap,       // N19:
                 ];
                 let derivatives = vec![
-                    vec![2.0 * (-0.125 * (etam[0] * psim[0] - 2.0 * xik[0] * etam[0] * psim[0] - etak[0] * etam[0] * psim[0] - psik[0] * etam[0] * psim[0] - 2.0 * etam[0] * psim[0])), 
-                        2.0 * (-0.125 * (xim[0] * psim[0] - 2.0 * etak[0] * xim[0] * psim[0] - xik[0] * xim[0] * psim[0] - psik[0] * xim[0] * psim[0] - 2.0 * xim[0] * psim[0])), 
-                        2.0 * (-0.125 * (xim[0] * etam[0] - 2.0 * psik[0] * xim[0] * etam[0] - xik[0] * xim[0] * etam[0] - etak[0] * xim[0] * etam[0] - 2.0 * xim[0] * etam[0]))],            // dN0
-                    vec![2.0 * (0.125 * (etam[1] * psim[1] + 2.0 * xik[1] * etam[1] * psim[1] - etak[1] * etam[1] * psim[1] - psik[1] * etam[1] * psim[1] - 2.0 * etam[1] * psim[1])), 
-                        2.0 * (-0.125 * (xip[1] * psim[1] - 2.0 * etak[1] * xip[1] * psim[1] + xik[1] * xip[1] * psim[1] - psik[1] * xip[1] * psim[1] - 2.0 * xip[1] * psim[1])), 
-                        2.0 * (-0.125 * (xip[1] * etam[1] - 2.0 * psik[1] * xip[1] * etam[1] + xik[1] * xip[1] * etam[1] - etak[1] * xip[1] * etam[1] - 2.0 * xip[1] * etam[1]))],            // dN1
-                    vec![2.0 * (0.125 * (etap[2] * psim[2] + 2.0 * xik[2] * etap[2] * psim[2] + etak[2] * etap[2] * psim[2] - psik[2] * etap[2] * psim[2] - 2.0 * etap[2] * psim[2])), 
-                        2.0 * (0.125 * (xip[2] * psim[2] + 2.0 * etak[2] * xip[2] * psim[2] + xik[2] * xip[2] * psim[2] - psik[2] * xip[2] * psim[2] - 2.0 * xip[2] * psim[2])), 
-                        2.0 * (-0.125 * (xip[2] * etap[2] - 2.0 * psik[2] * xip[2] * etap[2] + xik[2] * xip[2] * etap[2] + etak[2] * xip[2] * etap[2] - 2.0 * xip[2] * etap[2]))],            // dN2
-                    vec![2.0 * (-0.125 * (etap[3] * psim[3] - 2.0 * xik[3] * etap[3] * psim[3] + etak[3] * etap[3] * psim[3] - psik[3] * etap[3] * psim[3] - 2.0 * etap[3] * psim[3])), 
-                        2.0 * (0.125 * (xim[3] * psim[3] + 2.0 * etak[3] * xim[3] * psim[3] - xik[3] * xim[3] * psim[3] - psik[3] * xim[3] * psim[3] - 2.0 * xim[3] * psim[3])), 
-                        2.0 * (-0.125 * (xim[3] * etap[3] - 2.0 * psik[3] * xim[3] * etap[3] - xik[3] * xim[3] * etap[3] + etak[3] * xim[3] * etap[3] - 2.0 * xim[3] * etap[3]))],            // dN3
-                    vec![2.0 * (-0.125 * (etam[4] * psip[4] - 2.0 * xik[4] * etam[4] * psip[4] - etak[4] * etam[4] * psip[4] + psik[4] * etam[4] * psip[4] - 2.0 * etam[4] * psip[4])), 
-                        2.0 * (-0.125 * (xim[4] * psip[4] - 2.0 * etak[4] * xim[4] * psip[4] - xik[4] * xim[4] * psip[4] + psik[4] * xim[4] * psip[4] - 2.0 * xim[4] * psip[4])), 
-                        2.0 * (0.125 * (xim[4] * etam[4] + 2.0 * psik[4] * xim[4] * etam[4] - xik[4] * xim[4] * etam[4] - etak[4] * xim[4] * etam[4] - 2.0 * xim[4] * etam[4]))],             // dN4
-                    vec![2.0 * (0.125 * (etam[5] * psip[5] + 2.0 * xik[5] * etam[5] * psip[5] - etak[5] * etam[5] * psip[5] + psik[5] * etam[5] * psip[5] - 2.0 * etam[5] * psip[5])), 
-                        2.0 * (-0.125 * (xip[5] * psip[5] - 2.0 * etak[5] * xip[5] * psip[5] + xik[5] * xip[5] * psip[5] + psik[5] * xip[5] * psip[5] - 2.0 * xip[5] * psip[5])), 
-                        2.0 * (0.125 * (xip[5] * etam[5] + 2.0 * psik[5] * xip[5] * etam[5] + xik[5] * xip[5] * etam[5] - etak[5] * xip[5] * etam[5] - 2.0 * xip[5] * etam[5]))],             // dN5
-                    vec![2.0 * (0.125 * (etap[6] * psip[6] + 2.0 * xik[6] * etap[6] * psip[6] + etak[6] * etap[6] * psip[6] + psik[6] * etap[6] * psip[6] - 2.0 * etap[6] * psip[6])), 
-                        2.0 * (0.125 * (xip[6] * psip[6] + 2.0 * etak[6] * xip[6] * psip[6] + xik[6] * xip[6] * psip[6] + psik[6] * xip[6] * psip[6] - 2.0 * xip[6] * psip[6])), 
-                        2.0 * (0.125 * (xip[6] * etap[6] + 2.0 * psik[6] * xip[6] * etap[6] + xik[6] * xip[6] * etap[6] + etak[6] * xip[6] * etap[6] - 2.0 * xip[6] * etap[6]))],             // dN6
-                    vec![2.0 * (-0.125 * (etap[7] * psip[7] - 2.0 * xik[7] * etap[7] * psip[7] + etak[7] * etap[7] * psip[7] + psik[7] * etap[7] * psip[7] - 2.0 * etap[7] * psip[7])), 
-                        2.0 * (0.125 * (xim[7] * psip[7] + 2.0 * etak[7] * xim[7] * psip[7] - xik[7] * xim[7] * psip[7] + psik[7] * xim[7] * psip[7] - 2.0 * xim[7] * psip[7])), 
-                        2.0 * (0.125 * (xim[7] * etap[7] + 2.0 * psik[7] * xim[7] * etap[7] - xik[7] * xim[7] * etap[7] + etak[7] * xim[7] * etap[7] - 2.0 * xim[7] * etap[7]))],             // dN7
-                    vec![2.0 * (-0.5 * xik[8] * etam[8] * psim[8]), 2.0 * (-0.25 * (psim[8] - xik[8] * xik[8] * psim[8])), 2.0 * (-0.25 * (etam[8] - xik[8] * xik[8] * etam[8]))],       // dN8
-                    vec![2.0 * (0.25 * (psim[9] - etak[9] * etak[9] * psim[9])), 2.0 * (-0.5 * etak[9] * xip[9] * psim[9]), 2.0 * (-0.25 * (xip[9] - etak[9] * etak[9] * xip[9]))],      // dN9
-                    vec![2.0 * (-0.5 * xik[10] * etap[10] * psim[10]), 2.0 * (0.25 * (psim[10] - xik[10] * xik[10] * psim[10])), 2.0 * (-0.25 * (etap[10] - xik[10] * xik[10] * etap[10]))],        // dN10
-                    vec![2.0 * (-0.25 * (psim[11] - etak[11] * etak[11] * psim[11])), 2.0 * (-0.5 * etak[11] * xim[11] * psim[11]), 2.0 * (-0.25 * (xim[11] - etak[11] * etak[11] * xim[11]))],     // dN11
-                    vec![2.0 * (-0.5 * xik[12] * etam[12] * psip[12]), 2.0 * (-0.25 * (psip[12] - xik[12] * xik[12] * psip[12])), 2.0 * (0.25 * (etam[12] - xik[12] * xik[12] * etam[12]))],        // dN12
-                    vec![2.0 * (0.25 * (psip[13] - etak[13] * etak[13] * psip[13])), 2.0 * (-0.5 * etak[13] * xip[13] * psip[13]), 2.0 * (0.25 * (xip[13] - etak[13] * etak[13] * xip[13]))],       // dN13
-                    vec![2.0 * (-0.5 * xik[14] * etap[14] * psip[14]), 2.0 * (0.25 * (psip[14] - xik[14] * xik[14] * psip[14])), 2.0 * (0.25 * (etap[14] - xik[14] * xik[14] * etap[14]))],         // dN14
-                    vec![2.0 * (-0.25 * (psip[15] - etak[15] * etak[15] * psip[15])), 2.0 * (-0.5 * etak[15] * xim[15] * psip[15]), 2.0 * (0.25 * (xim[15] - etak[15] * etak[15] * xim[15]))],      // dN15
-                    vec![2.0 * (-0.25 * (etam[16] - psik[16] * psik[16] * etam[16])), 2.0 * (-0.25 * (xim[16] - psik[16] * psik[16] * xim[16])), 2.0 * (-0.5 * psik[16] * xim[16] * etam[16])],     // dN16
-                    vec![2.0 * (0.25 * (etam[17] - psik[17] * psik[17] * etam[17])), 2.0 * (-0.25 * (xip[17] - psik[17] * psik[17] * xip[17])), 2.0 * (-0.5 * psik[17] * xip[17] * etam[17])],      // dN17
-                    vec![2.0 * (0.25 * (etap[18] - psik[18] * psik[18] * etap[18])), 2.0 * (0.25 * (xip[18] - psik[18] * psik[18] * xip[18])), 2.0 * (-0.5 * psik[18] * xip[18] * etap[18])],       // dN18
-                    vec![2.0 * (-0.25 * (etap[19] - psik[19] * psik[19] * etap[19])), 2.0 * (0.25 * (xim[19] - psik[19] * psik[19] * xim[19])), 2.0 * (-0.5 * psik[19] * xim[19] * etap[19])],      // dN19
+                    vec![2.0 * (-0.125 * (etam * psim - 2.0 * xik * etam * psim - etak * etam * psim - psik * etam * psim - 2.0 * etam * psim)), 
+                        2.0 * (-0.125 * (xim * psim - 2.0 * etak * xim * psim - xik * xim * psim - psik * xim * psim - 2.0 * xim * psim)), 
+                        2.0 * (-0.125 * (xim * etam - 2.0 * psik * xim * etam - xik * xim * etam - etak * xim * etam - 2.0 * xim * etam))],            // dN0
+                    vec![2.0 * (0.125 * (etam * psim + 2.0 * xik * etam * psim - etak * etam * psim - psik * etam * psim - 2.0 * etam * psim)), 
+                        2.0 * (-0.125 * (xip * psim - 2.0 * etak * xip * psim + xik * xip * psim - psik * xip * psim - 2.0 * xip * psim)), 
+                        2.0 * (-0.125 * (xip * etam - 2.0 * psik * xip * etam + xik * xip * etam - etak * xip * etam - 2.0 * xip * etam))],            // dN1
+                    vec![2.0 * (0.125 * (etap * psim + 2.0 * xik * etap * psim + etak * etap * psim - psik * etap * psim - 2.0 * etap * psim)), 
+                        2.0 * (0.125 * (xip * psim + 2.0 * etak * xip * psim + xik * xip * psim - psik * xip * psim - 2.0 * xip * psim)), 
+                        2.0 * (-0.125 * (xip * etap - 2.0 * psik * xip * etap + xik * xip * etap + etak * xip * etap - 2.0 * xip * etap))],            // dN2
+                    vec![2.0 * (-0.125 * (etap * psim - 2.0 * xik * etap * psim + etak * etap * psim - psik * etap * psim - 2.0 * etap * psim)), 
+                        2.0 * (0.125 * (xim * psim + 2.0 * etak * xim * psim - xik * xim * psim - psik * xim * psim - 2.0 * xim * psim)), 
+                        2.0 * (-0.125 * (xim * etap - 2.0 * psik * xim * etap - xik * xim * etap + etak * xim * etap - 2.0 * xim * etap))],            // dN3
+                    vec![2.0 * (-0.125 * (etam * psip - 2.0 * xik * etam * psip - etak * etam * psip + psik * etam * psip - 2.0 * etam * psip)), 
+                        2.0 * (-0.125 * (xim * psip - 2.0 * etak * xim * psip - xik * xim * psip + psik * xim * psip - 2.0 * xim * psip)), 
+                        2.0 * (0.125 * (xim * etam + 2.0 * psik * xim * etam - xik * xim * etam - etak * xim * etam - 2.0 * xim * etam))],             // dN4
+                    vec![2.0 * (0.125 * (etam * psip + 2.0 * xik * etam * psip - etak * etam * psip + psik * etam * psip - 2.0 * etam * psip)), 
+                        2.0 * (-0.125 * (xip * psip - 2.0 * etak * xip * psip + xik * xip * psip - psik * xip * psip - 2.0 * xip * psip)), 
+                        2.0 * (0.125 * (xip * etam + 2.0 * psik * xip * etam + xik * xip * etam - etak * xip * etam - 2.0 * xip * etam))],             // dN5
+                    vec![2.0 * (0.125 * (etap * psip + 2.0 * xik * etap * psip + etak * etap * psip + psik * etap * psip - 2.0 * etap * psip)), 
+                        2.0 * (0.125 * (xip * psip + 2.0 * etak * xip * psip + xik * xip * psip + psik * xip * psip - 2.0 * xip * psip)), 
+                        2.0 * (0.125 * (xip * etap + 2.0 * psik * xip * etap + xik * xip * etap + etak * xip * etap - 2.0 * xip * etap))],             // dN6
+                    vec![2.0 * (-0.125 * (etap * psip - 2.0 * xik * etap * psip + etak * etap * psip + psik * etap * psip - 2.0 * etap * psip)), 
+                        2.0 * (0.125 * (xim * psip + 2.0 * etak * xim * psip - xik * xim * psip - psik * xim * psip - 2.0 * xim * psip)), 
+                        2.0 * (0.125 * (xim * etap + 2.0 * psik * xim * etap - xik * xim * etap + etak * xim * etap - 2.0 * xim * etap))],             // dN7
+                    vec![2.0 * (-0.5 * xik * etam * psim), 2.0 * (-0.25 * (psim - xik * xik * psim)), 2.0 * (-0.25 * (etam - xik * xik * etam))],       // dN8
+                    vec![2.0 * (0.25 * (psim - etak * etak * psim)), 2.0 * (-0.5 * etak * xip * psim), 2.0 * (-0.25 * (xip - etak * etak * xip))],      // dN9
+                    vec![2.0 * (-0.5 * xik * etap * psim), 2.0 * (0.25 * (psim - xik * xik * psim)), 2.0 * (-0.25 * (etap - xik * xik * etap))],        // dN10
+                    vec![2.0 * (-0.25 * (psim - etak * etak * psim)), 2.0 * (-0.5 * etak * xim * psim), 2.0 * (-0.25 * (xim - etak * etak * xim))],     // dN11
+                    vec![2.0 * (-0.5 * xik * etam * psip), 2.0 * (-0.25 * (psip - xik * xik * psip)), 2.0 * (0.25 * (etam - xik * xik * etam))],        // dN12
+                    vec![2.0 * (0.25 * (psip - etak * etak * psip)), 2.0 * (-0.5 * etak * xip * psip), 2.0 * (0.25 * (xip - etak * etak * xip))],       // dN13
+                    vec![2.0 * (-0.5 * xik * etap * psip), 2.0 * (0.25 * (psip - xik * xik * psip)), 2.0 * (0.25 * (etap - xik * xik * etap))],         // dN14
+                    vec![2.0 * (-0.25 * (psip - etak * etak * psip)), 2.0 * (-0.5 * etak * xim * psip), 2.0 * (-0.25 * (xim - etak * etak * xim))],      // dN15
+                    vec![2.0 * (-0.25 * (etam - psik * psik * etam)), 2.0 * (-0.25 * (xim - psik * psik * xim)), 2.0 * (-0.5 * psik * xim * etam)],     // dN16
+                    vec![2.0 * (0.25 * (etam - psik * psik * etam)), 2.0 * (-0.25 * (xip - psik * psik * xip)), 2.0 * (-0.5 * psik * xip * etam)],      // dN17
+                    vec![2.0 * (0.25 * (etap - psik * psik * etap)), 2.0 * (0.25 * (xip - psik * psik * xip)), 2.0 * (-0.5 * psik * xip * etap)],       // dN18
+                    vec![2.0 * (-0.25 * (etap - psik * psik * etap)), 2.0 * (0.25 * (xim - psik * psik * xim)), 2.0 * (-0.5 * psik * xim * etap)],      // dN19
                 ];
 
                 Ok(ShapeFunction {values, derivatives})
@@ -1035,128 +872,116 @@ impl GeometricAnalysis {
                 ];
                 let num_nodes = 24;
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
-                let psi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[2])
-                    .collect();
+                let xi = 0.1127;
+                let eta = 0.5;
+                let psi = 0.8873;
 
-                let xik: Vec<f64> = xi.iter()
-                    .map(|&x| 2.0 * (x - 0.5))
-                    .collect();
-                let etak: Vec<f64> = eta.iter()
-                    .map(|&e| 2.0 * (e - 0.5))
-                    .collect();
-                let psik: Vec<f64> = psi.iter()
-                    .map(|&p| 2.0 * (p - 0.5))
-                    .collect();
+                let xik = 2.0 * (xi - 0.5);
+                let etak = 2.0 * (eta - 0.5);
+                let psik = 2.0 * (psi - 0.5);
 
                 let values = vec![
                     // Corner nodes
-                    (0.25 * (xik[0] * (1.0 - xik[0])) * (etak[0] * (1.0 - etak[0])) - 0.25 * (1.0 + xik[0]) * (1.0 - xik[0]) * (1.0 + etak[0]) * (1.0 - etak[0])) * (-0.5 * psik[0] * (1.0 - psik[0])),       // N0:
-                    (-0.25 * (xik[1] * (1.0 + xik[1])) * (etak[1] * (1.0 - etak[1])) - 0.25 * (1.0 + xik[1]) * (1.0 - xik[1]) * (1.0 + etak[1]) * (1.0 - etak[1])) * (-0.5 * psik[1] * (1.0 - psik[1])),      // N1:
-                    (0.25 * (xik[2] * (1.0 + xik[2])) * (etak[2] * (1.0 + etak[2])) - 0.25 * (1.0 + xik[2]) * (1.0 - xik[2]) * (1.0 + etak[2]) * (1.0 - etak[2])) * (-0.5 * psik[2] * (1.0 - psik[2])),       // N2:
-                    (-0.25 * (xik[3] * (1.0 - xik[3])) * (etak[3] * (1.0 + etak[3])) - 0.25 * (1.0 + xik[3]) * (1.0 - xik[3]) * (1.0 + etak[3]) * (1.0 - etak[3])) * (-0.5 * psik[3] * (1.0 - psik[3])),      // N3:
-                    (0.25 * (xik[4] * (1.0 - xik[4])) * (etak[4] * (1.0 - etak[4])) - 0.25 * (1.0 + xik[4]) * (1.0 - xik[4]) * (1.0 + etak[4]) * (1.0 - etak[4])) * (0.5 * psik[4] * (1.0 + psik[4])),        // N4: 
-                    (-0.25 * (xik[5] * (1.0 + xik[5])) * (etak[5] * (1.0 - etak[5])) - 0.25 * (1.0 + xik[5]) * (1.0 - xik[5]) * (1.0 + etak[5]) * (1.0 - etak[5])) * (0.5 * psik[5] * (1.0 + psik[5])),       // N5: 
-                    (0.25 * (xik[6] * (1.0 + xik[6])) * (etak[6] * (1.0 + etak[6])) - 0.25 * (1.0 + xik[6]) * (1.0 - xik[6]) * (1.0 + etak[6]) * (1.0 - etak[6])) * (0.5 * psik[6] * (1.0 + psik[6])),        // N6:
-                    (-0.25 * (xik[7] * (1.0 - xik[7])) * (etak[7] * (1.0 + etak[7])) - 0.25 * (1.0 + xik[7]) * (1.0 - xik[7]) * (1.0 + etak[7]) * (1.0 - etak[7])) * (0.5 * psik[7] * (1.0 + psik[7])),       // N7:
+                    (0.25 * (xik * (1.0 - xik)) * (etak * (1.0 - etak)) - 0.25 * (1.0 + xik) * (1.0 - xik) * (1.0 + etak) * (1.0 - etak)) * (-0.5 * psik * (1.0 - psik)),       // N0:
+                    (-0.25 * (xik * (1.0 + xik)) * (etak * (1.0 - etak)) - 0.25 * (1.0 + xik) * (1.0 - xik) * (1.0 + etak) * (1.0 - etak)) * (-0.5 * psik * (1.0 - psik)),      // N1:
+                    (0.25 * (xik * (1.0 + xik)) * (etak * (1.0 + etak)) - 0.25 * (1.0 + xik) * (1.0 - xik) * (1.0 + etak) * (1.0 - etak)) * (-0.5 * psik * (1.0 - psik)),       // N2:
+                    (-0.25 * (xik * (1.0 - xik)) * (etak * (1.0 + etak)) - 0.25 * (1.0 + xik) * (1.0 - xik) * (1.0 + etak) * (1.0 - etak)) * (-0.5 * psik * (1.0 - psik)),      // N3:
+                    (0.25 * (xik * (1.0 - xik)) * (etak * (1.0 - etak)) - 0.25 * (1.0 + xik) * (1.0 - xik) * (1.0 + etak) * (1.0 - etak)) * (0.5 * psik * (1.0 + psik)),        // N4:
+                    (-0.25 * (xik * (1.0 + xik)) * (etak * (1.0 - etak)) - 0.25 * (1.0 + xik) * (1.0 - xik) * (1.0 + etak) * (1.0 - etak)) * (0.5 * psik * (1.0 + psik)),       // N5:
+                    (0.25 * (xik * (1.0 + xik)) * (etak * (1.0 + etak)) - 0.25 * (1.0 + xik) * (1.0 - xik) * (1.0 + etak) * (1.0 - etak)) * (0.5 * psik * (1.0 + psik)),        // N6:
+                    (-0.25 * (xik * (1.0 - xik)) * (etak * (1.0 + etak)) - 0.25 * (1.0 + xik) * (1.0 - xik) * (1.0 + etak) * (1.0 - etak)) * (0.5 * psik * (1.0 + psik)),       // N7:
                     // Mid-edge nodes
-                    0.5 * ((1.0 + xik[8]) * (1.0 - xik[8])) * (1.0 - etak[8]) * (-0.5 * psik[8] * (1.0 - psik[8])),        // N8:
-                    0.5 * ((1.0 + etak[9]) * (1.0 - etak[9])) * (1.0 + xik[9]) * (-0.5 * psik[9] * (1.0 - psik[9])),       // N9:
-                    0.5 * ((1.0 + xik[10]) * (1.0 - xik[10])) * (1.0 + etak[10]) * (-0.5 * psik[10] * (1.0 - psik[10])),        // N10:
-                    0.5 * ((1.0 + etak[11]) * (1.0 - etak[11])) * (1.0 - xik[11]) * (-0.5 * psik[11] * (1.0 - psik[11])),       // N11:
-                    0.5 * ((1.0 + xik[12]) * (1.0 - xik[12])) * (1.0 - etak[12]) * (0.5 * psik[12] * (1.0 + psik[12])),         // N12:
-                    0.5 * ((1.0 + etak[13]) * (1.0 - etak[13])) * (1.0 + xik[13]) * (0.5 * psik[13] * (1.0 + psik[13])),        // N13:
-                    0.5 * ((1.0 + xik[14]) * (1.0 - xik[14])) * (1.0 + etak[14]) * (0.5 * psik[14] * (1.0 + psik[14])),         // N14:
-                    0.5 * ((1.0 + etak[15]) * (1.0 - etak[15])) * (1.0 - xik[15]) * (0.5 * psik[15] * (1.0 + psik[15])),        // N15:
-                    (0.25 * (xik[16] * (1.0 - xik[16])) * (etak[16] * (1.0 - etak[16])) - 0.25 * (1.0 + xik[16]) * (1.0 - xik[16]) * (1.0 + etak[16]) * (1.0 - etak[16])) * ((1.0 + psik[16]) * (1.0 - psik[16])),        // N16:
-                    (-0.25 * (xik[17] * (1.0 + xik[17])) * (etak[17] * (1.0 - etak[17])) - 0.25 * (1.0 + xik[17]) * (1.0 - xik[17]) * (1.0 + etak[17]) * (1.0 - etak[17])) * ((1.0 + psik[17]) * (1.0 - psik[17])),       // N17:
-                    (0.25 * (xik[18] * (1.0 + xik[18])) * (etak[18] * (1.0 + etak[18])) - 0.25 * (1.0 + xik[18]) * (1.0 - xik[18]) * (1.0 + etak[18]) * (1.0 - etak[18])) * ((1.0 + psik[18]) * (1.0 - psik[18])),        // N18:
-                    (-0.25 * (xik[19] * (1.0 - xik[19])) * (etak[19] * (1.0 + etak[19])) - 0.25 * (1.0 + xik[19]) * (1.0 - xik[19]) * (1.0 + etak[19]) * (1.0 - etak[19])) * ((1.0 + psik[19]) * (1.0 - psik[19])),       // N19:
+                    0.5 * ((1.0 + xik) * (1.0 - xik)) * (1.0 - etak) * (-0.5 * psik * (1.0 - psik)),        // N8:
+                    0.5 * ((1.0 + etak) * (1.0 - etak)) * (1.0 + xik) * (-0.5 * psik * (1.0 - psik)),       // N9:
+                    0.5 * ((1.0 + xik) * (1.0 - xik)) * (1.0 + etak) * (-0.5 * psik * (1.0 - psik)),        // N10:
+                    0.5 * ((1.0 + etak) * (1.0 - etak)) * (1.0 - xik) * (-0.5 * psik * (1.0 - psik)),       // N11:
+                    0.5 * ((1.0 + xik) * (1.0 - xik)) * (1.0 - etak) * (0.5 * psik * (1.0 + psik)),         // N12:
+                    0.5 * ((1.0 + etak) * (1.0 - etak)) * (1.0 + xik) * (0.5 * psik * (1.0 + psik)),        // N13:
+                    0.5 * ((1.0 + xik) * (1.0 - xik)) * (1.0 + etak) * (0.5 * psik * (1.0 + psik)),         // N14:
+                    0.5 * ((1.0 + etak) * (1.0 - etak)) * (1.0 - xik) * (0.5 * psik * (1.0 + psik)),        // N15:
+                    (0.25 * (xik * (1.0 - xik)) * (etak * (1.0 - etak)) - 0.25 * (1.0 + xik) * (1.0 - xik) * (1.0 + etak) * (1.0 - etak)) * ((1.0 + psik) * (1.0 - psik)),        // N16:
+                    (-0.25 * (xik * (1.0 + xik)) * (etak * (1.0 - etak)) - 0.25 * (1.0 + xik) * (1.0 - xik) * (1.0 + etak) * (1.0 - etak)) * ((1.0 + psik) * (1.0 - psik)),       // N17:
+                    (0.25 * (xik * (1.0 + xik)) * (etak * (1.0 + etak)) - 0.25 * (1.0 + xik) * (1.0 - xik) * (1.0 + etak) * (1.0 - etak)) * ((1.0 + psik) * (1.0 - psik)),        // N18:
+                    (-0.25 * (xik * (1.0 - xik)) * (etak * (1.0 + etak)) - 0.25 * (1.0 + xik) * (1.0 - xik) * (1.0 + etak) * (1.0 - etak)) * ((1.0 + psik) * (1.0 - psik)),       // N19:
                     // Mid-face nodes
-                    0.5 * ((1.0 + etak[20]) * (1.0 - etak[20])) * (1.0 - xik[20]) * ((1.0 + psik[20]) * (1.0 - psik[20])),        // N20:
-                    0.5 * ((1.0 + etak[21]) * (1.0 - etak[21])) * (1.0 + xik[21]) * ((1.0 + psik[21]) * (1.0 - psik[21])),        // N21:
-                    0.5 * ((1.0 + xik[22]) * (1.0 - xik[22])) * (1.0 - etak[22]) * ((1.0 + psik[22]) * (1.0 - psik[22])),         // N22:
-                    0.5 * ((1.0 + xik[23]) * (1.0 - xik[23])) * (1.0 + etak[23]) * ((1.0 + psik[23]) * (1.0 - psik[23])),         // N23:
+                    0.5 * ((1.0 + etak) * (1.0 - etak)) * (1.0 - xik) * ((1.0 + psik) * (1.0 - psik)),        // N20:
+                    0.5 * ((1.0 + etak) * (1.0 - etak)) * (1.0 + xik) * ((1.0 + psik) * (1.0 - psik)),        // N21:
+                    0.5 * ((1.0 + xik) * (1.0 - xik)) * (1.0 - etak) * ((1.0 + psik) * (1.0 - psik)),         // N22:
+                    0.5 * ((1.0 + xik) * (1.0 - xik)) * (1.0 + etak) * ((1.0 + psik) * (1.0 - psik)),         // N23:
                 ];
                 let derivatives = vec![
-                    vec![2.0 * (-((etak[0] * etak[0] + (2.0 * xik[0] - 1.0) * etak[0] - 2.0 * xik[0]) * psik[0] * psik[0] + (-etak[0] * etak[0] + (1.0 - 2.0 * xik[0]) * etak[0] + 2.0 * xik[0]) * psik[0]) / 8.0), 
-                        2.0 * (-(((2.0 * xik[0] - 2.0) * etak[0] + xik[0] * xik[0] - xik[0]) * psik[0] * psik[0] + ((2.0 - 2.0 * xik[0]) * etak[0] - xik[0] * xik[0] + xik[0]) * psik[0]) / 8.0), 
-                        2.0 * (-(((2.0 * xik[0] - 2.0) * etak[0] * etak[0] + (2.0 * xik[0] * xik[0] - 2.0 * xik[0]) * etak[0] - 2.0 * xik[0] * xik[0] + 2.0) * psik[0] + (1.0 - xik[0]) * etak[0] * etak[0] + (xik[0] - xik[0] * xik[0]) * etak[0] + xik[0] * xik[0] - 1.0) / 8.0)],     // dN0
-                    vec![2.0 * (((etak[1] * etak[1] + (-2.0 * xik[1] - 1.0) * etak[1] + 2.0 * xik[1]) * psik[1] * psik[1] + (-etak[1] * etak[1] + (2.0 * xik[1] + 1.0) * etak[1] - 2.0 * xik[1]) * psik[1]) / 8.0), 
-                        2.0 * ((((2.0 * xik[1] + 2.0) * etak[1] - xik[1] * xik[1] - xik[1]) * psik[1] * psik[1] + ((-2.0 * xik[1] - 2.0) * etak[1] + xik[1] * xik[1] + xik[1]) * psik[1]) / 8.0),
-                        2.0 * ((((2.0 * xik[1] + 2.0) * etak[1] * etak[1] + (-2.0 * xik[1] * xik[1] - 2.0 * xik[1]) * etak[1] + 2.0 * xik[1] * xik[1] - 2.0) * psik[1] + (-xik[1] - 1.0) * etak[1] * etak[1] + (xik[1] * xik[1] + xik[1]) * etak[1] - xik[1] * xik[1] + 1.0) / 8.0)],      // dN1
-                    vec![2.0 * (((etak[2] * etak[2] + (2.0 * xik[2] + 1.0) * etak[2] + 2.0 * xik[2]) * psik[2] * psik[2] + (-etak[2] * etak[2] + (-2.0 * xik[2] - 1.0) * etak[2] - 2.0 * xik[2]) * psik[2]) / 8.0), 
-                        2.0 * ((((2.0 * xik[2] + 2.0) * etak[2] + xik[2] * xik[2] + xik[2]) * psik[2] * psik[2] + ((-2.0 * xik[2] - 2.0) * etak[2] - xik[2] * xik[2] - xik[2]) * psik[2]) / 8.0),
-                        2.0 * ((((2.0 * xik[2] + 2.0) * etak[2] * etak[2] + (2.0 * xik[2] * xik[2] + 2.0 * xik[2]) * etak[2] + 2.0 * xik[2] * xik[2] - 2.0) * psik[2] + (-xik[2] - 1.0) * etak[2] * etak[2] + (-xik[2] * xik[2] - xik[2]) * etak[2] - xik[2] * xik[2] + 1.0) / 8.0)],       // dN2
-                    vec![2.0 * (-((etak[3] * etak[3] + (1.0 - 2.0 * xik[3]) * etak[3] - 2.0 * xik[3]) * psik[3] * psik[3] + (-etak[3] * etak[3] + (2.0 * xik[3] - 1.0) * etak[3] + 2.0 * xik[3]) * psik[3]) / 8.0),
-                        2.0 * (-(((2.0 * xik[3] - 2.0) * etak[3] - xik[3] * xik[3] + xik[3]) * psik[3] * psik[3] + ((2.0 - 2.0 * xik[3]) * etak[3] + xik[3] * xik[3] - xik[3]) * psik[3]) / 8.0), 
-                        2.0 * (-(((2.0 * xik[3] - 2.0) * etak[3] * etak[3] + (2.0 * xik[3] - 2.0 * xik[3] * xik[3]) * etak[3] - 2.0 * xik[3] * xik[3] + 2.0) * psik[3] + (1.0 - xik[3]) * etak[3] * etak[3] + (xik[3] * xik[3] - xik[3]) * etak[3] + xik[3] * xik[3] - 1.0) / 8.0)],      // dN3
-                    vec![2.0 * (-((etak[4] * etak[4] + (2.0 * xik[4] - 1.0) * etak[4] - 2.0 * xik[4]) * psik[4] * psik[4] + (etak[4] * etak[4] + (2.0 * xik[4] - 1.0) * etak[4] - 2.0 * xik[4]) * psik[4]) / 8.0), 
-                        2.0 * (-(((2.0 * xik[4] - 2.0) * etak[4] + xik[4] * xik[4] - xik[4]) * psik[4] * psik[4] + ((2.0 * xik[4] - 2.0) * etak[4] + xik[4] * xik[4] - xik[4]) * psik[4]) / 8.0), 
-                        2.0 * (-(((2.0 * xik[4] - 2.0) * etak[4] * etak[4] + (2.0 * xik[4] * xik[4] - 2.0 * xik[4]) * etak[4] - 2.0 * xik[4] * xik[4] + 2.0) * psik[4] + (xik[4] - 1.0) * etak[4] * etak[4] + (xik[4] * xik[4] - xik[4]) * etak[4] - xik[4] * xik[4] + 1.0) / 8.0)],      // dN4
-                    vec![2.0 * (((etak[5] * etak[5] + (-2.0 * xik[5] - 1.0) * etak[5] + 2.0 * xik[5]) * psik[5] * psik[5] + (etak[5] * etak[5] + (-2.0 * xik[5] - 1.0) * etak[5] + 2.0 * xik[5]) * psik[5]) / 8.0), 
-                        2.0 * ((((2.0 * xik[5] + 2.0) * etak[5] - xik[5] * xik[5] - xik[5]) * psik[5] * psik[5] + ((2.0 * xik[5] + 2.0) * etak[5] - xik[5] * xik[5] - xik[5]) * psik[5]) / 8.0), 
-                        2.0 * ((((2.0 * xik[5] + 2.0) * etak[5] * etak[5] + (-2.0 * xik[5] * xik[5] - 2.0 * xik[5]) * etak[5] + 2.0 * xik[5] * xik[5] - 2.0) * psik[5] + (xik[5] + 1.0) * etak[5] * etak[5] + (-xik[5] * xik[5] - xik[5]) * etak[5] + xik[5] * xik[5] - 1.0) / 8.0)],       // dN5
-                    vec![2.0 * (((etak[6] * etak[6] + (2.0 * xik[6] + 1.0) * etak[6] + 2.0 * xik[6]) * psik[6] * psik[6] + (etak[6] * etak[6] + (2.0 * xik[6] + 1.0) * etak[6] + 2.0 * xik[6]) * psik[6]) / 8.0), 
-                        2.0 * ((((2.0 * xik[6] + 2.0) * etak[6] + xik[6] * xik[6] + xik[6]) * psik[6] * psik[6] + ((2.0 * xik[6] + 2.0) * etak[6] + xik[6] * xik[6] + xik[6]) * psik[6]) / 8.0), 
-                        2.0 * ((((2.0 * xik[6] + 2.0) * etak[6] * etak[6] + (2.0 * xik[6] * xik[6] + 2.0 * xik[6]) * etak[6] + 2.0 * xik[6] * xik[6] - 2.0) * psik[6] + (xik[6] + 1.0) * etak[6] * etak[6] + (xik[6] * xik[6] + xik[6]) * etak[6] + xik[6] * xik[6] - 1.0) / 8.0)],        // dN6
-                    vec![2.0 * (-((etak[7] * etak[7] + (1.0 - 2.0 * xik[7]) * etak[7] - 2.0 * xik[7]) * psik[7] * psik[7] + (etak[7] * etak[7] + (1.0 - 2.0 * xik[7]) * etak[7] - 2.0 * xik[7]) * psik[7]) / 8.0), 
-                        2.0 * (-(((2.0 * xik[7] - 2.0) * etak[7] - xik[7] * xik[7] + xik[7]) * psik[7] * psik[7] + ((2.0 * xik[7] - 2.0) * etak[7] - xik[7] * xik[7] + xik[7]) * psik[7]) / 8.0), 
-                        2.0 * (-(((2.0 * xik[7] - 2.0) * etak[7] * etak[7] + (2.0 * xik[7] - 2.0 * xik[7] * xik[7]) * etak[7] - 2.0 * xik[7] * xik[7] + 2.0) * psik[7] + (1.0 - xik[7]) * etak[7] * etak[7] + (xik[7] - xik[7] * xik[7]) * etak[7] - xik[7] * xik[7] + 1.0) / 8.0)],       // dN7
-                    vec![2.0 * (((xik[8] * etak[8] - xik[8]) * psik[8] * psik[8] + (xik[8] - xik[8] * etak[8]) * psik[8]) / 2.0), 
-                        2.0 * (((xik[8] * xik[8] - 1.0) * psik[8] * psik[8] + (1.0 - xik[8] * xik[8]) * psik[8]) / 4.0), 
-                        2.0 * ((((2.0 * xik[8] * xik[8] - 2.0) * etak[8] - 2.0 * xik[8] * xik[8] + 2.0) * psik[8] + (1.0 - xik[8] * xik[8]) * etak[8] + xik[8] * xik[8] - 1.0) / 4.0)],       // dN8
-                    vec![2.0 * (-((etak[9] * etak[9] - 1.0) * psik[9] * psik[9] + (1.0 - etak[9] * etak[9]) * psik[9]) / 4.0), 
-                        2.0 * (-((xik[9] + 1.0) * etak[9] * psik[9] * psik[9] + (-xik[9] - 1.0) * etak[9] * psik[9]) / 2.0), 
-                        2.0 * (-(((2.0 * xik[9] + 2.0) * etak[9] * etak[9] - 2.0 * xik[9] - 2.0) * psik[9] + (-xik[9] - 1.0) * etak[9] * etak[9] + xik[9] + 1.0) / 4.0)],      // dN9
-                    vec![2.0 * (-((xik[10] * etak[10] + xik[10]) * psik[10] * psik[10] + (-xik[10] * etak[10] - xik[10]) * psik[10]) / 2.0), 
-                        2.0 * (-((xik[10] * xik[10] - 1.0) * psik[10] * psik[10] + (1.0 - xik[10] * xik[10]) * psik[10]) / 4.0), 
-                        2.0 * (-(((2.0 * xik[10] * xik[10] - 2.0) * etak[10] + 2.0 * xik[10] * xik[10] - 2.0) * psik[10] + (1.0 - xik[10] * xik[10]) * etak[10] - xik[10] * xik[10] + 1.0) / 4.0)],        // dN10
-                    vec![2.0 * (((etak[11] * etak[11] - 1.0) * psik[11] * psik[11] + (1.0 - etak[11] * etak[11]) * psik[11]) / 4.0), 
-                        2.0 * (((xik[11] - 1.0) * etak[11] * psik[11] * psik[11] + (1.0 - xik[11]) * etak[11] * psik[11]) / 2.0), 
-                        2.0 * ((((2.0 * xik[11] - 2.0) * etak[11] * etak[11] - 2.0 * xik[11] + 2.0) * psik[11] + (1.0 - xik[11]) * etak[11] * etak[11] + xik[11] - 1.0) / 4.0)],     // dN11
-                    vec![2.0 * (((xik[12] * etak[12] - xik[12]) * psik[12] * psik[12] + (xik[12] * etak[12] - xik[12]) * psik[12]) / 2.0), 
-                        2.0 * (((xik[12] * xik[12] - 1.0) * psik[12] * psik[12] + (xik[12] * xik[12] - 1.0) * psik[12]) / 4.0), 
-                        2.0 * ((((2.0 * xik[12] * xik[12] - 2.0) * etak[12] - 2.0 * xik[12] * xik[12] + 2.0) * psik[12] + (xik[12] * xik[12] - 1.0) * etak[12] - xik[12] * xik[12] + 1.0) / 4.0)],        // dN12
-                    vec![2.0 * (-((etak[13] * etak[13] - 1.0) * psik[13] * psik[13] + (etak[13] * etak[13] - 1.0) * psik[13]) / 4.0), 
-                        2.0 * (-((xik[13] + 1.0) * etak[13] * psik[13] * psik[13] + (xik[13] + 1.0) * etak[13] * psik[13]) / 2.0), 
-                        2.0 * (-(((2.0 * xik[13] + 2.0) * etak[13] * etak[13] - 2.0 * xik[13] - 2.0) * psik[13] + (xik[13] + 1.0) * etak[13] * etak[13] - xik[13] - 1.0) / 4.0)],       // dN13
-                    vec![2.0 * (-((xik[14] * etak[14] + xik[14]) * psik[14] * psik[14] + (xik[14] * etak[14] + xik[14]) * psik[14]) / 2.0), 
-                        2.0 * (-((xik[14] * xik[14] - 1.0) * psik[14] * psik[14] + (xik[14] * xik[14] - 1.0) * psik[14]) / 4.0), 
-                        2.0 * (-(((2.0 * xik[14] * xik[14] - 2.0) * etak[14] + 2.0 * xik[14] * xik[14] - 2.0) * psik[14] + (xik[14] * xik[14] - 1.0) * etak[14] + xik[14] * xik[14] - 1.0) / 4.0)],         // dN14
-                    vec![2.0 * (((etak[15] * etak[15] + (2.0 * xik[15] - 1.0) * etak[15] - 2.0 * xik[15]) * psik[15] * psik[15] - etak[15] * etak[15] + (1.0 - 2.0 * xik[15]) * etak[15] + 2.0 * xik[15]) / 4.0), 
-                        2.0 * ((((2.0 * xik[15] - 2.0) * etak[15] + xik[15] * xik[15] - xik[15]) * psik[15] * psik[15] + (2.0 - 2.0 * xik[15]) * etak[15] - xik[15] * xik[15] + xik[15]) / 4.0), 
-                        2.0 * (((xik[15] - 1.0) * etak[15] * etak[15] + (xik[15] * xik[15] - xik[15]) * etak[15] - xik[15] * xik[15] + 1.0) * psik[15] / 2.0)],     // dN15
-                    vec![2.0 * (-((etak[16] * etak[16] + (-2.0 * xik[16] - 1.0) * etak[16] + 2.0 * xik[16]) * psik[16] * psik[16] - etak[16] * etak[16] + (2.0 * xik[16] + 1.0) * etak[16] - 2.0 * xik[16]) / 4.0), 
-                        2.0 * (-(((2.0 * xik[16] + 2.0) * etak[16] - xik[16] * xik[16] - xik[16]) * psik[16] * psik[16] + (-2.0 * xik[16] - 2.0) * etak[16] + xik[16] * xik[16] + xik[16]) / 4.0), 
-                        2.0 * (-((xik[16] + 1.0) * etak[16] * etak[16] + (-xik[16] * xik[16] - xik[16]) * etak[16] + xik[16] * xik[16] - 1.0) * psik[16] / 2.0)],      // dN16
-                    vec![2.0 * (-((etak[17] * etak[17] + (2.0 * xik[17] + 1.0) * etak[17] + 2.0 * xik[17]) * psik[17] * psik[17] - etak[17] * etak[17] + (-2.0 * xik[17] - 1.0) * etak[17] - 2.0 * xik[17]) / 4.0), 
-                        2.0 * (-(((2.0 * xik[17] + 2.0) * etak[17] + xik[17] * xik[17] + xik[17]) * psik[17] * psik[17] + (-2.0 * xik[17] - 2.0) * etak[17] - xik[17] * xik[17] - xik[17]) / 4.0), 
-                        2.0 * (-((xik[17] + 1.0) * etak[17] * etak[17] + (xik[17] * xik[17] + xik[17]) * etak[17] + xik[17] * xik[17] - 1.0) * psik[17] / 2.0)],       // dN17
-                    vec![2.0 * (((etak[18] * etak[18] + (1.0 - 2.0 * xik[18]) * etak[18] - 2.0 * xik[18]) * psik[18] * psik[18] - etak[18] * etak[18] + (2.0 * xik[18] - 1.0) * etak[18] + 2.0 * xik[18]) / 4.0), 
-                        2.0 * ((((2.0 * xik[18] - 2.0) * etak[18] - xik[18] * xik[18] + xik[18]) * psik[18] * psik[18] + (2.0 - 2.0 * xik[18]) * etak[18] + xik[18] * xik[18] - xik[18]) / 4.0), 
-                        2.0 * (((xik[18] - 1.0) * etak[18] * etak[18] + (xik[18] - xik[18] * xik[18]) * etak[18] - xik[18] * xik[18] + 1.0) * psik[18] / 2.0)],      // dN18
-                    vec![2.0 * (-((etak[19] * etak[19] - 1.0) * psik[19] * psik[19] - etak[19] * etak[19] + 1.0) / 2.0), 
-                        2.0 * ((1.0 - xik[19]) * etak[19] * psik[19] * psik[19] + (xik[19] - 1.0) * etak[19]), 
-                        2.0 * (((1.0 - xik[19]) * etak[19] * etak[19] + xik[19] - 1.0) * psik[19])],       // dN19
-                    vec![2.0 * (((etak[20] * etak[20] - 1.0) * psik[20] * psik[20] - etak[20] * etak[20] + 1.0) / 2.0), 
-                        2.0 * ((xik[20] + 1.0) * etak[20] * psik[20] * psik[20] + (-xik[20] - 1.0) * etak[20]), 
-                        2.0 * (((xik[20] + 1.0) * etak[20] * etak[20] - xik[20] - 1.0) * psik[20])],      // dN20
-                    vec![2.0 * ((xik[21] - xik[21] * etak[21]) * psik[21] * psik[21] + xik[21] * etak[21] - xik[21]), 
-                        2.0 * (-((xik[21] * xik[21] - 1.0) * psik[21] * psik[21] - xik[21] * xik[21] + 1.0) / 2.0), 
-                        2.0 * (((1.0 - xik[21] * xik[21]) * etak[21] + xik[21] * xik[21] - 1.0) * psik[21])],       // dN21
-                    vec![2.0 * ((xik[22] * etak[22] + xik[22]) * psik[22] * psik[22] - xik[22] * etak[22] - xik[22]), 
-                        2.0 * (((xik[22] * xik[22] - 1.0) * psik[22] * psik[22] - xik[22] * xik[22] + 1.0) / 2.0), 
-                        2.0 * (((xik[22] * xik[22] - 1.0) * etak[22] + xik[22] * xik[22] - 1.0) * psik[22])],      // dN22
-                    vec![2.0 * ((xik[23] * etak[23] + xik[23]) * psik[23] * psik[23] - xik[23] * etak[23] - xik[23]), 
-                        2.0 * (((xik[23] * xik[23] - 1.0) * psik[23] * psik[23] - xik[23] * xik[23] + 1.0) / 2.0), 
-                        2.0 * (((xik[23] * xik[23] - 1.0) * etak[23] + xik[23] * xik[23] - 1.0) * psik[23])],      // dN23
+                    vec![2.0 * (-((etak * etak + (2.0 * xik - 1.0) * etak - 2.0 * xik) * psik * psik + (-etak * etak + (1.0 - 2.0 * xik) * etak + 2.0 * xik) * psik) / 8.0), 
+                        2.0 * (-(((2.0 * xik - 2.0) * etak + xik * xik - xik) * psik * psik + ((2.0 - 2.0 * xik) * etak - xik * xik + xik) * psik) / 8.0), 
+                        2.0 * (-(((2.0 * xik - 2.0) * etak * etak + (2.0 * xik * xik - 2.0 * xik) * etak - 2.0 * xik * xik + 2.0) * psik + (1.0 - xik) * etak * etak + (xik - xik * xik) * etak + xik * xik - 1.0) / 8.0)],     // dN0
+                    vec![2.0 * (((etak * etak + (-2.0 * xik - 1.0) * etak + 2.0 * xik) * psik * psik + (-etak * etak + (2.0 * xik + 1.0) * etak - 2.0 * xik) * psik) / 8.0), 
+                        2.0 * ((((2.0 * xik + 2.0) * etak - xik * xik - xik) * psik * psik + ((-2.0 * xik - 2.0) * etak + xik * xik + xik) * psik) / 8.0),
+                        2.0 * ((((2.0 * xik + 2.0) * etak * etak + (-2.0 * xik * xik - 2.0 * xik) * etak + 2.0 * xik * xik - 2.0) * psik + (-xik - 1.0) * etak * etak + (xik * xik + xik) * etak - xik * xik + 1.0) / 8.0)],      // dN1
+                    vec![2.0 * (((etak * etak + (2.0 * xik + 1.0) * etak + 2.0 * xik) * psik * psik + (-etak * etak + (-2.0 * xik - 1.0) * etak - 2.0 * xik) * psik) / 8.0), 
+                        2.0 * ((((2.0 * xik + 2.0) * etak + xik * xik + xik) * psik * psik + ((-2.0 * xik - 2.0) * etak + xik * xik + xik) * psik) / 8.0),
+                        2.0 * ((((2.0 * xik + 2.0) * etak * etak + (2.0 * xik * xik + 2.0 * xik) * etak + 2.0 * xik * xik - 2.0) * psik + (-xik - 1.0) * etak * etak + (-xik * xik - xik) * etak - xik * xik + 1.0) / 8.0)],       // dN2
+                    vec![2.0 * (-((etak * etak + (1.0 - 2.0 * xik) * etak - 2.0 * xik) * psik * psik + (-etak * etak + (2.0 * xik - 1.0) * etak + 2.0 * xik) * psik) / 8.0),
+                        2.0 * (-(((2.0 * xik - 2.0) * etak - xik * xik + xik) * psik * psik + ((2.0 - 2.0 * xik) * etak + xik * xik - xik) * psik) / 8.0), 
+                        2.0 * (-(((2.0 * xik - 2.0) * etak * etak + (2.0 * xik - 2.0 * xik * xik) * etak - 2.0 * xik * xik + 2.0) * psik + (1.0 - xik) * etak * etak + (xik * xik - xik) * etak + xik * xik - 1.0) / 8.0)],      // dN3
+                    vec![2.0 * (-((etak * etak + (2.0 * xik - 1.0) * etak - 2.0 * xik) * psik * psik + (etak * etak + (2.0 * xik - 1.0) * etak - 2.0 * xik) * psik) / 8.0), 
+                        2.0 * (-(((2.0 * xik - 2.0) * etak + xik * xik - xik) * psik * psik + ((2.0 * xik - 2.0) * etak + xik * xik - xik) * psik) / 8.0), 
+                        2.0 * (-(((2.0 * xik - 2.0) * etak * etak + (2.0 * xik * xik - 2.0 * xik) * etak - 2.0 * xik * xik + 2.0) * psik + (xik - 1.0) * etak * etak + (xik * xik - xik) * etak - xik * xik + 1.0) / 8.0)],      // dN4
+                    vec![2.0 * (((etak * etak + (-2.0 * xik - 1.0) * etak + 2.0 * xik) * psik * psik + (etak * etak + (-2.0 * xik - 1.0) * etak + 2.0 * xik) * psik) / 8.0), 
+                        2.0 * ((((2.0 * xik + 2.0) * etak - xik * xik - xik) * psik * psik + ((2.0 * xik + 2.0) * etak - xik * xik - xik) * psik) / 8.0), 
+                        2.0 * ((((2.0 * xik + 2.0) * etak * etak + (-2.0 * xik * xik - 2.0 * xik) * etak + 2.0 * xik * xik - 2.0) * psik + (xik + 1.0) * etak * etak + (-xik * xik - xik) * etak + xik * xik - 1.0) / 8.0)],       // dN5
+                    vec![2.0 * (((etak * etak + (2.0 * xik + 1.0) * etak + 2.0 * xik) * psik * psik + (etak * etak + (2.0 * xik + 1.0) * etak + 2.0 * xik) * psik) / 8.0), 
+                        2.0 * ((((2.0 * xik + 2.0) * etak + xik * xik + xik) * psik * psik + ((2.0 * xik + 2.0) * etak + xik * xik + xik) * psik) / 8.0), 
+                        2.0 * ((((2.0 * xik + 2.0) * etak * etak + (2.0 * xik * xik + 2.0 * xik) * etak + 2.0 * xik * xik - 2.0) * psik + (xik + 1.0) * etak * etak + (xik * xik + xik) * etak + xik * xik - 1.0) / 8.0)],        // dN6
+                    vec![2.0 * (-((etak * etak + (1.0 - 2.0 * xik) * etak - 2.0 * xik) * psik * psik + (etak * etak + (1.0 - 2.0 * xik) * etak - 2.0 * xik) * psik) / 8.0), 
+                        2.0 * (-(((2.0 * xik - 2.0) * etak - xik * xik + xik) * psik * psik + ((2.0 * xik - 2.0) * etak - xik * xik + xik) * psik) / 8.0), 
+                        2.0 * (-(((2.0 * xik - 2.0) * etak * etak + (2.0 * xik - 2.0 * xik * xik) * etak - 2.0 * xik * xik + 2.0) * psik + (1.0 - xik) * etak * etak + (xik - xik * xik) * etak - xik * xik + 1.0) / 8.0)],       // dN7
+                    vec![2.0 * (((xik * etak - xik) * psik * psik + (xik - xik * etak) * psik) / 2.0), 
+                        2.0 * (((xik * xik - 1.0) * psik * psik + (1.0 - xik * xik) * psik) / 4.0), 
+                        2.0 * ((((2.0 * xik * xik - 2.0) * etak - 2.0 * xik * xik + 2.0) * psik + (1.0 - xik * xik) * etak + xik * xik - 1.0) / 4.0)],       // dN8
+                    vec![2.0 * (-((etak * etak - 1.0) * psik * psik + (1.0 - etak * etak) * psik) / 4.0), 
+                        2.0 * (-((xik + 1.0) * etak * psik * psik + (-xik - 1.0) * etak * psik) / 2.0), 
+                        2.0 * (-(((2.0 * xik + 2.0) * etak * etak - 2.0 * xik - 2.0) * psik + (-xik - 1.0) * etak * etak + xik + 1.0) / 4.0)],      // dN9
+                    vec![2.0 * (-((xik * etak + xik) * psik * psik + (-xik * etak - xik) * psik) / 2.0), 
+                        2.0 * (-((xik * xik - 1.0) * psik * psik + (1.0 - xik * xik) * psik) / 4.0), 
+                        2.0 * (-(((2.0 * xik * xik - 2.0) * etak + 2.0 * xik * xik - 2.0) * psik + (1.0 - xik * xik) * etak - xik * xik + 1.0) / 4.0)],        // dN10
+                    vec![2.0 * (((etak * etak - 1.0) * psik * psik + (1.0 - etak * etak) * psik) / 4.0), 
+                        2.0 * (((xik - 1.0) * etak * psik * psik + (1.0 - xik) * etak * psik) / 2.0), 
+                        2.0 * ((((2.0 * xik - 2.0) * etak * etak - 2.0 * xik + 2.0) * psik + (1.0 - xik) * etak * etak + xik - 1.0) / 4.0)],     // dN11
+                    vec![2.0 * (((xik * etak - xik) * psik * psik + (xik * etak - xik) * psik) / 2.0), 
+                        2.0 * (((xik * xik - 1.0) * psik * psik + (xik * xik - 1.0) * psik) / 4.0), 
+                        2.0 * ((((2.0 * xik * xik - 2.0) * etak - 2.0 * xik * xik + 2.0) * psik + (xik * xik - 1.0) * etak - xik * xik + 1.0) / 4.0)],        // dN12
+                    vec![2.0 * (-((etak * etak - 1.0) * psik * psik + (etak * etak - 1.0) * psik) / 4.0), 
+                        2.0 * (-((xik + 1.0) * etak * psik * psik + (xik + 1.0) * etak * psik) / 2.0), 
+                        2.0 * (-(((2.0 * xik + 2.0) * etak * etak - 2.0 * xik - 2.0) * psik + (xik + 1.0) * etak * etak - xik - 1.0) / 4.0)],       // dN13
+                    vec![2.0 * (-((xik * etak + xik) * psik * psik + (xik * etak + xik) * psik) / 2.0), 
+                        2.0 * (-((xik * xik - 1.0) * psik * psik + (xik * xik - 1.0) * psik) / 4.0), 
+                        2.0 * (-(((2.0 * xik * xik - 2.0) * etak + 2.0 * xik * xik - 2.0) * psik + (xik * xik - 1.0) * etak + xik * xik - 1.0) / 4.0)],         // dN14
+                    vec![2.0 * (((etak * etak + (2.0 * xik - 1.0) * etak - 2.0 * xik) * psik * psik - etak * etak + (1.0 - 2.0 * xik) * etak + 2.0 * xik) / 4.0), 
+                        2.0 * ((((2.0 * xik - 2.0) * etak + xik * xik - xik) * psik * psik + (2.0 - 2.0 * xik) * etak - xik * xik + xik) / 4.0), 
+                        2.0 * (((xik - 1.0) * etak * etak + (xik * xik - xik) * etak - xik * xik + 1.0) * psik / 2.0)],     // dN15
+                    vec![2.0 * (-((etak * etak + (-2.0 * xik - 1.0) * etak + 2.0 * xik) * psik * psik - etak * etak + (2.0 * xik + 1.0) * etak - 2.0 * xik) / 4.0), 
+                        2.0 * (-(((2.0 * xik + 2.0) * etak - xik * xik - xik) * psik * psik + (-2.0 * xik - 2.0) * etak + xik * xik + xik) / 4.0), 
+                        2.0 * (-((xik + 1.0) * etak * etak + (-xik * xik - xik) * etak + xik * xik - 1.0) * psik / 2.0)],      // dN16
+                    vec![2.0 * (-((etak * etak + (2.0 * xik + 1.0) * etak + 2.0 * xik) * psik * psik - etak * etak + (-2.0 * xik - 1.0) * etak - 2.0 * xik) / 4.0), 
+                        2.0 * (-(((2.0 * xik + 2.0) * etak + xik * xik + xik) * psik * psik + (-2.0 * xik - 2.0) * etak - xik * xik - xik) / 4.0), 
+                        2.0 * (-((xik + 1.0) * etak * etak + (xik * xik + xik) * etak + xik * xik - 1.0) * psik / 2.0)],       // dN17
+                    vec![2.0 * (((etak * etak + (1.0 - 2.0 * xik) * etak - 2.0 * xik) * psik * psik - etak * etak + (2.0 * xik - 1.0) * etak + 2.0 * xik) / 4.0), 
+                        2.0 * ((((2.0 * xik - 2.0) * etak - xik * xik + xik) * psik * psik + (2.0 - 2.0 * xik) * etak + xik * xik - xik) / 4.0), 
+                        2.0 * (((xik - 1.0) * etak * etak + (xik - xik * xik) * etak - xik * xik + 1.0) * psik / 2.0)],      // dN18
+                    vec![2.0 * (-((etak * etak - 1.0) * psik * psik - etak * etak + 1.0) / 2.0), 
+                        2.0 * ((1.0 - xik) * etak * psik * psik + (xik - 1.0) * etak), 
+                        2.0 * (((1.0 - xik) * etak * etak + xik - 1.0) * psik)],       // dN19
+                    vec![2.0 * (((etak * etak - 1.0) * psik * psik - etak * etak + 1.0) / 2.0), 
+                        2.0 * ((xik + 1.0) * etak * psik * psik + (-xik - 1.0) * etak), 
+                        2.0 * (((xik + 1.0) * etak * etak - xik - 1.0) * psik)],      // dN20
+                    vec![2.0 * ((xik - xik * etak) * psik * psik + xik * etak - xik), 
+                        2.0 * (-((xik * xik - 1.0) * psik * psik - xik * xik + 1.0) / 2.0), 
+                        2.0 * (((1.0 - xik * xik) * etak + xik * xik - 1.0) * psik)],       // dN21
+                    vec![2.0 * ((xik * etak + xik) * psik * psik - xik * etak - xik), 
+                        2.0 * (((xik * xik - 1.0) * psik * psik - xik * xik + 1.0) / 2.0), 
+                        2.0 * (((xik * xik - 1.0) * etak + xik * xik - 1.0) * psik)],      // dN22
+                    vec![2.0 * ((xik * etak + xik) * psik * psik - xik * etak - xik), 
+                        2.0 * (((xik * xik - 1.0) * psik * psik - xik * xik + 1.0) / 2.0), 
+                        2.0 * (((xik * xik - 1.0) * etak + xik * xik - 1.0) * psik)],      // dN23
                 ];
 
                 Ok(ShapeFunction {values, derivatives})
@@ -1202,147 +1027,99 @@ impl GeometricAnalysis {
                 // shape functions are formulated between (-1,1). Here we do a
                 // coordinate system conversion from (0,1) to (-1,1).
 
-                let xi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[0])
-                    .collect();
-                let eta: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[1])
-                    .collect();
-                let psi: Vec<f64> = reference_coords.iter()
-                    .map(|coord| coord[2])
-                    .collect();
+                let xi = 0.1127;
+                let eta = 0.5;
+                let psi = 0.8873;
 
-                let xik: Vec<f64> = xi.iter()
-                    .map(|&x| 2.0 * (x - 0.5))
-                    .collect();
-                let etak: Vec<f64> = eta.iter()
-                    .map(|&e| 2.0 * (e - 0.5))
-                    .collect();
-                let psik: Vec<f64> = psi.iter()
-                    .map(|&p| 2.0 * (p - 0.5))
-                    .collect();
+                let xik = 2.0 * (xi - 0.5);
+                let etak = 2.0 * (eta - 0.5);
+                let psik = 2.0 * (psi - 0.5);
 
-                let xi1: Vec<f64> = xik.iter()
-                    .map(|&x2| -0.5 * x2 * (1.0 - x2))
-                    .collect();
-                let eta1: Vec<f64> = etak.iter()
-                    .map(|&e2| -0.5 * e2 * (1.0 - e2))
-                    .collect();
-                let psi1: Vec<f64> = psik.iter()
-                    .map(|&p2| -0.5 * p2 * (1.0 - p2))
-                    .collect();
+                let xi1 = -0.5 * xik * (1.0 - xik);
+                let eta1 = -0.5 * etak * (1.0 - etak);
+                let psi1 = -0.5 * psik * (1.0 - psik);
 
-                let xi2: Vec<f64> = xik.iter()
-                    .map(|&x2| (1.0 + x2) * (1.0 - x2))
-                    .collect();
-                let eta2: Vec<f64> = etak.iter()
-                    .map(|&e2| (1.0 + e2) * (1.0 - e2))
-                    .collect();
-                let psi2: Vec<f64> = psik.iter()
-                    .map(|&p2| (1.0 + p2) * (1.0 - p2))
-                    .collect();
+                let xi2 = (1.0 + xik) * (1.0 - xik);
+                let eta2 = (1.0 + etak) * (1.0 - etak);
+                let psi2 = (1.0 + psik) * (1.0 - psik);
 
-                let xi3: Vec<f64> = xik.iter()
-                    .map(|&x2| 0.5 * x2 * (1.0 + x2))
-                    .collect();
-                let eta3: Vec<f64> = etak.iter()
-                    .map(|&e2| 0.5 * e2 * (1.0 + e2))
-                    .collect();
-                let psi3: Vec<f64> = psik.iter()
-                    .map(|&p2| 0.5 * p2 * (1.0 + p2))
-                    .collect();
+                let xi3 = 0.5 * xik * (1.0 + xik);
+                let eta3 = 0.5 * etak * (1.0 + etak);
+                let psi3 = 0.5 * psik * (1.0 + psik);
 
-                let xi1_xi: Vec<f64> = xik.iter()
-                    .map(|&x2| x2 - 0.5)
-                    .collect();
-                let eta1_eta: Vec<f64> = etak.iter()
-                    .map(|&e2| e2 - 0.5)
-                    .collect();
-                let psi1_psi: Vec<f64> = psik.iter()
-                    .map(|&p2| p2 - 0.5)
-                    .collect();
+                let xi1_xi = xik - 0.5;
+                let eta1_eta = etak - 0.5;
+                let psi1_psi = psik - 0.5;
 
-                let xi2_xi: Vec<f64> = xik.iter()
-                    .map(|&x2| -2.0 * x2)
-                    .collect();
-                let eta2_eta: Vec<f64> = etak.iter()
-                    .map(|&e2| -2.0 * e2)
-                    .collect();
-                let psi2_psi: Vec<f64> = psik.iter()
-                    .map(|&p2| -2.0 * p2)
-                    .collect();
+                let xi2_xi = -2.0 * xik;
+                let eta2_eta = -2.0 * etak;
+                let psi2_psi = -2.0 * psik;
 
-                let xi3_xi: Vec<f64> = xik.iter()
-                    .map(|&x2| x2 + 0.5)
-                    .collect();
-                let eta3_eta: Vec<f64> = etak.iter()
-                    .map(|&e2| e2 + 0.5)
-                    .collect();
-                let psi3_psi: Vec<f64> = psik.iter()
-                    .map(|&p2| p2 + 0.5)
-                    .collect();
+                let xi3_xi = 0.5 * xik + 0.5;
+                let eta3_eta = 0.5 * etak + 0.5;
+                let psi3_psi = 0.5 * psik + 0.5;
 
                 let values = vec![
                     // Corner nodes
-                    xi1[0] * eta1[0] * psi1[0],      // N0:
-                    xi3[1] * eta1[1] * psi1[1],      // N1:
-                    xi3[2] * eta3[2] * psi1[2],      // N2:
-                    xi1[3] * eta3[3] * psi1[3],      // N3:
-                    xi1[4] * eta1[4] * psi3[4],      // N4:
-                    xi3[5] * eta1[5] * psi3[5],      // N5:
-                    xi3[6] * eta3[6] * psi3[6],      // N6:
-                    xi1[7] * eta3[7] * psi3[7],      // N7:
+                    xi1 * eta1 * psi1,      // N0:
+                    xi3 * eta1 * psi1,      // N1:
+                    xi3 * eta3 * psi1,      // N2:
+                    xi1 * eta3 * psi1,      // N3:
+                    xi1 * eta1 * psi3,      // N4:
+                    xi3 * eta1 * psi3,      // N5:
+                    xi3 * eta3 * psi3,      // N6:
+                    xi1 * eta3 * psi3,      // N7:
                     // Mid-edge nodes
-                    xi2[8] * eta1[8] * psi1[8],      // N8:
-                    xi3[9] * eta2[9] * psi1[9],      // N9:
-                    xi2[10] * eta3[10] * psi1[10],  // N10:
-                    xi1[11] * eta2[11] * psi1[11],  // N11:
-                    xi2[12] * eta1[12] * psi3[12],  // N12:
-                    xi3[13] * eta2[13] * psi3[13],  // N13:
-                    xi2[14] * eta3[14] * psi3[14],  // N14:
-                    xi1[15] * eta2[15] * psi3[15],  // N15:
-                    xi1[16] * eta1[16] * psi2[16],  // N16:
-                    xi3[17] * eta1[17] * psi2[17],  // N17:
-                    xi3[18] * eta3[18] * psi2[18],  // N18:
-                    xi1[19] * eta3[19] * psi2[19],  // N19:
+                    xi2 * eta1 * psi1,      // N8:
+                    xi3 * eta2 * psi1,      // N9:
+                    xi2 * eta3 * psi1,  // N10:
+                    xi1 * eta2 * psi1,  // N11:
+                    xi2 * eta1 * psi3,  // N12:
+                    xi3 * eta2 * psi3,  // N13:
+                    xi2 * eta3 * psi3,  // N14:
+                    xi1 * eta2 * psi3,  // N15:
+                    xi1 * eta1 * psi2,  // N16:
+                    xi3 * eta1 * psi2,  // N17:
+                    xi3 * eta3 * psi2,  // N18:
+                    xi1 * eta3 * psi2,  // N19:
                     // Mid-face nodes
-                    xi2[20] * eta1[20] * psi2[20],  // N20:
-                    xi3[21] * eta2[21] * psi2[21],  // N21:
-                    xi2[22] * eta3[22] * psi2[22],  // N22:
-                    xi1[23] * eta2[23] * psi2[23],  // N23:
-                    xi2[24] * eta2[24] * psi1[24],  // N24:
-                    xi2[25] * eta2[25] * psi3[25],  // N25:
+                    xi2 * eta1 * psi2,  // N20:
+                    xi3 * eta2 * psi2,  // N21:
+                    xi2 * eta3 * psi2,  // N22:
+                    xi1 * eta2 * psi2,  // N23:
+                    xi2 * eta2 * psi1,  // N24:
+                    xi2 * eta2 * psi3,  // N25:
                     // Center node
-                    xi2[26] * eta2[26] * psi2[26],  // N26:
+                    xi2 * eta2 * psi2,  // N26:
                 ];
                 let derivatives = vec![
-                    vec![2.0 * (xi1_xi[0] * eta1[0] * psi1[0]), 2.0 * (xi1[0] * eta1_eta[0] * psi1[0]), 2.0 * (xi1[0] * eta1[0] * psi1_psi[0])],     // dN0
-                    vec![2.0 * (xi3_xi[1] * eta1[1] * psi1[1]), 2.0 * (xi3[1] * eta1_eta[1] * psi1[1]), 2.0 * (xi3[1] * eta1[1] * psi1_psi[1])],      // dN1
-                    vec![2.0 * (xi3_xi[2] * eta3[2] * psi1[2]), 2.0 * (xi3[2] * eta3_eta[2] * psi1[2]), 2.0 * (xi3[2] * eta3[2] * psi1_psi[2])],       // dN2
-                    vec![2.0 * (xi1_xi[3] * eta3[3] * psi1[3]), 2.0 * (xi1[3] * eta3_eta[3] * psi1[3]), 2.0 * (xi1[3] * eta3[3] * psi1_psi[3])],      // dN3
-                    vec![2.0 * (xi1_xi[4] * eta1[4] * psi3[4]), 2.0 * (xi1[4] * eta1_eta[4] * psi3[4]), 2.0 * (xi1[4] * eta1[4] * psi3_psi[4])],      // dN4
-                    vec![2.0 * (xi3_xi[5] * eta1[5] * psi3[5]), 2.0 * (xi3[5] * eta1_eta[5] * psi3[5]), 2.0 * (xi3[5] * eta1[5] * psi3_psi[5])],       // dN5
-                    vec![2.0 * (xi3_xi[6] * eta3[6] * psi3[6]), 2.0 * (xi3[6] * eta3_eta[6] * psi3[6]), 2.0 * (xi3[6] * eta3[6] * psi3_psi[6])],        // dN6
-                    vec![2.0 * (xi1_xi[7] * eta3[7] * psi3[7]), 2.0 * (xi1[7] * eta3_eta[7] * psi3[7]), 2.0 * (xi1[7] * eta3[7] * psi3_psi[7])],       // dN7
-                    vec![2.0 * (xi2_xi[8] * eta1[8] * psi1[8]), 2.0 * (xi2[8] * eta1_eta[8] * psi1[8]), 2.0 * (xi2[8] * eta1[8] * psi1_psi[8])],       // dN8
-                    vec![2.0 * (xi3_xi[9] * eta2[9] * psi1[9]), 2.0 * (xi3[9] * eta2_eta[9] * psi1[9]), 2.0 * (xi3[9] * eta2[9] * psi1_psi[9])],      // dN9
-                    vec![2.0 * (xi2_xi[10] * eta3[10] * psi1[10]), 2.0 * (xi2[10] * eta3_eta[10] * psi1[10]), 2.0 * (xi2[10] * eta3[10] * psi1_psi[10])],        // dN10
-                    vec![2.0 * (xi1_xi[11] * eta2[11] * psi1[11]), 2.0 * (xi1[11] * eta2_eta[11] * psi1[11]), 2.0 * (xi1[11] * eta2[11] * psi1_psi[11])],     // dN11
-                    vec![2.0 * (xi2_xi[12] * eta1[12] * psi3[12]), 2.0 * (xi2[12] * eta1_eta[12] * psi3[12]), 2.0 * (xi2[12] * eta1[12] * psi3_psi[12])],        // dN12
-                    vec![2.0 * (xi3_xi[13] * eta2[13] * psi3[13]), 2.0 * (xi3[13] * eta2_eta[13] * psi3[13]), 2.0 * (xi3[13] * eta2[13] * psi3_psi[13])],       // dN13
-                    vec![2.0 * (xi2_xi[14] * eta3[14] * psi3[14]), 2.0 * (xi2[14] * eta3_eta[14] * psi3[14]), 2.0 * (xi2[14] * eta3[14] * psi3_psi[14])],         // dN14
-                    vec![2.0 * (xi1_xi[15] * eta2[15] * psi3[15]), 2.0 * (xi1[15] * eta2_eta[15] * psi3[15]), 2.0 * (xi1[15] * eta2[15] * psi3_psi[15])],      // dN15
-                    vec![2.0 * (xi1_xi[16] * eta1[16] * psi2[16]), 2.0 * (xi1[16] * eta1_eta[16] * psi2[16]), 2.0 * (xi1[16] * eta1[16] * psi2_psi[16])],     // dN16
-                    vec![2.0 * (xi3_xi[17] * eta1[17] * psi2[17]), 2.0 * (xi3[17] * eta1_eta[17] * psi2[17]), 2.0 * (xi3[17] * eta1[17] * psi2_psi[17])],      // dN17
-                    vec![2.0 * (xi3_xi[18] * eta3[18] * psi2[18]), 2.0 * (xi3[18] * eta3_eta[18] * psi2[18]), 2.0 * (xi3[18] * eta3[18] * psi2_psi[18])],       // dN18
-                    vec![2.0 * (xi1_xi[19] * eta3[19] * psi2[19]), 2.0 * (xi1[19] * eta3_eta[19] * psi2[19]), 2.0 * (xi1[19] * eta3[19] * psi2_psi[19])],      // dN19
-                    vec![2.0 * (xi1_xi[20] * eta2[20] * psi2[20]), 2.0 * (xi1[20] * eta2_eta[20] * psi2[20]), 2.0 * (xi1[20] * eta2[20] * psi2_psi[20])],       // dN20
-                    vec![2.0 * (xi3_xi[21] * eta2[21] * psi2[21]), 2.0 * (xi3[21] * eta2_eta[21] * psi2[21]), 2.0 * (xi3[21] * eta2[21] * psi2_psi[21])],      // dN21
-                    vec![2.0 * (xi2_xi[22] * eta1[22] * psi2[22]), 2.0 * (xi2[22] * eta1_eta[22] * psi2[22]), 2.0 * (xi2[22] * eta1[22] * psi2_psi[22])],       // dN22
-                    vec![2.0 * (xi2_xi[23] * eta3[23] * psi2[23]), 2.0 * (xi2[23] * eta3_eta[23] * psi2[23]), 2.0 * (xi2[23] * eta3[23] * psi2_psi[23])],      // dN23
-                    vec![2.0 * (xi2_xi[24] * eta2[24] * psi1[24]), 2.0 * (xi2[24] * eta2_eta[24] * psi1[24]), 2.0 * (xi2[24] * eta2[24] * psi1_psi[24])],       // dN24
-                    vec![2.0 * (xi2_xi[25] * eta2[25] * psi3[25]), 2.0 * (xi2[25] * eta2_eta[25] * psi3[25]), 2.0 * (xi2[25] * eta2[25] * psi3_psi[25])],      // dN25
-                    vec![2.0 * (xi2_xi[26] * eta2[26] * psi2[26]), 2.0 * (xi2[26] * eta2_eta[26] * psi2[26]), 2.0 * (xi2[26] * eta2[26] * psi2_psi[26])],       // dN26
+                    vec![2.0 * (xi1_xi * eta1 * psi1), 2.0 * (xi1 * eta1_eta * psi1), 2.0 * (xi1 * eta1 * psi1_psi)],     // dN0
+                    vec![2.0 * (xi3_xi * eta1 * psi1), 2.0 * (xi3 * eta1_eta * psi1), 2.0 * (xi3 * eta1 * psi1_psi)],      // dN1
+                    vec![2.0 * (xi3_xi * eta3 * psi1), 2.0 * (xi3 * eta3_eta * psi1), 2.0 * (xi3 * eta3 * psi1_psi)],       // dN2
+                    vec![2.0 * (xi1_xi * eta3 * psi1), 2.0 * (xi1 * eta3_eta * psi1), 2.0 * (xi1 * eta3 * psi1_psi)],      // dN3
+                    vec![2.0 * (xi1_xi * eta1 * psi3), 2.0 * (xi1 * eta1_eta * psi3), 2.0 * (xi1 * eta1 * psi3_psi)],      // dN4
+                    vec![2.0 * (xi3_xi * eta1 * psi3), 2.0 * (xi3 * eta1_eta * psi3), 2.0 * (xi3 * eta1 * psi3_psi)],       // dN5
+                    vec![2.0 * (xi3_xi * eta3 * psi3), 2.0 * (xi3 * eta3_eta * psi3), 2.0 * (xi3 * eta3 * psi3_psi)],        // dN6
+                    vec![2.0 * (xi1_xi * eta3 * psi3), 2.0 * (xi1 * eta3_eta * psi3), 2.0 * (xi1 * eta3 * psi3_psi)],       // dN7
+                    vec![2.0 * (xi2_xi * eta1 * psi1), 2.0 * (xi2 * eta1_eta * psi1), 2.0 * (xi2 * eta1 * psi1_psi)],       // dN8
+                    vec![2.0 * (xi3_xi * eta2 * psi1), 2.0 * (xi3 * eta2_eta * psi1), 2.0 * (xi3 * eta2 * psi1_psi)],      // dN9
+                    vec![2.0 * (xi2_xi * eta3 * psi1), 2.0 * (xi2 * eta3_eta * psi1), 2.0 * (xi2 * eta3 * psi1_psi)],        // dN10
+                    vec![2.0 * (xi1_xi * eta2 * psi1), 2.0 * (xi1 * eta2_eta * psi1), 2.0 * (xi1 * eta2 * psi1_psi)],     // dN11
+                    vec![2.0 * (xi2_xi * eta1 * psi3), 2.0 * (xi2 * eta1_eta * psi3), 2.0 * (xi2 * eta1 * psi3_psi)],        // dN12
+                    vec![2.0 * (xi3_xi * eta2 * psi3), 2.0 * (xi3 * eta2_eta * psi3), 2.0 * (xi3 * eta2 * psi3_psi)],       // dN13
+                    vec![2.0 * (xi2_xi * eta3 * psi3), 2.0 * (xi2 * eta3_eta * psi3), 2.0 * (xi2 * eta3 * psi3_psi)],         // dN14
+                    vec![2.0 * (xi1_xi * eta2 * psi3), 2.0 * (xi1 * eta2_eta * psi3), 2.0 * (xi1 * eta2 * psi3_psi)],      // dN15
+                    vec![2.0 * (xi1_xi * eta1 * psi2), 2.0 * (xi1 * eta1_eta * psi2), 2.0 * (xi1 * eta1 * psi2_psi)],     // dN16
+                    vec![2.0 * (xi3_xi * eta1 * psi2), 2.0 * (xi3 * eta1_eta * psi2), 2.0 * (xi3 * eta1 * psi2_psi)],      // dN17
+                    vec![2.0 * (xi3_xi * eta3 * psi2), 2.0 * (xi3 * eta3_eta * psi2), 2.0 * (xi3 * eta3 * psi2_psi)],       // dN18
+                    vec![2.0 * (xi1_xi * eta3 * psi2), 2.0 * (xi1 * eta3_eta * psi2), 2.0 * (xi1 * eta3 * psi2_psi)],      // dN19
+                    vec![2.0 * (xi1_xi * eta2 * psi2), 2.0 * (xi1 * eta2_eta * psi2), 2.0 * (xi1 * eta2 * psi2_psi)],       // dN20
+                    vec![2.0 * (xi3_xi * eta2 * psi2), 2.0 * (xi3 * eta2_eta * psi2), 2.0 * (xi3 * eta2 * psi2_psi)],      // dN21
+                    vec![2.0 * (xi2_xi * eta1 * psi2), 2.0 * (xi2 * eta1_eta * psi2), 2.0 * (xi2 * eta1 * psi2_psi)],       // dN22
+                    vec![2.0 * (xi2_xi * eta3 * psi2), 2.0 * (xi2 * eta3_eta * psi2), 2.0 * (xi2 * eta3 * psi2_psi)],      // dN23
+                    vec![2.0 * (xi2_xi * eta2 * psi1), 2.0 * (xi2 * eta2_eta * psi1), 2.0 * (xi2 * eta2 * psi1_psi)],       // dN24
+                    vec![2.0 * (xi2_xi * eta2 * psi3), 2.0 * (xi2 * eta2_eta * psi3), 2.0 * (xi2 * eta2 * psi3_psi)],      // dN25
+                    vec![2.0 * (xi2_xi * eta2 * psi2), 2.0 * (xi2 * eta2_eta * psi2), 2.0 * (xi2 * eta2 * psi2_psi)],       // dN26
                 ];
 
                 Ok(ShapeFunction {values, derivatives})
@@ -1353,7 +1130,7 @@ impl GeometricAnalysis {
     }
 
     /// Get the nodes associated with an element
-    fn get_element_nodes(element: &Element, nodes: &[Node]) -> Result<Vec<Node>, ElementError> {
+    pub fn get_element_nodes(element: &Element, nodes: &[Node]) -> Result<Vec<Node>, ElementError> {
         let mut element_nodes = Vec::new();
         
         for &node_id in &element.nodes {
@@ -1376,7 +1153,7 @@ impl GeometricAnalysis {
     }
 
     /// Calculate Jacobian matrix: J[i][j] = sum(dN_k/dxi_j * x_k_i)
-    fn calculate_jacobian(
+    pub fn calculate_jacobian(
         element_nodes: &[Node],
         shape_derivatives: &[Vec<f64>], // shape_derivatives[node][natural_dim]
     ) -> Result<Jacobian, ElementError> {
