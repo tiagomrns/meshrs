@@ -2,10 +2,15 @@
 use std::env;                    // Provides access to command line arguments via env::args()
 use std::process;               // Enables process control, particularly process::exit() for terminating with error codes
 use std::path::{Path, PathBuf}; // Path manipulation utilities - Path for immutable path references, PathBuf for owned paths
+use std::collections::HashMap;  // For storing Gaussian quadrature optimization results
 
 // Import custom modules that contain the core functionality
-mod lib;                   // Module containing data structures (MeshData, Node, Element, etc.)
-use lib::*;                // Wildcard import brings all public items from lib module into scope
+//mod lib;                   // Module containing data structures (MeshData, Node, Element, etc.)
+//use lib::*;                // Wildcard import brings all public items from lib module into scope
+
+// Import custom modules that contain the core functionality
+mod structs_and_impls;                   // Module containing data structures (MeshData, Node, Element, etc.)
+use structs_and_impls::*;                // Wildcard import brings all public items from lib module into scope
 
 // Import custom modules that contain the core functionality
 mod error;                   // Module containing data structures (MeshData, Node, Element, etc.)
@@ -21,7 +26,8 @@ mod writer;                     // Module containing output file writers
 use writer::xml_writer::VTUWriter; // Writer for VTK XML unstructured grid (.vtu) format
 
 mod mesh_analysis;                   // Module containing mesh quality analysis  
-use mesh_analysis::geometric_analysis::GeometricAnalysis; // Geometric analysis for mesh quality  
+use mesh_analysis::geometric_analysis::GeometricAnalysis; // Geometric analysis for mesh quality 
+use mesh_analysis::gaussian_quadrature::*; // Gauss quadrature utilities for numerical integration 
 
 /// Struct to hold parsed command line arguments in a structured format
 /// This makes it easier to pass around and validate the user's input
@@ -32,6 +38,9 @@ struct CommandLineArgs {
     mesh_entity: MeshEntity,            // Specifies which type of values to parse from txt files
     print_vtu: bool,                  // Flag to control whether to print VTU file content to console
     analyze_mesh: bool,               // Flag to enable mesh quality analysis  
+    optimize_gauss: bool,             // Flag to enable Gaussian quadrature optimization
+    gauss_tolerance: f64,             // Tolerance for Gaussian quadrature optimization
+    integration_type: IntegrationType, // Type of integration (Mass or Stiffness)
 }
 
 /// Enum to specify which type of values to parse from txt file(s)
@@ -59,6 +68,9 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
     let mut print_vtu = false;                        // Default to not printing VTU content
     let mut txt_files: Vec<String> = Vec::new();      // Collect all txt files to process based on mesh_entity later
     let mut analyze_mesh = false;                     // Default to not analyzing mesh quality
+    let mut optimize_gauss = false;                   // Default to not optimizing Gaussian quadrature
+    let mut gauss_tolerance = 1e-6;                   // Default tolerance for Gaussian quadrature
+    let mut integration_type = IntegrationType::Mass; // Default integration type
 
     // Start parsing from index 1 (skip program name at index 0)
     let mut i = 1;
@@ -78,6 +90,26 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
             },
             "--analyze-mesh" => {                     // User wants mesh quality analysis  
                 analyze_mesh = true;                  // Enable mesh analysis 
+            },
+            "--optimize-gauss" => {                   // User wants Gaussian quadrature optimization
+                optimize_gauss = true;                // Enable Gauss optimization
+            },
+            "--gauss-tolerance" => {                  // User specified tolerance for Gauss optimization
+                i += 1; // Move to next argument for the value
+                if i >= args.len() {
+                    return Err("Missing value for --gauss-tolerance".to_string());
+                }
+                gauss_tolerance = args[i].parse::<f64>()
+                    .map_err(|_| format!("Invalid tolerance value: {}", args[i]))?;
+                if gauss_tolerance <= 0.0 {
+                    return Err("Tolerance must be positive".to_string());
+                }
+            },
+            "--mass-integration" => {                 // User wants mass matrix integration
+                integration_type = IntegrationType::Mass;
+            },
+            "--stiffness-integration" => {            // User wants stiffness matrix integration
+                integration_type = IntegrationType::Stiffness;
             },
             file if file.ends_with(".mphtxt") || file.ends_with(".inp") => { // Check if file is a mesh file
                 if mesh_file.is_some() {              // Check if we already found a mesh file
@@ -129,7 +161,7 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
 
     // Validate that if txt files are provided, the user must specify what type they contain
     // This prevents ambiguity about how to parse the txt files
-    if !txt_files.is_empty() && !args.iter().any(|arg| arg.starts_with("--") && (arg.contains("values") || arg == "--print-vtu" || arg == "--analyze-mesh")) { 
+    if !txt_files.is_empty() && !args.iter().any(|arg| arg.starts_with("--") && (arg.contains("values") || arg == "--print-vtu" || arg == "--analyze-mesh" || arg == "--optimize-gauss")) { 
         return Err("When parsing txt files, you must specify --node-values, --element-values, or --both-values".to_string());
     }
 
@@ -141,6 +173,9 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
         mesh_entity,       // Specified mesh entity parsing mode
         print_vtu,        // VTU printing preference
         analyze_mesh,     // Mesh analysis preference
+        optimize_gauss,   // Gaussian quadrature optimization preference
+        gauss_tolerance,  // Tolerance for Gauss optimization
+        integration_type, // Integration type preference
     })
 }
 
@@ -163,6 +198,10 @@ fn print_usage(program_name: &str) {
     eprintln!("  --both-values         Parse two txt files (first=nodes, second=elements)"); // Both values option description
     eprintln!("  --print-vtu           Print VTU file content to console");      // Print option description
     eprintln!("  --analyze-mesh        Perform mesh quality analysis");          // Analysis option description 
+    eprintln!("  --optimize-gauss      Optimize Gaussian quadrature points");    // Gauss optimization description
+    eprintln!("  --gauss-tolerance <val> Set tolerance for Gauss optimization (default: 1e-6)"); // Tolerance description
+    eprintln!("  --mass-integration    Use mass matrix integration (default)");   // Mass integration description
+    eprintln!("  --stiffness-integration Use stiffness matrix integration");     // Stiffness integration description
     eprintln!(); // Empty line for separation
     eprintln!("Note: Mesh file is always required. Value type must be specified when using txt files."); // Important usage note
     eprintln!(); // Empty line for separation
@@ -174,6 +213,9 @@ fn print_usage(program_name: &str) {
     eprintln!("  {} model.inp nodes.txt elements.txt --both-values --print-vtu # Parse all with output", program_name); // Full featured example
     eprintln!("  {} mesh.mphtxt --analyze-mesh               # Parse mesh + quality analysis", program_name); // Analysis example  
     eprintln!("  {} mesh.mphtxt nodes.txt --node-values --analyze-mesh # Parse + analyze both meshes", program_name); // Full analysis example 
+    eprintln!("  {} mesh.mphtxt --optimize-gauss --mass-integration # Optimize Gauss points for mass matrix", program_name);
+    eprintln!("  {} mesh.mphtxt --optimize-gauss --gauss-tolerance 1e-8 # Custom tolerance", program_name);
+    eprintln!("  {} mesh.mphtxt --analyze-mesh --optimize-gauss # Both analysis and optimization", program_name);
 }
 
 /* 
@@ -327,6 +369,132 @@ fn analyze_mesh_quality(mesh_data: &MeshData, mesh_name: &str) -> Result<(), Str
     }
 }
 
+/// Perform Gaussian quadrature optimization and print results
+fn optimize_gaussian_quadrature(
+    mesh_data: &MeshData,
+    integration_type: &IntegrationType,
+    tolerance: f64,
+) -> Result<(), String> {
+    println!("\n{}", "=".repeat(60));
+    println!("GAUSSIAN QUADRATURE OPTIMIZATION");
+    println!("{}", "=".repeat(60));
+    
+    println!("Integration type: {:?}", integration_type);
+    println!("Error tolerance: {:.2e}", tolerance);
+    println!("Analyzing {} elements...", mesh_data.elements.len());
+    
+    // First, calculate errorless integration points for comparison
+    let mut errorless_points_map = HashMap::new();
+    let mut errorless_total = 0usize;
+    
+    for type_info in &mesh_data.element_type_info {
+        if matches!(type_info.element_type, ElementType::Vertex) {
+            continue;  // Skip vertex elements
+        }
+        
+        match GaussianQuadrature::get_required_polynomial_order(&type_info.element_type, integration_type) {
+            Ok(required_poly_order) => {
+                let errorless_points = match GaussianQuadrature::for_element(&type_info.element_type, required_poly_order) {
+                    Ok(quad_rule) => quad_rule.points.len(),
+                    Err(_) => 0,
+                };
+                
+                let start_idx = type_info.start_index;
+                let end_idx = start_idx + type_info.num_elements;
+                for element_idx in start_idx..end_idx {
+                    if element_idx < mesh_data.elements.len() {
+                        let element = &mesh_data.elements[element_idx];
+                        errorless_points_map.insert(element.id, errorless_points);
+                        errorless_total += errorless_points;
+                    }
+                }
+            },
+            Err(_) => {
+                let start_idx = type_info.start_index;
+                let end_idx = start_idx + type_info.num_elements;
+                for element_idx in start_idx..end_idx {
+                    if element_idx < mesh_data.elements.len() {
+                        let element = &mesh_data.elements[element_idx];
+                        errorless_points_map.insert(element.id, 0);
+                    }
+                }
+            }
+        }
+    }
+    
+    match GaussianQuadrature::optimize_mesh_gauss_points(mesh_data, integration_type, tolerance) {
+        Ok(optimization_results) => {
+            println!("Optimization completed successfully!");
+            
+            // Print ALL elements (no truncation, no ellipsis)
+            println!("\nERRORLESS vs OPTIMIZED COMPARISON:");
+            println!("{}", "=".repeat(60));
+            println!("{:<12} | {:<15} | {:<15} | {:<10}", "Element ID", "Errorless Pts", "Optimized Pts", "Savings");
+            println!("{}", "-".repeat(60));
+            
+            let mut total_savings: i32 = 0;
+            let mut sorted_elements: Vec<_> = optimization_results.keys().copied().collect();
+            sorted_elements.sort_unstable();
+
+            for element_id in sorted_elements {
+                let errorless_pts = *errorless_points_map.get(&element_id).unwrap_or(&0);
+                let optimized_pts = *optimization_results.get(&element_id).unwrap_or(&0);
+                let savings = errorless_pts as i32 - optimized_pts as i32;
+                total_savings += savings;
+                
+                let savings_str = if savings > 0 {
+                    format!("-{}", savings)
+                } else if savings < 0 {
+                    format!("+{}", -savings)
+                } else {
+                    "0".to_string()
+                };
+                
+                println!("{:<12} | {:<15} | {:<15} | {:<10}", 
+                    element_id, errorless_pts, optimized_pts, savings_str);
+            }
+            
+            println!("{}", "-".repeat(60));
+            
+            // Summary statistics (kept)
+            let total_elements = optimization_results.len();
+            let optimized_total: usize = optimization_results.values().sum();
+            
+            println!("\nSUMMARY STATISTICS:");
+            println!("{}", "=".repeat(30));
+            println!("Total elements:           {}", total_elements);
+            println!("Errorless total points:   {}", errorless_total);
+            println!("Optimized total points:   {}", optimized_total);
+            println!("Total point savings:      {}", total_savings);
+            
+            let efficiency = if errorless_total > 0 {
+                (total_savings as f64 / errorless_total as f64) * 100.0
+            } else {
+                0.0
+            };
+            
+            if efficiency > 0.0 {
+                println!("Computational savings:    {:.1}%", efficiency);
+            } else if efficiency < 0.0 {
+                println!("Additional cost:          {:.1}%", -efficiency);
+            } else {
+                println!("No change in points");
+            }
+
+            // NOTE: “QUALITY METRICS” section intentionally removed.
+            println!("{}", "=".repeat(60));
+            Ok(())
+        },
+        Err(e) => {
+            println!("Optimization failed: {:?}", e);
+            println!("{}", "=".repeat(60));
+            Err(format!("Gaussian quadrature optimization failed: {:?}", e))
+        }
+    }
+}
+
+
+
 /// Main entry point - the function that runs when the program starts
 /// Coordinates the entire parsing and conversion process from command line to VTU output
 fn main() {
@@ -409,6 +577,14 @@ fn main() {
             println!("\nNote: No node data provided, analyzing undeformed mesh only.");
         }
         */
+    }
+
+    // GAUSSIAN QUADRATURE OPTIMIZATION SECTION
+    if cmd_args.optimize_gauss {
+        // Perform mesh-wide Gaussian quadrature optimization
+        if let Err(e) = optimize_gaussian_quadrature(&mesh_data, &cmd_args.integration_type, cmd_args.gauss_tolerance) {
+            eprintln!("Warning: Gaussian quadrature optimization failed: {}", e);
+        }
     }
 
     // Generate output file name based on input mesh file name

@@ -1,0 +1,664 @@
+// use std::io;   // Import I/O module for error handling
+use std::collections::HashMap;
+
+use vtkio::model::CellType;  
+use crate::error::*;                     // Import mesh data structures and error types from error module
+
+use std::ops::{Add, Sub, Mul, Div, Neg};
+use num_traits::{Zero, One, FromPrimitive};
+
+#[derive(Debug, Clone)]             // Auto-implement Debug for printing and Clone for copying 
+                                    // Clone is used to copy in the case of deformed mesh. (for undeformed mesh we dont need to clone because we maintain the originaal values)
+pub struct Node {                   // Defines a structure to represent a mesh node/vertex
+    pub id: usize,                  // Unique identifier for the node
+    pub coordinates: Vec<f64>,      // Spatial coordinates (x, y for 2D, x,y,z for 3D)
+}
+
+
+#[derive(Debug, Clone)]
+pub struct Element {                // Defines a structure to represent a mesh element
+    pub id: usize,                  // Unique identifier for the element
+    pub nodes: Vec<usize>,          // List of node IDs forming this element
+}
+
+/// Element types available in VTK 
+#[derive(Debug, Clone)]
+pub enum ElementType {              // Enumeration of supported finite element types
+    Vertex,                         // Vertex element   Comsol
+    Line,                           // First order edge element   Comsol
+    QuadraticEdge,                  // Second order edge element  Comsol
+    Triangle,                       // First order triangular element   Comsol
+    QuadraticTriangle,              // Second order triangular element   Comsol
+    Quad,                           // First order quadrilateral element   Comsol
+    QuadraticQuad,                  // Second order quadrilateral element 9 nodes  Abaqus
+    BiquadraticQuad,                // Second order quadrilateral element 9 nodes  Comsol
+    Tetra,                          // First order tetrahedral element   Comsol
+    QuadraticTetra,                 // Second order tetrahedral element   Comsol
+    Pyramid,                        // First order pyramid element   Comsol
+    //QuadraticPyramid,            // Second order pyramid element   13 nodes   Comsol  ???
+    // TriquadraticPyramid,            // Second order pyramid element   with padded nodes  19 nodes   Comsol
+    Wedge,                          // First order prism element   Comsol
+    QuadraticWedge,                 // Second order prism element   Abaqus
+    BiquadraticQuadraticWedge,      // Second order prism element   Comsol
+    Hexahedron,                     // First order hexahedral element   Comsol
+    QuadraticHexahedron,            // Second order hexahedral element  20 nodes   Abaqus
+    BiquadraticQuadraticHexahedron, // Second order hexahedral element  24 nodes   Abaqus
+    TriquadraticHexahedron,         // Second order hexahedral element  27 nodes   Comsol
+
+    //QuadraticHexahedron27,        // Second order hexahedral element  e.g. only available in comsol and vtk                     
+}
+
+impl ElementType {
+    
+    /* 
+    pub fn from_str_ansys(s: &str) -> Option<ElementType> { // Converts string from input data to its element type correspond - Ansys to xml vtk (probably no need to reorder nodes for xml vtk) 
+
+        // No match found
+        None
+    }
+    */
+
+    pub fn eltype_vtk(&self) -> CellType { //converts element type from ElementType to VTK element type ID
+        
+        match self {
+            ElementType::Vertex => CellType::Vertex,
+            ElementType::Line => CellType::Line,  
+            ElementType::QuadraticEdge => CellType::QuadraticEdge,  
+            ElementType::Triangle => CellType::Triangle, 
+            ElementType::QuadraticTriangle => CellType::QuadraticTriangle,  
+            ElementType::Quad => CellType::Quad,
+            ElementType::QuadraticQuad => CellType::QuadraticQuad, 
+            ElementType::BiquadraticQuad => CellType::BiquadraticQuad, 
+            ElementType::Tetra => CellType::Tetra,  
+            ElementType::QuadraticTetra => CellType::QuadraticTetra,  
+            ElementType::Pyramid => CellType::Pyramid,
+            //ElementType::QuadraticPyramid => CellType::QuadraticPyramid,
+            // ElementType::TriquadraticPyramid => CellType::TriquadraticPyramid,   
+            ElementType::Wedge => CellType::Wedge,   
+            ElementType::QuadraticWedge => CellType::QuadraticWedge,
+            ElementType::BiquadraticQuadraticWedge => CellType::BiquadraticQuadraticWedge,  
+            ElementType::Hexahedron => CellType::Hexahedron,   
+            ElementType::QuadraticHexahedron => CellType::QuadraticHexahedron,  
+            ElementType::BiquadraticQuadraticHexahedron => CellType::BiquadraticQuadraticHexahedron, 
+            ElementType::TriquadraticHexahedron => CellType::TriquadraticHexahedron,  
+            
+        }
+    }
+
+    pub fn get_shape_functions<T: FloatLike>(
+        element_type: &ElementType, 
+        natural_coords: &[T]
+    ) -> Option<ShapeFunction<T>> {
+
+        let zero = T::zero();
+        let half = T::from_f64(0.5).unwrap();
+        let one = T::one();
+        let two = T::from_f64(2.0).unwrap();
+        let four = T::from_f64(4.0).unwrap();
+                
+
+        match element_type {
+            ElementType::Vertex => {
+                // Not implemented yet
+                None
+            },
+
+            ElementType::Line => {
+                let xi = natural_coords[0].clone();
+                
+                let values = vec![
+                    one.clone() - xi.clone(),
+                    xi.clone(),
+                ];
+                let p_order = 1;
+
+                let derivatives = vec![
+                    vec![-one.clone()],
+                    vec![one.clone()],
+                ];
+                let p_order_deriv = 0;
+
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+            },
+
+            ElementType::QuadraticEdge => {
+                let xi = natural_coords[0].clone();
+                
+                let values = vec![
+                    two.clone() * (xi.clone() - half.clone()) * (xi.clone() - one.clone()),
+                    two.clone() * xi.clone() * (xi.clone() - half.clone()),
+                    four.clone() * xi.clone() * (one.clone() - xi.clone()),
+                ];
+                let p_order = 2;
+
+                let derivatives = vec![
+                    vec![four.clone() * xi.clone() - T::from_f64(3.0).unwrap()],
+                    vec![four.clone() * xi.clone() - one.clone()],
+                    vec![four.clone() - T::from_f64(8.0).unwrap() * xi.clone()],
+                ];
+                let p_order_deriv = 1;
+
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+            },
+
+            ElementType::Triangle => {
+                let xi = natural_coords[0].clone();
+                let eta = natural_coords[1].clone();
+                
+                let values = vec![
+                    one.clone() - xi.clone() - eta.clone(),
+                    xi.clone(),
+                    eta.clone(),
+                ];
+                let p_order = 1;
+
+                let derivatives = vec![
+                    vec![-one.clone(), -one.clone()],
+                    vec![one.clone(), zero.clone()],
+                    vec![zero.clone(), one.clone()],
+                ];
+                let p_order_deriv = 0;
+
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+            },
+
+            ElementType::QuadraticTriangle => {
+                let xi = natural_coords[0].clone();
+                let eta = natural_coords[1].clone();
+                
+                let lambda = one.clone() - xi.clone() - eta.clone();
+                
+                let values = vec![
+                    lambda.clone() * (two.clone() * lambda.clone() - one.clone()),
+                    xi.clone() * (two.clone() * xi.clone() - one.clone()),
+                    eta.clone() * (two.clone() * eta.clone() - one.clone()),
+                    four.clone() * xi.clone() * lambda.clone(),
+                    four.clone() * xi.clone() * eta.clone(),
+                    four.clone() * eta.clone() * lambda.clone(),
+                ];
+                let p_order = 2;
+
+                let derivatives = vec![
+                    vec![
+                        four.clone() * (xi.clone() + eta.clone()) - T::from_f64(3.0).unwrap(),
+                        four.clone() * (xi.clone() + eta.clone()) - T::from_f64(3.0).unwrap()
+                    ],
+                    vec![four.clone() * xi.clone() - one.clone(), zero.clone()],
+                    vec![zero.clone(), four.clone() * eta.clone() - one.clone()],
+                    vec![
+                        four.clone() - T::from_f64(8.0).unwrap() * xi.clone() - four.clone() * eta.clone(),
+                        -four.clone() * xi.clone()
+                    ],
+                    vec![four.clone() * eta.clone(), four.clone() * xi.clone()],
+                    vec![
+                        -four.clone() * eta.clone(),
+                        four.clone() - T::from_f64(8.0).unwrap() * eta.clone() - four.clone() * xi.clone()
+                    ],
+                ];
+                let p_order_deriv = 1;
+
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+            },
+
+            ElementType::Quad => {
+                let xi = natural_coords[0].clone();
+                let eta = natural_coords[1].clone();
+                
+                let xim = one.clone() - xi.clone();
+                let etam = one.clone() - eta.clone();
+                
+                let values = vec![
+                    xim.clone() * etam.clone(),
+                    xi.clone() * etam.clone(),
+                    xi.clone() * eta.clone(),
+                    xim.clone() * eta.clone(),
+                ];
+                let p_order = 2;
+
+                let derivatives = vec![
+                    vec![-etam.clone(), -xim.clone()],
+                    vec![etam.clone(), -xi.clone()],
+                    vec![eta.clone(), xi.clone()],
+                    vec![-eta.clone(), xim.clone()],
+                ];
+                let p_order_deriv = 1;
+
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+            },
+
+            ElementType::QuadraticQuad => {
+                let xi = natural_coords[0].clone();
+                let eta = natural_coords[1].clone();
+                
+                let xim = one.clone() - xi.clone();
+                let etam = one.clone() - eta.clone();
+                
+                let values = vec![
+                    xim.clone() * etam.clone() - half.clone() * (four.clone() * xi.clone() * xim.clone() * etam.clone() + four.clone() * xim.clone() * etam.clone() * eta.clone()),
+                    xi.clone() * etam.clone() - half.clone() * (four.clone() * xi.clone() * xim.clone() * etam.clone() + four.clone() * xi.clone() * etam.clone() * eta.clone()),
+                    xi.clone() * eta.clone() - half.clone() * (four.clone() * xi.clone() * etam.clone() * eta.clone() + four.clone() * xi.clone() * xim.clone() * eta.clone()),
+                    xim.clone() * eta.clone() - half.clone() * (four.clone() * xi.clone() * xim.clone() * eta.clone() + four.clone() * xim.clone() * etam.clone() * eta.clone()),
+                    four.clone() * xi.clone() * xim.clone() * etam.clone(),
+                    four.clone() * xi.clone() * etam.clone() * eta.clone(),
+                    four.clone() * xi.clone() * xim.clone() * eta.clone(),
+                    four.clone() * xim.clone() * etam.clone() * eta.clone(),
+                ];
+                let p_order = 3;
+
+                // Simplified derivatives for QuadraticQuad - you'll need to complete these
+                let derivatives = vec![
+                    vec![T::zero(), T::zero()], // Placeholder
+                    vec![T::zero(), T::zero()],
+                    vec![T::zero(), T::zero()],
+                    vec![T::zero(), T::zero()],
+                    vec![T::zero(), T::zero()],
+                    vec![T::zero(), T::zero()],
+                    vec![T::zero(), T::zero()],
+                    vec![T::zero(), T::zero()],
+                ];
+                let p_order_deriv = 2;
+
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+            },
+
+            ElementType::BiquadraticQuad => {
+                // Not implemented yet
+                None
+            },
+
+            ElementType::Tetra => {
+                let xi = natural_coords[0].clone();
+                let eta = natural_coords[1].clone();
+                let psi = natural_coords[2].clone();
+                
+                let values = vec![
+                    one.clone() - xi.clone() - eta.clone() - psi.clone(),
+                    xi.clone(),
+                    eta.clone(),
+                    psi.clone(),
+                ];
+                let p_order = 1;
+
+                let derivatives = vec![
+                    vec![-one.clone(), -one.clone(), -one.clone()],
+                    vec![one.clone(), zero.clone(), zero.clone()],
+                    vec![zero.clone(), one.clone(), zero.clone()],
+                    vec![zero.clone(), zero.clone(), one.clone()],
+                ];
+                let p_order_deriv = 0;
+
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+            },
+
+            ElementType::QuadraticTetra => {
+                let xi = natural_coords[0].clone();
+                let eta = natural_coords[1].clone();
+                let psi = natural_coords[2].clone();
+                
+                let lambda = one.clone() - xi.clone() - eta.clone() - psi.clone();
+                
+                let values = vec![
+                    lambda.clone() * (two.clone() * lambda.clone() - one.clone()),
+                    xi.clone() * (two.clone() * xi.clone() - one.clone()),
+                    eta.clone() * (two.clone() * eta.clone() - one.clone()),
+                    psi.clone() * (two.clone() * psi.clone() - one.clone()),
+                    four.clone() * lambda.clone() * xi.clone(),
+                    four.clone() * xi.clone() * eta.clone(),
+                    four.clone() * eta.clone() * lambda.clone(),
+                    four.clone() * lambda.clone() * psi.clone(),
+                    four.clone() * xi.clone() * psi.clone(),
+                    four.clone() * eta.clone() * psi.clone(),
+                ];
+                let p_order = 2;
+
+                let derivatives = vec![
+                    vec![
+                        four.clone() * (xi.clone() + eta.clone() + psi.clone()) - T::from_f64(3.0).unwrap(),
+                        four.clone() * (xi.clone() + eta.clone() + psi.clone()) - T::from_f64(3.0).unwrap(),
+                        four.clone() * (xi.clone() + eta.clone() + psi.clone()) - T::from_f64(3.0).unwrap()
+                    ],
+                    vec![four.clone() * xi.clone() - one.clone(), zero.clone(), zero.clone()],
+                    vec![zero.clone(), four.clone() * eta.clone() - one.clone(), zero.clone()],
+                    vec![zero.clone(), zero.clone(), four.clone() * psi.clone() - one.clone()],
+                    vec![
+                        four.clone() - T::from_f64(8.0).unwrap() * xi.clone() - four.clone() * eta.clone() - four.clone() * psi.clone(),
+                        -four.clone() * xi.clone(),
+                        -four.clone() * xi.clone()
+                    ],
+                    vec![four.clone() * eta.clone(), four.clone() * xi.clone(), zero.clone()],
+                    vec![
+                        -four.clone() * eta.clone(),
+                        four.clone() - four.clone() * xi.clone() - T::from_f64(8.0).unwrap() * eta.clone() - four.clone() * psi.clone(),
+                        -four.clone() * eta.clone()
+                    ],
+                    vec![
+                        -four.clone() * psi.clone(),
+                        -four.clone() * psi.clone(),
+                        four.clone() - four.clone() * xi.clone() - four.clone() * eta.clone() - T::from_f64(8.0).unwrap() * psi.clone()
+                    ],
+                    vec![four.clone() * psi.clone(), zero.clone(), four.clone() * xi.clone()],
+                    vec![zero.clone(), four.clone() * psi.clone(), four.clone() * eta.clone()],
+                ];
+                let p_order_deriv = 1;
+
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+            },
+
+            ElementType::Pyramid => {
+                let xi = natural_coords[0].clone();
+                let eta = natural_coords[1].clone();
+                let psi = natural_coords[2].clone();
+                
+                let xim = one.clone() - xi.clone();
+                let etam = one.clone() - eta.clone();
+                let psim = one.clone() - psi.clone();
+                
+                let values = vec![
+                    xim.clone() * etam.clone() * psim.clone(),
+                    xi.clone() * etam.clone() * psim.clone(),
+                    xi.clone() * eta.clone() * psim.clone(),
+                    xim.clone() * eta.clone() * psim.clone(),
+                    psi.clone(),
+                ];
+                let p_order = 3;
+
+                let derivatives = vec![
+                    vec![-etam.clone() * psim.clone(), -xim.clone() * psim.clone(), -xim.clone() * etam.clone()],
+                    vec![etam.clone() * psim.clone(), -xi.clone() * psim.clone(), -xi.clone() * etam.clone()],
+                    vec![eta.clone() * psim.clone(), xi.clone() * psim.clone(), -xi.clone() * eta.clone()],
+                    vec![-eta.clone() * psim.clone(), xim.clone() * psim.clone(), -xim.clone() * eta.clone()],
+                    vec![zero.clone(), zero.clone(), one.clone()],
+                ];
+                let p_order_deriv = 2;
+
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+            },
+
+            ElementType::Wedge => {
+                let xi = natural_coords[0].clone();
+                let eta = natural_coords[1].clone();
+                let psi = natural_coords[2].clone();
+                
+                let values = vec![
+                    (one.clone() - xi.clone() - eta.clone()) * (one.clone() - psi.clone()),
+                    xi.clone() * (one.clone() - psi.clone()),
+                    eta.clone() * (one.clone() - psi.clone()),
+                    (one.clone() - xi.clone() - eta.clone()) * psi.clone(),
+                    xi.clone() * psi.clone(),
+                    eta.clone() * psi.clone(),
+                ];
+                let p_order = 2;
+
+                let derivatives = vec![
+                    vec![-one.clone() + psi.clone(), -one.clone() + psi.clone(), -one.clone() + xi.clone() + eta.clone()],
+                    vec![one.clone() - psi.clone(), zero.clone(), -xi.clone()],
+                    vec![zero.clone(), one.clone() - psi.clone(), -eta.clone()],
+                    vec![-psi.clone(), -psi.clone(), one.clone() - xi.clone() - eta.clone()],
+                    vec![psi.clone(), zero.clone(), xi.clone()],
+                    vec![zero.clone(), psi.clone(), eta.clone()],
+                ];
+                let p_order_deriv = 1;
+
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+            },
+
+            ElementType::QuadraticWedge => {
+                // Not implemented yet
+                None
+            },
+
+            ElementType::BiquadraticQuadraticWedge => {
+                // Not implemented yet
+                None
+            },
+
+            ElementType::Hexahedron => {
+                // Not implemented yet
+                None
+            },
+
+            ElementType::QuadraticHexahedron => {
+                // Not implemented yet
+                None
+            },
+
+            ElementType::BiquadraticQuadraticHexahedron => {
+                // Not implemented yet
+                None
+            },
+
+            ElementType::TriquadraticHexahedron => {
+                // Not implemented yet
+                None
+            },
+
+            // Add other element types as needed...
+            _ => None,
+        }
+    }
+
+    // Get element dimension
+    pub fn get_element_dimension(element_type: &ElementType) -> Option<usize> {
+        match element_type {
+            ElementType::Line | ElementType::QuadraticEdge => Some(1),
+            ElementType::Triangle | ElementType::QuadraticTriangle | 
+            ElementType::Quad | ElementType::QuadraticQuad | ElementType::BiquadraticQuad => Some(2),
+            ElementType::Tetra | ElementType::QuadraticTetra | ElementType::Pyramid | 
+            ElementType::Wedge | ElementType::QuadraticWedge | ElementType::BiquadraticQuadraticWedge | 
+            ElementType::Hexahedron | ElementType::QuadraticHexahedron | 
+            ElementType::BiquadraticQuadraticHexahedron | ElementType::TriquadraticHexahedron => Some(3),
+            ElementType::Vertex => Some(0),
+            _ => None,
+        }
+    }
+
+}
+
+#[derive(Debug, Clone)]
+pub struct GaussianQuadrature {
+    pub points: Vec<Vec<f64>>, // Points in natural coordinates
+    pub weights: Vec<f64>,
+}
+
+impl GaussianQuadrature {
+
+}
+
+#[derive(Debug)]                                    // Auto-implement Debug for printing
+pub struct MeshData {                               // Defines a structure to represent a mesh
+    pub dimension: usize,                           // Spatial dimension (from # sdim tag)
+    pub num_nodes: usize,                           // Number of nodes (from # number of mesh vertices tag)
+    pub min_node_index: usize,                      // Lowest mesh vertex index (from # lowest mesh vertex index tag) 
+    pub nodes: Vec<Node>,                           // All nodes with their coordinates
+    pub num_eltypes: usize,                         // Number of element types (from # number of element types tag)
+    pub elements: Vec<Element>,                     // All elements with their connectivity
+    pub element_type_info: Vec<ElementTypeInfo>,    // Information about each element type
+}
+
+#[derive(Debug)]
+pub struct ElementTypeInfo {
+    pub element_type: ElementType,                  // The actual element type enum
+    pub num_elements: usize,                        // Number of elements of this type
+    pub start_index: usize,                         // Starting index in the main elements vector
+    pub nodes_per_element: usize,                   // Nodes per element for this type
+}
+
+/// Enumeration of physical value types that can be stored at nodes/elements
+/// These represent different physical quantities in simulation results
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValueType {
+    Displacement,   // Structural displacement vector [ux, uy, uz]
+    Pressure,       // Scalar pressure field
+    Stress,         // Stress tensor (6 components in Voigt notation)
+    Strain,         // Strain tensor (6 components in Voigt notation)
+    Velocity,       // Velocity vector [vx, vy, vz]
+    Acceleration,   // Acceleration vector [ax, ay, az]
+    Temperature,    // Scalar temperature field
+
+    // Add more physical quantity types as needed
+}
+
+impl ValueType {
+    /// Parse value type from text column headers in result files
+    /// Converts common abbreviations and full names to ValueType enum
+    pub fn from_str_txt(s: &str) -> Option<ValueType> {
+        match s.to_lowercase().as_str() {
+            // Displacement variants
+            "u" | "v" | "w" | "displacement" => Some(ValueType::Displacement),
+            // Pressure variants  
+            "p" | "pressure" => Some(ValueType::Pressure),
+            // Stress variants
+            "s" | "stress" => Some(ValueType::Stress),
+            // Strain variants
+            "strain" => Some(ValueType::Strain),
+            // Velocity variants
+            "vel" | "velocity" => Some(ValueType::Velocity),
+            // Acceleration variants
+            "accel" | "acceleration" => Some(ValueType::Acceleration),
+            // Temperature variants
+            "t" | "temp" | "temperature" => Some(ValueType::Temperature),
+
+            // Add more variants as needed
+
+            // Unknown type
+            _ => None,
+        }
+    }
+
+    // Helper function to convert ValueType to attribute name
+    pub fn get_attribute_name(value_type: &ValueType) -> &'static str {
+        match value_type {
+            ValueType::Displacement => "Displacement",
+            ValueType::Velocity => "Velocity",
+            ValueType::Acceleration => "Acceleration",
+            ValueType::Stress => "Stress",
+            ValueType::Strain => "Strain",
+            ValueType::Temperature => "Temperature",
+            ValueType::Pressure => "Pressure",
+
+            // Add more mappings as needed for your ValueType enum
+
+            _ => "Unknown",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct NodeValue {                  // Defines a structure to represent node value
+    pub id: usize,                      // Unique identifier for the node
+    pub values: Vec<f64>,               // node values (x, y for 2D, x,y,z for 3D)
+}
+ 
+#[derive(Debug)]
+pub struct NodeValueTypeInfo {
+    pub dimension: usize,               // Physical dimension (1=scalar, 3=vector, 6=tensor)
+    pub num_nodes: usize,               // Total number of nodes
+    pub nodevalue_type: ValueType,      // Type of physical quantity
+    pub num_nodevalue_type: usize,      // Total number of node values type
+    pub start_index: usize,             // Starting index in the node_values array
+}
+
+#[derive(Debug)]
+pub struct NodeValueData {
+    pub node_values: Vec<NodeValue>,                          // All node values: [type1_allnodes_alltime, type2_allnodes_alltime, ...]
+    pub node_value_type_info: Vec<NodeValueTypeInfo>,   // Metadata describing node value organization
+}
+
+#[derive(Debug)]
+pub struct ElementValue {               // Defines a structure to represent element value
+    pub id: usize,                      // Unique identifier for the element
+    pub values: Vec<f64>,               // element values (x, y for 2D, x,y,z for 3D)
+}
+
+#[derive(Debug)]
+pub struct ElementValueTypeInfo {
+    pub dimension: usize,           // Physical dimension (1=scalar, 3=vector, 6=tensor)
+    pub num_elements: usize,      // Total number of values for this type across all time steps
+    pub elementvalue_type: ValueType,  // Type of physical quantity
+    pub num_elementvalue_type: usize,      // Total number of element values type
+    pub start_index: usize,         // Starting index in the element_values array
+}
+
+#[derive(Debug)]
+pub struct ElementValueData {
+    pub element_values: Vec<ElementValue>,                          // All element values: [type1_allnodes_alltime, type2_allnodes_alltime, ...]
+    pub element_value_type_info: Vec<ElementValueTypeInfo>,   // Metadata describing element value organization
+}
+
+
+/// Geometric analysis module
+// Generic numeric trait
+pub trait FloatLike: 
+    Clone + 
+    Add<Output=Self> + 
+    Sub<Output=Self> + 
+    Mul<Output=Self> + 
+    Div<Output=Self> + 
+    Neg<Output=Self> + 
+    Zero + 
+    One + 
+    FromPrimitive + 
+    PartialEq +
+    Sqrt<Output=Self> 
+{}
+
+pub trait Sqrt {
+    type Output;
+    fn sqrt(self) -> Self::Output;
+}
+
+impl Sqrt for f32 {
+    type Output = f32;
+    fn sqrt(self) -> f32 {
+        self.sqrt()
+    }
+}
+
+impl Sqrt for f64 {
+    type Output = f64;
+    fn sqrt(self) -> f64 {
+        self.sqrt()
+    }
+}
+
+impl FloatLike for f64 {}
+impl FloatLike for f32 {}
+
+#[derive(Debug, Clone)]
+pub struct ShapeFunction<T> {
+    pub values: Vec<T>,
+    pub derivatives: Vec<Vec<T>>,
+    pub p_order: usize,
+    pub p_order_deriv: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct Jacobian<T> {
+    pub matrix: Vec<Vec<T>>, // Jacobian matrix J[i][j] = dx_i/dxi_j
+    pub determinant: T,
+}
+
+#[derive(Debug, Clone)]
+pub struct ElementQuality {
+    pub element_id: usize,      // ID of the element being analyzed
+    pub det_jacobian: f64,      // determinant of the Jacobian matrix
+
+    // more quality metrics can be added here
+}
+
+// Structure to hold the complete mesh quality analysis results
+#[derive(Debug, Clone)]
+pub struct MeshQualityReport {
+    pub total_elements: usize,                    // Total number of elements that were successfully analyzed
+    pub element_qualities: Vec<ElementQuality>,   // Quality metrics for each individual element
+    // pub statistics: QualityStatistics,           // Overall statistical summary of mesh quality
+}
+ 
+// Structure to hold statistical summary of mesh quality metrics
+#[derive(Debug, Clone)]
+pub struct QualityStatistics {
+    pub min_jacobian: f64,              // Minimum Jacobian determinant in the mesh
+    pub max_jacobian: f64,              // Maximum Jacobian determinant in the mesh
+    pub avg_jacobian: f64,              // Average Jacobian determinant across all elements
+    pub negative_jacobian_count: usize, // Number of elements with negative Jacobian (invalid elements)
+}

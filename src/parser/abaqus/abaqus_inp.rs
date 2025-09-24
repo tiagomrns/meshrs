@@ -4,7 +4,8 @@ use std::io::{self, BufRead, BufReader}; // For buffered reading of files line b
 
 //use crate::database::*;                     // Import mesh data structures and error types from database module
 
-use crate::lib::*;                     // Import mesh data structures and error types from lib module
+//use crate::lib::*;                  // Import mesh data structures and error types from lib module
+use crate::structs_and_impls::*;                  // Import mesh data structures and error types from lib module
 use crate::error::*;                     // Import mesh data structures and error types from error module
 
 // Implementation block for ElementType enum - adds methods to the ElementType enum

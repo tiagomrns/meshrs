@@ -7,7 +7,8 @@ use std::vec;
 
 //use crate::database::*;                     // Import mesh data structures and error types from database module
 
-use crate::lib::*;                     // Import mesh data structures and error types from lib module
+//use crate::lib::*;                  // Import mesh data structures and error types from lib module
+use crate::structs_and_impls::*;                  // Import mesh data structures and error types from lib module
 use crate::error::*;                     // Import mesh data structures and error types from error module
 
 

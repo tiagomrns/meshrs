@@ -57,3 +57,29 @@ impl From<ParseError> for ElementError {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+pub enum GaussError {
+    UnsupportedOrder(usize),
+    UnsupportedDimension(usize),
+    IntegrationError(String),
+    UnsupportedIntegrationType,
+    ElementError(ElementError),
+    GeometryError(String),
+    InvalidElement(String),
+    InvalidTolerance,
+}
+
+// Implement conversion from ElementError to GaussError
+impl From<ElementError> for GaussError {
+    fn from(err: ElementError) -> Self {
+        GaussError::ElementError(err)
+    }
+}
+
+// Implement conversion from ParseError to GaussError
+impl From<ParseError> for GaussError {
+    fn from(err: ParseError) -> Self {
+        GaussError::GeometryError(format!("Parse error: {:?}", err))
+    }
+}
