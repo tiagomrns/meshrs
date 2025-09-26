@@ -7,6 +7,11 @@ use crate::error::*;                     // Import mesh data structures and erro
 use std::ops::{Add, Sub, Mul, Div, Neg};
 use num_traits::{Zero, One, FromPrimitive};
 
+use symbolica::domains::rational::RationalField;
+use symbolica::poly::polynomial::MultivariatePolynomial;
+
+pub type Symbolic = MultivariatePolynomial<RationalField, u32>;
+
 #[derive(Debug, Clone)]             // Auto-implement Debug for printing and Clone for copying 
                                     // Clone is used to copy in the case of deformed mesh. (for undeformed mesh we dont need to clone because we maintain the originaal values)
 pub struct Node {                   // Defines a structure to represent a mesh node/vertex
@@ -104,6 +109,7 @@ impl ElementType {
             },
 
             ElementType::Line => {
+                let num_nodes = 2;
                 let xi = natural_coords[0].clone();
                 
                 let values = vec![
@@ -118,10 +124,11 @@ impl ElementType {
                 ];
                 let p_order_deriv = 0;
 
-                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv, num_nodes})
             },
 
             ElementType::QuadraticEdge => {
+                let num_nodes = 3;
                 let xi = natural_coords[0].clone();
                 
                 let values = vec![
@@ -138,10 +145,12 @@ impl ElementType {
                 ];
                 let p_order_deriv = 1;
 
-                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv, num_nodes })
             },
 
             ElementType::Triangle => {
+                let num_nodes = 3;
+
                 let xi = natural_coords[0].clone();
                 let eta = natural_coords[1].clone();
                 
@@ -159,10 +168,12 @@ impl ElementType {
                 ];
                 let p_order_deriv = 0;
 
-                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv, num_nodes })
             },
 
             ElementType::QuadraticTriangle => {
+                let num_nodes = 6;
+
                 let xi = natural_coords[0].clone();
                 let eta = natural_coords[1].clone();
                 
@@ -197,10 +208,12 @@ impl ElementType {
                 ];
                 let p_order_deriv = 1;
 
-                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv, num_nodes })
             },
 
             ElementType::Quad => {
+                let num_nodes = 4;
+
                 let xi = natural_coords[0].clone();
                 let eta = natural_coords[1].clone();
                 
@@ -223,10 +236,12 @@ impl ElementType {
                 ];
                 let p_order_deriv = 1;
 
-                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv, num_nodes })
             },
 
             ElementType::QuadraticQuad => {
+                let num_nodes = 8;
+
                 let xi = natural_coords[0].clone();
                 let eta = natural_coords[1].clone();
                 
@@ -258,7 +273,7 @@ impl ElementType {
                 ];
                 let p_order_deriv = 2;
 
-                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv, num_nodes })
             },
 
             ElementType::BiquadraticQuad => {
@@ -267,6 +282,8 @@ impl ElementType {
             },
 
             ElementType::Tetra => {
+                let num_nodes = 4;
+
                 let xi = natural_coords[0].clone();
                 let eta = natural_coords[1].clone();
                 let psi = natural_coords[2].clone();
@@ -287,10 +304,12 @@ impl ElementType {
                 ];
                 let p_order_deriv = 0;
 
-                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv, num_nodes })
             },
 
             ElementType::QuadraticTetra => {
+                let num_nodes = 10;
+
                 let xi = natural_coords[0].clone();
                 let eta = natural_coords[1].clone();
                 let psi = natural_coords[2].clone();
@@ -341,10 +360,12 @@ impl ElementType {
                 ];
                 let p_order_deriv = 1;
 
-                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv, num_nodes })
             },
 
             ElementType::Pyramid => {
+                let num_nodes = 5;
+
                 let xi = natural_coords[0].clone();
                 let eta = natural_coords[1].clone();
                 let psi = natural_coords[2].clone();
@@ -371,10 +392,12 @@ impl ElementType {
                 ];
                 let p_order_deriv = 2;
 
-                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv, num_nodes })
             },
 
             ElementType::Wedge => {
+                let num_nodes = 6;
+
                 let xi = natural_coords[0].clone();
                 let eta = natural_coords[1].clone();
                 let psi = natural_coords[2].clone();
@@ -399,7 +422,7 @@ impl ElementType {
                 ];
                 let p_order_deriv = 1;
 
-                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv })
+                Some(ShapeFunction { values, derivatives, p_order, p_order_deriv, num_nodes })
             },
 
             ElementType::QuadraticWedge => {
@@ -587,6 +610,7 @@ pub struct ElementValueData {
 
 
 /// Geometric analysis module
+
 // Generic numeric trait
 pub trait FloatLike: 
     Clone + 
@@ -630,6 +654,7 @@ pub struct ShapeFunction<T> {
     pub derivatives: Vec<Vec<T>>,
     pub p_order: usize,
     pub p_order_deriv: usize,
+    pub num_nodes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -662,3 +687,4 @@ pub struct QualityStatistics {
     pub avg_jacobian: f64,              // Average Jacobian determinant across all elements
     pub negative_jacobian_count: usize, // Number of elements with negative Jacobian (invalid elements)
 }
+
