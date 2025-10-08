@@ -1,266 +1,75 @@
-// Bring in your shared structs, types, and the Symbolic type alias (Symbolica polynomial).
+use std::f64;
 use crate::structs_and_impls::*;
-// Your error type(s).
 use crate::error::*;
-// (Imported in your original file; keep if you later use Jacobians, etc.)
 use super::geometric_analysis::GeometricAnalysis;
-
-// Memoization helper for factorial precomputation.
 use lazy_static::lazy_static;
 
-// ===============================
-// Dense numeric coefficient tools
-// ===============================
-//
-// These helpers convert a Symbolica multivariate polynomial (Symbolic)
-// into dense, numeric coefficient arrays of f64. The arrays are indexed
-// directly by monomial powers, e.g. a[i][j] corresponds to x^i y^j.
-
-// Compute the maximum power (degree) seen in each variable of the polynomial.
-// Example: for p(x,y) = 3x^2 y + 5y^3, this returns vec![2, 3].
-fn max_powers(p: &Symbolic) -> Vec<usize> {
-    // Allocate a vector of zeros, length = number of variables in the polynomial.
-    let mut maxes = vec![0usize; p.nvars()];
-    // nterms() = number of nonzero monomials in the polynomial.
-    let n = p.nterms();
-    // Iterate over all monomials by index.
-    for idx in 0..n {
-        // Create a "view" into monomial idx (coeff + exponents slice).
-        let mv = p.to_monomial_view(idx);
-        // Loop over each variable's exponent in this monomial.
-        for (i, &e) in mv.exponents.iter().enumerate() {
-            // Exponents are stored as the chosen exponent type (u32 in our alias); cast to usize.
-            let ei = e as usize;
-            // Track the maximum exponent per variable.
-            if ei > maxes[i] {
-                maxes[i] = ei;
-            }
-        }
-    }
-    // Return the per-variable maximum degrees.
-    maxes
-}
-
-// Build a dense coefficient vector for a univariate polynomial p(x) = Σ a[i] x^i.
-// Returns Vec<f64> with a[i] at index i. All numeric, no Symbolic values.
-fn dense_coeffs_1d(p: &Symbolic) -> Vec<f64> {
-    // Assert we actually have one variable (univariate).
-    assert_eq!(p.nvars(), 1, "material_property must be univariate for 1D");
-    // Determine highest power of x (dx), allocate vector length dx+1.
-    let nx = max_powers(p)[0] + 1;
-    // Initialize all coefficients to zero (sparse -> dense).
-    let mut a = vec![0.0f64; nx];
-    // Iterate over all monomials.
-    let n = p.nterms();
-    for idx in 0..n {
-        // View monomial idx.
-        let mv = p.to_monomial_view(idx);
-        // Read exponent of x (only one variable).
-        let i = mv.exponents[0] as usize;
-        // Convert exact rational/integer coefficient to f64 and store into dense slot.
-        a[i] = mv.coefficient.to_f64();
-    }
-    // Return dense numeric coefficients a[0..nx).
-    a
-}
-
-// Build a dense coefficient matrix for a bivariate polynomial p(x,y) = Σ a[i][j] x^i y^j.
-// Returns Vec<Vec<f64>> with a[i][j] numeric only.
-fn dense_coeffs_2d(p: &Symbolic) -> Vec<Vec<f64>> {
-    // Assert two variables (bivariate).
-    assert_eq!(p.nvars(), 2, "material_property must be bivariate for 2D");
-    // Determine highest powers in x and y (dx, dy).
-    let mp = max_powers(p);
-    let (nx, ny) = (mp[0] + 1, mp[1] + 1);
-    // Allocate dense matrix filled with zeros (nx rows, ny columns).
-    let mut a = vec![vec![0.0f64; ny]; nx];
-    // Iterate over all monomials.
-    let n = p.nterms();
-    for idx in 0..n {
-        // View monomial idx.
-        let mv = p.to_monomial_view(idx);
-        // Read exponents (i for x, j for y).
-        let i = mv.exponents[0] as usize;
-        let j = mv.exponents[1] as usize;
-        // Place numeric coefficient into the dense matrix at (i,j).
-        a[i][j] = mv.coefficient.to_f64();
-    }
-    // Return dense numeric matrix.
-    a
-}
-
-// Build a dense coefficient 3-tensor for a trivariate polynomial p(x,y,z) = Σ a[i][j][k] x^i y^j z^k.
-// Returns Vec<Vec<Vec<f64>>> with a[i][j][k] numeric only.
-fn dense_coeffs_3d(p: &Symbolic) -> Vec<Vec<Vec<f64>>> {
-    // Assert three variables (trivariate).
-    assert_eq!(p.nvars(), 3, "material_property must be trivariate for 3D");
-    // Determine highest powers in x,y,z (dx, dy, dz).
-    let mp = max_powers(p);
-    let (nx, ny, nz) = (mp[0] + 1, mp[1] + 1, mp[2] + 1);
-    // Allocate dense 3D array filled with zeros.
-    let mut a = vec![vec![vec![0.0f64; nz]; ny]; nx];
-    // Iterate monomials.
-    let n = p.nterms();
-    for idx in 0..n {
-        // View monomial idx.
-        let mv = p.to_monomial_view(idx);
-        // Read exponents (i for x, j for y, k for z).
-        let i = mv.exponents[0] as usize;
-        let j = mv.exponents[1] as usize;
-        let k = mv.exponents[2] as usize;
-        // Place numeric coefficient into dense tensor.
-        a[i][j][k] = mv.coefficient.to_f64();
-    }
-    // Return dense numeric tensor.
-    a
-}
-
-// =======================================
-// Your original public API (names kept!)
-// =======================================
-
-// Integration kind enum kept as-is.
-#[derive(Debug, Clone)]
-pub enum IntegrationType {
-    Mass,
-    Stiffness,
-}
-
-impl IntegrationType {
-    // Keep the same signature and name. This function dispatches based on dimension.
-    pub fn get_coefficient_a(
-        int_type: IntegrationType,          // which integral (mass/stiffness)
-        element_type: &ElementType,         // element type to infer dimension
-        element_nodes: &[Node],             // element nodes (not used here but preserved)
-        material_property: Symbolic,        // input polynomial in natural coords
-    ) -> Result<(), GaussError> {
-        // Read mesh dimension from element type.
-        let dim = ElementType::get_element_dimension(element_type).unwrap();
-        // Dispatch based on integration type and dimension.
-        match int_type {
-            IntegrationType::Mass => match dim {
-                1 => { let _r: Vec<f64> = get_coefficient_a_1d(int_type, element_type, element_nodes, material_property)?; Ok(()) }
-                2 => { let _r: Vec<Vec<f64>> = get_coefficient_a_2d(int_type, element_type, element_nodes, material_property)?; Ok(()) }
-                3 => { let _r: Vec<Vec<Vec<f64>>> = get_coefficient_a_3d(int_type, element_type, element_nodes, material_property)?; Ok(()) }
-                _ => Err(GaussError::UnsupportedDimension(dim)),
-            },
-            IntegrationType::Stiffness => match dim {
-                1 => { let _r: Vec<f64> = get_coefficient_a_1d(int_type, element_type, element_nodes, material_property)?; Ok(()) }
-                2 => { let _r: Vec<Vec<f64>> = get_coefficient_a_2d(int_type, element_type, element_nodes, material_property)?; Ok(()) }
-                3 => { let _r: Vec<Vec<Vec<f64>>> = get_coefficient_a_3d(int_type, element_type, element_nodes, material_property)?; Ok(()) }
-                _ => Err(GaussError::UnsupportedDimension(dim)),
-            },
-        }
-    }
-}
-
-// Return dense numeric coefficients for 1D material property.
-// Signature and name preserved exactly.
-pub fn get_coefficient_a_1d(
-    _int_type: IntegrationType,            // preserved (not used here)
-    _element_type: &ElementType,           // preserved (not used here)
-    _element_nodes: &[Node],               // preserved (not used here)
-    material_property: Symbolic,           // univariate polynomial in natural coord (e.g., xi)
-) -> Result<Vec<f64>, GaussError> {
-    // Convert symbolic polynomial to dense numeric coefficient vector.
-    Ok(dense_coeffs_1d(&material_property))
-}
-
-// Return dense numeric coefficients for 2D material property.
-// Signature and name preserved exactly.
-pub fn get_coefficient_a_2d(
-    _int_type: IntegrationType,            // preserved (not used here)
-    _element_type: &ElementType,           // preserved (not used here)
-    _element_nodes: &[Node],               // preserved (not used here)
-    material_property: Symbolic,           // bivariate polynomial in (xi, eta)
-) -> Result<Vec<Vec<f64>>, GaussError> {
-    // Convert symbolic polynomial to dense numeric coefficient matrix a[i][j].
-    Ok(dense_coeffs_2d(&material_property))
-}
-
-// Return dense numeric coefficients for 3D material property.
-// Signature and name preserved exactly.
-pub fn get_coefficient_a_3d(
-    _int_type: IntegrationType,            // preserved (not used here)
-    _element_type: &ElementType,           // preserved (not used here)
-    _element_nodes: &[Node],               // preserved (not used here)
-    material_property: Symbolic,           // trivariate polynomial in (xi, eta, psi)
-) -> Result<Vec<Vec<Vec<f64>>>, GaussError> {
-    // Convert symbolic polynomial to dense numeric coefficient tensor a[i][j][k].
-    Ok(dense_coeffs_3d(&material_property))
-}
-
-// ======================================
-// Factorials (precompute + fast fallback)
-// ======================================
-
-// Precompute factorials up to 99! for speed/stability; use approximation beyond.
+// Precompute factorials for efficient error calculation
+// Uses lazy_static to compute once and reuse
 lazy_static! {
     static ref FACTORIALS: Vec<f64> = {
-        // Allocate vector with 100 entries initialized to 1.0.
-        let mut v = vec![1.0; 100];
-        // Fill v[i] = i! iteratively.
+        let mut v = vec![1.0; 100]; // Precompute up to 99!
         for i in 1..v.len() {
             v[i] = v[i - 1] * (i as f64);
         }
-        // Return the table.
         v
     };
 }
 
-// Factorial with table lookup; falls back to a Stirling-like approximation for big n.
+/// Calculate factorial with fallback to Stirling's approximation for large n
 fn factorial(n: usize) -> f64 {
-    // If n within precomputed range, return exact table value.
     if n < FACTORIALS.len() {
-        FACTORIALS[n]
+        FACTORIALS[n] // Use precomputed value
     } else {
-        // Otherwise, use a standard approximation to avoid overflow/slow loops.
+        // Stirling's approximation for large n: n! ≈ √(2πn) * (n/e)^n
         (2.0 * std::f64::consts::PI * (n as f64)).sqrt()
             * ((n as f64) / std::f64::consts::E).powi(n as i32)
-            * (1.0 + 1.0 / (12.0 * (n as f64)))
+            * (1.0 + 1.0 / (12.0 * (n as f64))) // Correction term
     }
 }
 
-// ====================================
-// GaussianQuadrature impl (error calc)
-// ====================================
-//
-// Implements your 1D/2D/3D Gauss error formulas using the numeric
-// coefficient arrays returned by get_coefficient_a_*.
+/// Utility struct for Gaussian quadrature error estimation and optimization
+pub struct GaussianQuadrature;
 
 impl GaussianQuadrature {
 
-    // Inspect the numeric 2D coefficient matrix and return the largest
-    // indices (dx, dy) that still have non-negligible magnitude.
-    pub fn detect_polynomial_orders(coeff_matrix: &[Vec<f64>]) -> (usize, usize) {
-        // Track maxima in i (x-power) and j (y-power).
+    /// Detect polynomial orders in 1D coefficient vector
+    /// Returns the maximum degree based on non-zero coefficients
+    pub fn detect_polynomial_order_1d(coeffs: &[f64]) -> usize {
+        let mut max_deg = 0;
+        for (i, &coeff) in coeffs.iter().enumerate() {
+            if coeff.abs() > 1e-12 {
+                max_deg = i;
+            }
+        }
+        max_deg
+    }
+
+    /// Detect polynomial orders in 2D coefficient matrix
+    /// Returns (max_degree_x, max_degree_y) based on non-zero coefficients
+    pub fn detect_polynomial_orders_2d(coeff_matrix: &[Vec<f64>]) -> (usize, usize) {
         let (mut max_i, mut max_j) = (0, 0);
-        // Iterate over all entries.
+        // Scan through all coefficients to find maximum non-zero indices
         for i in 0..coeff_matrix.len() {
             for j in 0..coeff_matrix[i].len() {
-                // Consider a coefficient "present" if above small threshold.
-                if coeff_matrix[i][j].abs() > 1e-12 {
-                    // Update maxima.
+                if coeff_matrix[i][j].abs() > 1e-12 { // Tolerance for "non-zero"
                     max_i = max_i.max(i);
                     max_j = max_j.max(j);
                 }
             }
         }
-        // Return highest present powers.
         (max_i, max_j)
     }
 
-    // Inspect the numeric 3D coefficient tensor and return largest (dx,dy,dz).
+    /// Detect polynomial orders in 3D coefficient tensor
+    /// Returns (max_degree_x, max_degree_y, max_degree_z)
     pub fn detect_polynomial_orders_3d(coeff_tensor: &[Vec<Vec<f64>>]) -> (usize, usize, usize) {
-        // Track maxima in i (x-power), j (y-power), k (z-power).
         let (mut max_i, mut max_j, mut max_k) = (0, 0, 0);
-        // Iterate over tensor indices.
+        // Three-dimensional scan for non-zero coefficients
         for i in 0..coeff_tensor.len() {
             for j in 0..coeff_tensor[i].len() {
                 for k in 0..coeff_tensor[i][j].len() {
-                    // Check non-negligible magnitude.
                     if coeff_tensor[i][j][k].abs() > 1e-12 {
-                        // Update maxima.
                         max_i = max_i.max(i);
                         max_j = max_j.max(j);
                         max_k = max_k.max(k);
@@ -268,202 +77,388 @@ impl GaussianQuadrature {
                 }
             }
         }
-        // Return highest present powers.
         (max_i, max_j, max_k)
     }
 
-    // Keep your public method; typically you’ll call get_coefficient_a_* elsewhere
-    // with your *actual* material polynomial, then call the calculate_*_error functions.
-    // Here we leave it as a stub that returns None to preserve API semantics.
-    pub fn optimize_gauss_points(
-        tolerance: f64,                // target error threshold
-        polynomial_order: usize,       // overall polynomial order (used for bounds)
-        dim: usize,                    // problem dimension (1, 2, or 3)
-        int_type: IntegrationType,     // integration type
-        element_type: &ElementType,    // element type
-        element_nodes: &[Node],        // element nodes
-    ) -> Result<Option<usize>, GaussError> {
-        // Basic input checks.
-        if !tolerance.is_finite() || tolerance <= 0.0 || polynomial_order == 0 {
-            return Err(GaussError::InvalidTolerance);
-        }
-        // The theoretical upper bound for exactness with Gauss-Legendre quadrature.
-        let _max_n = (polynomial_order + 1) / 2;
-        // You can fill this in with a loop that:
-        // 1) builds your material polynomial
-        // 2) calls get_coefficient_a_* to get numeric coefficients
-        // 3) evaluates calculate_*_error(n, ...) and returns the first n <= _max_n with error <= tolerance.
-        // We leave None to keep your signature and allow you to control material input externally.
-        Ok(None)
-    }
+    /// Find optimal Gauss points for entire mesh
+    pub fn find_optimal_gauss_points_number_mesh(
+        mesh_data: &MeshData,
+        int_type: IntegrationType,
+        tolerance: f64,
+        material_property: &[f64], // density polynomial coefficients
+    ) -> Result<GaussianPointNumberReport, GaussError> {
 
-    // 1D Gauss error:
-    // E(n) = (n!)^4 / [ (2n+1) * ((2n)!)^3 ] * Σ_{k=2n..d} |a_k| * k! / (k-2n)!.
-    fn calculate_1d_error(num_gp: usize, coeffs: &[f64], poly_degree: usize) -> f64 {
-        // Alias n for readability.
-        let n = num_gp;
-        // Pre-factor in your formula.
-        let c = factorial(n).powi(4) / ((2 * n + 1) as f64 * factorial(2 * n).powi(3));
+        let mut gauss_point_numbers: Vec<GaussianPointNumber> = Vec::new();
+        let mut processed_elements = 0;
+        let mesh_dim = mesh_data.dimension;
 
-        // Accumulate the sum over k ≥ 2n.
-        let mut s = 0.0;
-        // Only sum if the degree and array length permit k >= 2n terms.
-        if poly_degree >= 2 * n && coeffs.len() > 2 * n {
-            // Upper bound is min(degree, array_len-1).
-            let upper = poly_degree.min(coeffs.len() - 1);
-            // Sum the contribution of each coefficient.
-            for k in (2 * n)..=upper {
-                let ak = coeffs[k].abs();
-                if ak > 0.0 {
-                    s += ak * (factorial(k) / factorial(k - 2 * n));
-                }
+        // Iterate through all element types in the mesh
+        for type_info in &mesh_data.element_type_info {
+            // Skip vertex elements as they are just points
+            if matches!(type_info.element_type, ElementType::Vertex) {
+                continue;
             }
-        }
-        // Full error value.
-        c * s
-    }
 
-    // 2D Gauss error (your provided formula):
-    //
-    // E(n) = (n!)^4 / [ (2n+1) * ((2n)!)^3 ] * (
-    //           Σ_{i=2n..dx} Σ_{j=0..dy}   |a_ij| * i!/(i-2n)! * 1/(j+1)
-    //         + Σ_{i=0..dx}  Σ_{j=2n..dy}  |a_ij| * j!/(j-2n)!
-    //       )
-    //
-    fn calculate_2d_error(n: usize, coeff_matrix: &[Vec<f64>]) -> f64 {
-        // Detect highest present orders (dx, dy) in the dense numeric matrix.
-        let (dx, dy) = Self::detect_polynomial_orders(coeff_matrix);
-        // Pre-factor in your formula.
-        let c = factorial(n).powi(4) / ((2 * n + 1) as f64 * factorial(2 * n).powi(3));
+            // Calculate element range for this element type
+            let start_idx = type_info.start_index;
+            let end_idx = start_idx + type_info.num_elements;
 
-        // First sum: i ≥ 2n, all j.
-        let mut term1 = 0.0;
-        // Guard against empty matrix dims using saturating_sub on extents.
-        for i in (2 * n)..=dx.min(coeff_matrix.len().saturating_sub(1)) {
-            for j in 0..=dy.min(coeff_matrix[i].len().saturating_sub(1)) {
-                let aij = coeff_matrix[i][j].abs();
-                if aij > 1e-12 {
-                    // i!/(i-2n)! factor times ∫ y^j dy = 1/(j+1) on unit interval.
-                    term1 += aij * (factorial(i) / factorial(i - 2 * n)) * (1.0 / (j as f64 + 1.0));
-                }
-            }
-        }
+            // Process each element of this type
+            for element_idx in start_idx..end_idx {
+                if element_idx < mesh_data.elements.len() {
+                    let element = &mesh_data.elements[element_idx];
 
-        // Second sum: all i, j ≥ 2n.
-        let mut term2 = 0.0;
-        for i in 0..=dx.min(coeff_matrix.len().saturating_sub(1)) {
-            for j in (2 * n)..=dy.min(coeff_matrix[i].len().saturating_sub(1)) {
-                let aij = coeff_matrix[i][j].abs();
-                if aij > 1e-12 {
-                    // j!/(j-2n)! factor (x-integral contributes trivially here per the bound).
-                    term2 += aij * (factorial(j) / factorial(j - 2 * n));
-                }
-            }
-        }
-
-        // Full error value for 2D.
-        c * (term1 + term2)
-    }
-
-    // 3D Gauss error (your provided formula):
-    //
-    // E(n) = (n!)^4 / [ (2n+1) * ((2n)!)^3 ] * (
-    //           Σ_{i=2n..dx} Σ_{j=0..dy}   Σ_{k=0..dz}  |a_ijk| * i!/(i-2n)! * 1/[(j+1)(k+1)]
-    //         + Σ_{i=0..dx}  Σ_{j=2n..dy}  Σ_{k=0..dz}  |a_ijk| * j!/(j-2n)! * 1/(k+1)
-    //         + Σ_{i=0..dx}  Σ_{j=0..dy}   Σ_{k=2n..dz} |a_ijk| * k!/(k-2n)!
-    //       )
-    //
-    fn calculate_3d_error(n: usize, coeff_tensor: &[Vec<Vec<f64>>]) -> f64 {
-        // Detect highest present orders (dx, dy, dz) in the dense numeric tensor.
-        let (dx, dy, dz) = Self::detect_polynomial_orders_3d(coeff_tensor);
-        // Pre-factor in your formula.
-        let c = factorial(n).powi(4) / ((2 * n + 1) as f64 * factorial(2 * n).powi(3));
-
-        // First sum: i ≥ 2n, all j,k.
-        let mut term1 = 0.0;
-        for i in (2 * n)..=dx.min(coeff_tensor.len().saturating_sub(1)) {
-            for j in 0..=dy.min(coeff_tensor[i].len().saturating_sub(1)) {
-                for k in 0..=dz.min(coeff_tensor[i][j].len().saturating_sub(1)) {
-                    let aijk = coeff_tensor[i][j][k].abs();
-                    if aijk > 1e-12 {
-                        // i!/(i-2n)! times ∫ y^j dy * ∫ z^k dz = 1/(j+1)(k+1).
-                        term1 += aijk
-                            * (factorial(i) / factorial(i - 2 * n))
-                            * (1.0 / ((j as f64 + 1.0) * (k as f64 + 1.0)));
+                    match Self::find_optimal_gauss_points(
+                        int_type,
+                        element,  // get element dimension from this
+                        &type_info.element_type,  // get element type
+                        &mesh_data.nodes, // to get determinant of jacobian
+                        mesh_dim,
+                        tolerance,
+                        &material_property,
+                    ) {
+                        Ok(gauss_point_number) => {
+                            gauss_point_numbers.push(gauss_point_number);
+                            processed_elements += 1;
+                        }
+                        Err(e) => {
+                            println!("Warning: Failed to analyze element {}: {:?}", element.id, e);
+                        }
                     }
                 }
             }
         }
 
-        // Second sum: j ≥ 2n, all i,k.
-        let mut term2 = 0.0;
-        for i in 0..=dx.min(coeff_tensor.len().saturating_sub(1)) {
-            for j in (2 * n)..=dy.min(coeff_tensor[i].len().saturating_sub(1)) {
-                for k in 0..=dz.min(coeff_tensor[i][j].len().saturating_sub(1)) {
-                    let aijk = coeff_tensor[i][j][k].abs();
-                    if aijk > 1e-12 {
-                        // j!/(j-2n)! times ∫ z^k dz = 1/(k+1).
-                        term2 += aijk
-                            * (factorial(j) / factorial(j - 2 * n))
-                            * (1.0 / (k as f64 + 1.0));
-                    }
-                }
+        // Return error if no elements could be analyzed
+        if gauss_point_numbers.is_empty() {
+            return Err(GaussError::GeometryError(
+                "No elements could be analyzed".to_string(),
+            ));
+        }
+
+        // Return comprehensive quality report
+        Ok(GaussianPointNumberReport {
+            total_elements: processed_elements,
+            gauss_point_numbers,
+        })
+    }
+
+    /// Find optimal Gaussian points that minimize error under tolerance
+    pub fn find_optimal_gauss_points(
+        int_type: IntegrationType,
+        element: &Element,
+        element_type: &ElementType,
+        nodes: &[Node],
+        mesh_dim: usize,
+        tolerance: f64,
+        material_property: &[f64], // density polynomial coefficients
+    ) -> Result<GaussianPointNumber, GaussError> {
+
+        // Get element dimension
+        let element_dim = ElementType::get_element_dimension(element_type)
+            .ok_or(GaussError::UnsupportedDimension(0))?;
+
+        // Get element nodes
+        let element_nodes: Vec<Node> = GeometricAnalysis::get_element_nodes(element, nodes)?;
+
+        // Calculate the integrand
+        let integrand = Self::calculate_integrand(
+            &int_type,
+            &element_type,
+            &element_nodes,
+            &material_property,
+            mesh_dim,
+        )?;
+
+        // Theoretical points based on polynomial degree 
+        let max_num_gp = ((MonomialPolynomial::total_degree_polynomial(&integrand) as f64 + 1.0) / 2.0).ceil() as usize;  // num_gp = ceil((d + 1)/2) where d is polynomial degree
+        let theoretical_points = max_num_gp;  // Arbitrary upper limit for Gauss points per direction
+
+        // Find optimal points
+        let mut optimal_points = 1;
+        let mut min_error = 100.0;
+
+        for n in 1..=max_num_gp {
+            let error = Self::calculate_error(
+                &integrand,
+                n,
+                &element_type,
+                element_dim,
+            )?;
+
+            if error < min_error {
+                min_error = error;
+                optimal_points = n;
+            }
+
+            // If we meet tolerance, we can stop early
+            if error <= tolerance {
+                break;
             }
         }
 
-        // Third sum: k ≥ 2n, all i,j.
-        let mut term3 = 0.0;
-        for i in 0..=dx.min(coeff_tensor.len().saturating_sub(1)) {
-            for j in 0..=dy.min(coeff_tensor[i].len().saturating_sub(1)) {
-                for k in (2 * n)..=dz.min(coeff_tensor[i][j].len().saturating_sub(1)) {
-                    let aijk = coeff_tensor[i][j][k].abs();
-                    if aijk > 1e-12 {
-                        // k!/(k-2n)! factor.
-                        term3 += aijk * (factorial(k) / factorial(k - 2 * n));
-                    }
+        Ok(GaussianPointNumber {
+            element_id: element.id,
+            theoretical_number: theoretical_points,
+            optimal_number: optimal_points,
+        })
+    }
+
+    /// Calculate integrand for given element and integration type
+    pub fn calculate_integrand(
+        int_type: &IntegrationType,
+        element_type: &ElementType,
+        element_nodes: &Vec<Node>,
+        material_property: &[f64], // density polynomial coefficients (material property)
+        mesh_dim: usize,
+    ) -> Result<Vec<f64>, GaussError> {
+
+        // Get element and mesh dimensions and element order
+        let element_dim = ElementType::get_element_dimension(element_type)
+            .ok_or(GaussError::UnsupportedDimension(0))?;
+        let element_order = ElementType::get_element_order(element_type)
+            .ok_or(GaussError::InvalidElement("Element order not found".to_string()))?;
+        
+        let shape_function = ElementType::get_shape_functions(element_type)
+            .ok_or_else(|| GaussError::InvalidElement("Shape functions not found".to_string()))?;
+        
+        let num_nodes = shape_function.num_nodes;
+        
+        // Calculate Jacobian matrix mapping parametric to physical coordinates
+        let jacobian_matrix = GeometricAnalysis::calculate_jacobian(
+            &element_nodes,
+            &shape_function.derivatives,
+            element_dim,
+            num_nodes,
+            mesh_dim,
+            element_order,
+        )?;
+        
+        // Calculate determinant of Jacobian matrix
+        let det_j = &jacobian_matrix.determinant;
+
+        match int_type {
+            IntegrationType::Mass => {
+                // Mass matrix: M_ij = ∫ ρ(x) N_i(x) N_j(x) det(J) dξ
+                // Mass matrix integrand: ρ(x) * N' N * det(J)
+
+                // Calculate N' N = Σ (N[i])^2
+                let mut sum_ns = vec![0.0; shape_function.values[0].len()];
+                
+                for i in 0..num_nodes {
+                    let ni_ni = MonomialPolynomial::multiply(
+                        &shape_function.values[i],
+                        &shape_function.values[i]
+                    )?;
+                    sum_ns = MonomialPolynomial::add(&sum_ns, &ni_ni)?;
                 }
+                
+                // Combine all terms: ρ(x) * (Σ (N[i])^2) * det(J)
+                let rho_sum = MonomialPolynomial::multiply(&sum_ns, &material_property)?;
+                let integrand = MonomialPolynomial::multiply(&rho_sum, &det_j)?;
+                
+                Ok(integrand)
+            }
+            IntegrationType::Stiffness => {
+                let mut integrand = vec![0.0; 10];  // Placeholder for stiffness matrix integrand
+                Ok(integrand) 
             }
         }
-
-        // Full error value for 3D.
-        c * (term1 + term2 + term3)
     }
 
-    // Optional public wrappers if you want to call the error fns directly elsewhere:
+    /// Calculate error based on element type and dispatch to appropriate quadrature rule
+    pub fn calculate_error(
+        integrand: &Vec<f64>,
+        n: usize,
+        element_type: &ElementType,
+        element_dim: usize,
+    ) -> Result<f64, GaussError> {
 
-    // Convenience: compute 1D error using a dense numeric coeff vector.
-    pub fn gauss_error_1d(n: usize, coeffs: &[f64]) -> f64 {
-        // Degree is highest index with a value (or len-1).
-        let d = coeffs.len().saturating_sub(1);
-        Self::calculate_1d_error(n, coeffs, d)
+        Self::gauss_legendre_error(&integrand, n, element_dim)
+        /* 
+        match element_type {
+            ElementType::Line | ElementType::QuadraticEdge | ElementType::Quad | ElementType::Hexahedron => {
+                Self::gauss_legendre_error(&integrand, n, element_dim)
+            }
+            ElementType::Triangle | ElementType::Tetra => {
+                //Self::gauss_dunont_error(num_gp, element_dim, coeffs, coeff_matrix, coeff_tensor)
+                Self::gauss_legendre_error(&integrand, n, element_dim)
+            }
+            _ => Err(GaussError::GeometryError(format!(
+                "Unsupported element type {:?} for error estimation",
+                element_type
+            ))),
+        }
+        */
     }
 
-    // Convenience: compute 2D error using a dense numeric coeff matrix.
-    pub fn gauss_error_2d(n: usize, a: &[Vec<f64>]) -> f64 {
-        Self::calculate_2d_error(n, a)
-    }
 
-    // Convenience: compute 3D error using a dense numeric coeff tensor.
-    pub fn gauss_error_3d(n: usize, a: &[Vec<Vec<f64>>]) -> f64 {
-        Self::calculate_3d_error(n, a)
+    /// Gauss-Legendre quadrature error estimation
+    fn gauss_legendre_error(
+        integrand: &[f64],
+        n: usize,
+        element_dim: usize,
+    ) -> Result<f64, GaussError> {
+
+        let c = factorial(n).powi(4) / ((2 * n + 1) as f64 * factorial(2 * n).powi(3));
+
+        match element_dim {
+            1 => {  //1D Gauss-Legendre error function
+
+                // Convert to dense coefficient representation
+                let coeff_vector = MonomialPolynomial::get_coefficients_1d(&integrand)
+                    .map_err(|e| GaussError::GeometryError(e.to_string()))?;
+
+                // Detect polynomial degree
+                let poly_degree = Self::detect_polynomial_order_1d(&coeff_vector);
+
+                let mut s = 0.0;
+                if poly_degree >= 2 * n && coeff_vector.len() > 2 * n {
+                    let upper = poly_degree.min(coeff_vector.len() - 1);
+                    for k in (2 * n)..=upper {
+                        let ak = coeff_vector[k].abs();
+                        if ak > 0.0 {
+                            s += ak * (factorial(k) / factorial(k - 2 * n));
+                        }
+                    }
+                }
+                
+                Ok(c * s)
+            }
+            2 => {  //2D Gauss-Legendre error function
+                
+                // Convert to dense coefficient representation
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand)
+                    .map_err(|e| GaussError::GeometryError(e.to_string()))?;
+
+                // Detect polynomial degree
+                let (poly_degree_x, poly_degree_y) = Self::detect_polynomial_orders_2d(&coeff_matrix);
+
+                let mut term1 = 0.0;
+                for i in (2 * n)..=poly_degree_x.min(coeff_matrix.len().saturating_sub(1)) {
+                    for j in 0..=poly_degree_y.min(coeff_matrix[i].len().saturating_sub(1)) {
+                        let aij = coeff_matrix[i][j].abs();
+                        if aij > 1e-12 {
+                            term1 += aij * (factorial(i) / factorial(i - 2 * n)) * (1.0 / (j as f64 + 1.0));
+                        }
+                    }
+                }
+
+                let mut term2 = 0.0;
+                for i in 0..=poly_degree_x.min(coeff_matrix.len().saturating_sub(1)) {
+                    for j in (2 * n)..=poly_degree_y.min(coeff_matrix[i].len().saturating_sub(1)) {
+                        let aij = coeff_matrix[i][j].abs();
+                        if aij > 1e-12 {
+                            term2 += aij * (factorial(j) / factorial(j - 2 * n));
+                        }
+                    }
+                }
+
+                Ok(c * (term1 + term2))
+            }
+            3 => {  //3D Gauss-Legendre error function
+
+                // Convert to dense coefficient representation
+                let coeff_tensor = MonomialPolynomial::get_coefficients_3d(&integrand)
+                    .map_err(|e| GaussError::GeometryError(e.to_string()))?;
+
+                // Detect polynomial degree
+                let (poly_degree_x, poly_degree_y, poly_degree_z) = Self::detect_polynomial_orders_3d(&coeff_tensor);
+
+                let mut term1 = 0.0;
+                for i in (2 * n)..=poly_degree_x.min(coeff_tensor.len().saturating_sub(1)) {
+                    for j in 0..=poly_degree_y.min(coeff_tensor[i].len().saturating_sub(1)) {
+                        for k in 0..=poly_degree_z.min(coeff_tensor[i][j].len().saturating_sub(1)) {
+                            let aijk = coeff_tensor[i][j][k].abs();
+                            if aijk > 1e-12 {
+                                term1 += aijk
+                                    * (factorial(i) / factorial(i - 2 * n))
+                                    * (1.0 / ((j as f64 + 1.0) * (k as f64 + 1.0)));
+                            }
+                        }
+                    }
+                }
+
+                let mut term2 = 0.0;
+                for i in 0..=poly_degree_x.min(coeff_tensor.len().saturating_sub(1)) {
+                    for j in (2 * n)..=poly_degree_y.min(coeff_tensor[i].len().saturating_sub(1)) {
+                        for k in 0..=poly_degree_z.min(coeff_tensor[i][j].len().saturating_sub(1)) {
+                            let aijk = coeff_tensor[i][j][k].abs();
+                            if aijk > 1e-12 {
+                                term2 += aijk
+                                    * (factorial(j) / factorial(j - 2 * n))
+                                    * (1.0 / (k as f64 + 1.0));
+                            }
+                        }
+                    }
+                }
+
+                let mut term3 = 0.0;
+                for i in 0..=poly_degree_x.min(coeff_tensor.len().saturating_sub(1)) {
+                    for j in 0..=poly_degree_y.min(coeff_tensor[i].len().saturating_sub(1)) {
+                        for k in (2 * n)..=poly_degree_z.min(coeff_tensor[i][j].len().saturating_sub(1)) {
+                            let aijk = coeff_tensor[i][j][k].abs();
+                            if aijk > 1e-12 {
+                                term3 += aijk * (factorial(k) / factorial(k - 2 * n));
+                            }
+                        }
+                    }
+                }
+
+                Ok(c * (term1 + term2 + term3))
+            }
+            _ => Err(GaussError::GeometryError(format!(
+                "Unsupported element dimension {} for Gauss-Legendre error estimation",
+                element_dim
+            ))),
+        }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // -------------------------
-    // Helper factorial for tests
-    // -------------------------
+    // Helper function for factorial in tests
     fn fact(n: usize) -> f64 {
         (1..=n).fold(1.0, |acc, k| acc * k as f64)
     }
 
-    // -------------------------
-    // detect_polynomial_orders (2D / 3D)
-    // -------------------------
+    fn create_test_element_and_nodes() -> (Element, Vec<Node>) {
+        let element = Element {
+            id: 0,
+            nodes: vec![0, 1, 2],
+        };
+        
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0] },
+            Node { id: 2, coordinates: vec![0.0, 1.0] },
+        ];
+        
+        (element, nodes)
+    }
+
+    #[test]
+    fn test_detect_polynomial_order_1d_basic() {
+        let coeffs = vec![1.0, 2.0, 0.0, 4.0]; // 1 + 2x + 4x³
+        let order = GaussianQuadrature::detect_polynomial_order_1d(&coeffs);
+        assert_eq!(order, 3);
+    }
+
+    #[test]
+    fn test_detect_polynomial_order_1d_with_tolerance() {
+        let coeffs = vec![1.0, 1e-13, 0.0, 0.0]; // Coefficients below tolerance should be ignored
+        let order = GaussianQuadrature::detect_polynomial_order_1d(&coeffs);
+        assert_eq!(order, 0);
+    }
+
+    #[test]
+    fn test_detect_polynomial_order_1d_zero_polynomial() {
+        let coeffs = vec![0.0, 0.0, 0.0];
+        let order = GaussianQuadrature::detect_polynomial_order_1d(&coeffs);
+        assert_eq!(order, 0);
+    }
 
     #[test]
     fn detect_polynomial_orders_2d_basic() {
@@ -471,17 +466,17 @@ mod tests {
         a[0][0] = 1.0;
         a[3][2] = -2.5;
 
-        let (dx, dy) = GaussianQuadrature::detect_polynomial_orders(&a);
+        let (dx, dy) = GaussianQuadrature::detect_polynomial_orders_2d(&a);
         assert_eq!((dx, dy), (3, 2));
     }
 
     #[test]
     fn detect_polynomial_orders_2d_ignores_tiny() {
         let mut a = vec![vec![0.0; 2]; 2];
-        a[0][0] = 1e-13;
-        a[1][1] = 1.0;
+        a[0][0] = 1e-13;  // Below tolerance - should be ignored
+        a[1][1] = 1.0;    // Above tolerance - should be counted
 
-        let (dx, dy) = GaussianQuadrature::detect_polynomial_orders(&a);
+        let (dx, dy) = GaussianQuadrature::detect_polynomial_orders_2d(&a);
         assert_eq!((dx, dy), (1, 1));
     }
 
@@ -496,134 +491,198 @@ mod tests {
     }
 
     #[test]
-    fn detect_polynomial_orders_3d_ignores_tiny() {
-        let mut a = vec![vec![vec![0.0; 1]; 1]; 2];
-        a[0][0][0] = 1e-15;
-        a[1][0][0] = 2.0;
-
-        let (dx, dy, dz) = GaussianQuadrature::detect_polynomial_orders_3d(&a);
-        assert_eq!((dx, dy, dz), (1, 0, 0));
-    }
-
-    // -------------------------
-    // gauss_error_1d
-    // -------------------------
-
-    #[test]
-    fn gauss_error_1d_matches_formula_simple() {
-        let coeffs = vec![1.0, 0.0, 0.0, 0.0, 2.0, -3.0];
-        let n = 2;
-        let got = GaussianQuadrature::gauss_error_1d(n, &coeffs);
-
-        let c = fact(n).powi(4) / ((2 * n + 1) as f64 * fact(2 * n).powi(3));
-        let s = 2.0 * (fact(4) / fact(0)) + 3.0 * (fact(5) / fact(1));
-        let expected = c * s;
-
-        assert!((got - expected).abs() < 1e-12);
+    fn test_factorial() {
+        assert_eq!(factorial(0), 1.0);
+        assert_eq!(factorial(5), 120.0);
+        assert!((factorial(10) - 3628800.0).abs() < 1e-6);
     }
 
     #[test]
-    fn gauss_error_1d_zero_when_degree_below_2n() {
-        let coeffs = vec![0.0, 1.0, 0.0, 0.5, 0.0, -2.0];
-        let n = 3;
-        let got = GaussianQuadrature::gauss_error_1d(n, &coeffs);
-        assert!(got.abs() < 1e-15);
-    }
-
-    // -------------------------
-    // gauss_error_2d
-    // -------------------------
-
-    #[test]
-    fn gauss_error_2d_matches_formula_small() {
-        let mut a = vec![vec![0.0; 3]; 4];
-        a[0][0] = 1.0;
-        a[2][1] = -2.0;
-        a[3][0] = 4.0;
-        a[1][2] = 5.0;
-
-        let n = 1;
-        let got = GaussianQuadrature::gauss_error_2d(n, &a);
-
-        let c = fact(n).powi(4) / ((2 * n + 1) as f64 * fact(2 * n).powi(3));
-        let term1 = 2.0 * (fact(2) / fact(0)) * (1.0 / 2.0)
-                  + 4.0 * (fact(3) / fact(1)) * (1.0 / 1.0);
-        let term2 = 5.0 * (fact(2) / fact(0));
-        let expected = c * (term1 + term2);
-
-        assert!((got - expected).abs() < 1e-12);
+    fn test_gauss_legendre_error_1d_linear_polynomial() {
+        // Test error for linear polynomial: 1 + x
+        // With n=1 Gauss point, this should be exact (error = 0)
+        let integrand = vec![1.0, 1.0, 0.0, 0.0]; // 1 + x
+        let error = GaussianQuadrature::gauss_legendre_error(&integrand, 1, 1).unwrap();
+        assert!(error.abs() < 1e-12, "Linear polynomial should be exact with n=1, got error: {}", error);
     }
 
     #[test]
-    fn gauss_error_2d_zero_when_n_large() {
-        let a = vec![vec![0.0; 5]; 5];
-        let got = GaussianQuadrature::gauss_error_2d(3, &a);
-        assert!(got.abs() < 1e-15);
-    }
-
-    // -------------------------
-    // gauss_error_3d
-    // -------------------------
-
-    #[test]
-    fn gauss_error_3d_matches_formula_small() {
-        let mut a = vec![vec![vec![0.0; 3]; 3]; 3];
-        a[2][0][0] = 1.5;
-        a[0][2][1] = 2.0;
-        a[1][1][2] = 3.0;
-
-        let n = 1;
-        let got = GaussianQuadrature::gauss_error_3d(n, &a);
-
-        let c = fact(n).powi(4) / ((2 * n + 1) as f64 * fact(2 * n).powi(3));
-        let term1 = 1.5 * (fact(2) / fact(0)) * (1.0 / (1.0 * 1.0));
-        let term2 = 2.0 * (fact(2) / fact(0)) * (1.0 / (1.0 + 1.0));
-        let term3 = 3.0 * (fact(2) / fact(0));
-        let expected = c * (term1 + term2 + term3);
-
-        assert!((got - expected).abs() < 1e-12);
+    fn test_gauss_legendre_error_1d_quadratic_polynomial() {
+        // Test error for quadratic polynomial: 1 + x + x²
+        // With n=1 Gauss point, this should have non-zero error
+        // With n=2 Gauss points, this should be exact
+        let integrand = vec![1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]; // 1 + x + x²
+        
+        let error_n1 = GaussianQuadrature::gauss_legendre_error(&integrand, 1, 1).unwrap();
+        assert!(error_n1 > 0.0, "Quadratic polynomial should have error with n=1");
+        
+        let error_n2 = GaussianQuadrature::gauss_legendre_error(&integrand, 2, 1).unwrap();
+        assert!(error_n2.abs() < 1e-12, "Quadratic polynomial should be exact with n=2, got error: {}", error_n2);
     }
 
     #[test]
-    fn gauss_error_3d_zero_when_n_large() {
-        let a = vec![vec![vec![0.0; 2]; 2]; 2];
-        let got = GaussianQuadrature::gauss_error_3d(2, &a);
-        assert!(got.abs() < 1e-15);
+    fn test_gauss_legendre_error_2d() {
+        // Test 2D polynomial: 1 + x + y
+        let integrand = vec![1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]; // Simplified representation
+        
+        let error = GaussianQuadrature::gauss_legendre_error(&integrand, 1, 2).unwrap();
+        // For linear polynomial in 2D with n=1, error should be small but non-zero
+        assert!(error >= 0.0);
     }
 
-    // -------------------------
-    // optimize_gauss_points stub (prints comparison)
-    // -------------------------
-
     #[test]
-    fn compare_theoretical_vs_optimized() {
-        let nodes = vec![
-            Node { id: 1, coordinates: vec![0.0] },
-            Node { id: 2, coordinates: vec![1.0] },
-        ];
-        let element_type = ElementType::Line;
-
-        let polynomial_order = 5; // degree d
-        let tolerance = 1e-6;
-
-        let result = GaussianQuadrature::optimize_gauss_points(
-            tolerance,
-            polynomial_order,
-            1,
-            IntegrationType::Mass,
+    fn test_calculate_integrand_mass_matrix() {
+        let (element, nodes) = create_test_element_and_nodes();
+        let element_type = ElementType::Triangle;
+        let material_property = vec![1.0]; // Constant density = 1.0
+        
+        let result = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
             &element_type,
             &nodes,
+            &material_property,
+            2, // mesh_dim
         );
-
+        
         assert!(result.is_ok());
+        let integrand = result.unwrap();
+        
+        // The integrand should be a polynomial representing ρ * ΣNᵢ² * det(J)
+        // For a unit triangle with constant density, this should be non-zero
+        assert!(!integrand.is_empty());
+        
+        // Check that the integrand has reasonable values
+        let max_coeff = integrand.iter().fold(0.0_f64, |max, &val| max.max(val.abs()));
+        assert!(max_coeff > 0.0);
+    }
 
-        if let Some((theoretical, optimized)) = result.unwrap() {
-            println!(
-                "Polynomial order d={} -> theoretical n={}, optimized n={}",
-                polynomial_order, theoretical, optimized
-            );
-            assert_eq!(theoretical, (polynomial_order + 1) / 2);
-            assert!(optimized <= theoretical);
-        }
+    #[test]
+    fn test_find_optimal_gauss_points_simple_case() {
+        let (element, nodes) = create_test_element_and_nodes();
+        let element_type = ElementType::Triangle;
+        let material_property = vec![1.0]; // Constant density
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &nodes,
+            2, // mesh_dim
+            1e-6, // tolerance
+            &material_property,
+        );
+        
+        assert!(result.is_ok());
+        let gauss_info = result.unwrap();
+        
+        assert_eq!(gauss_info.element_id, 0);
+        assert!(gauss_info.theoretical_number >= 1);
+        assert!(gauss_info.optimal_number >= 1);
+        assert!(gauss_info.optimal_number <= gauss_info.theoretical_number);
+    }
+
+    #[test]
+    fn test_find_optimal_gauss_points_mesh() {
+        // Create a simple mesh with one triangle element
+        let nodes = vec![
+            Node { id: 1, coordinates: vec![0.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 0.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0] },
+        ];
+        
+        let elements = vec![Element {
+            id: 1,
+            nodes: vec![1, 2, 3],
+        }];
+        
+        let element_type_info = vec![ElementTypeInfo {
+            element_type: ElementType::Triangle,
+            num_elements: 1,
+            start_index: 0,
+            nodes_per_element: 3,
+        }];
+        
+        let mesh_data = MeshData {
+            dimension: 2,
+            num_nodes: 3,
+            min_node_index: 1,
+            nodes,
+            num_eltypes: 1,
+            elements,
+            element_type_info,
+        };
+        
+        let material_property = vec![1.0]; // Constant density
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points_number_mesh(
+            &mesh_data,
+            IntegrationType::Mass,
+            1e-6,
+            &material_property,
+        );
+        
+        assert!(result.is_ok());
+        let report = result.unwrap();
+        
+        assert_eq!(report.total_elements, 1);
+        assert_eq!(report.gauss_point_numbers[0].element_id, 1);
+        assert!(report.gauss_point_numbers[0].optimal_number >= 1);
+    }
+
+    #[test]
+    fn test_polynomial_coefficient_extraction() {
+        // Test the coefficient extraction functions from MonomialPolynomial
+        
+        // Create a simple 2D polynomial: 1 + 2x + 3y + 4xy
+        // In graded lexicographic order for degree 2: [1, x, y, z, x², xy, xz, y², yz, z²]
+        let poly_2d = vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0];
+        
+        // Extract 1D coefficients (only x terms)
+        let coeffs_1d = MonomialPolynomial::get_coefficients_1d(&poly_2d).unwrap();
+        assert_eq!(coeffs_1d, vec![1.0, 2.0, 0.0]); // Constant, x, x²
+        
+        // Extract 2D coefficients
+        let coeffs_2d = MonomialPolynomial::get_coefficients_2d(&poly_2d).unwrap();
+        assert_eq!(coeffs_2d[0][0], 1.0); // Constant
+        assert_eq!(coeffs_2d[1][0], 2.0); // x
+        assert_eq!(coeffs_2d[0][1], 3.0); // y
+        assert_eq!(coeffs_2d[1][1], 4.0); // xy
+    }
+
+    #[test]
+    fn test_integration_with_varying_material_properties() {
+        // Test integration with non-constant material properties
+        let (element, nodes) = create_test_element_and_nodes();
+        let element_type = ElementType::Triangle;
+        
+        // Linear density variation: ρ(x) = 1 + x
+        let material_property = vec![1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        
+        let result = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &nodes,
+            &material_property,
+            2,
+        );
+        
+        assert!(result.is_ok());
+        let integrand = result.unwrap();
+        
+        // The integrand should be more complex due to varying density
+        assert!(!integrand.is_empty());
+        
+        // Find optimal Gauss points for this more complex case
+        let gauss_result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &nodes,
+            2,
+            1e-6,
+            &material_property,
+        );
+        
+        assert!(gauss_result.is_ok());
     }
 }

@@ -266,4 +266,132 @@ impl VTUWriter {
         Ok(())
     }
 
+    pub fn write_vtu_with_geometric_analysis_and_gaussian_points_number(
+        mesh_data: &MeshData,
+        element_quality: &MeshQualityReport,
+        gaussian_points_report: &GaussianPointNumberReport,
+        output_path: &str,
+    ) -> Result<(), WriterError> {
+
+        let mut vtu = Vec::new();
+
+        // 1. Prepare points data
+        let points_data: Vec<f64> = mesh_data
+            .nodes
+            .iter()
+            .flat_map(|node| node.coordinates.iter().copied())
+            .collect();
+
+        // 2. Pre-calculate sizes
+        let total_connectivity: usize = mesh_data.elements.iter().map(|e| e.nodes.len()).sum();
+
+        let mut connectivity = Vec::with_capacity(total_connectivity);
+        let mut offsets = Vec::with_capacity(mesh_data.elements.len());
+        let mut cell_types = vec![CellType::Vertex; mesh_data.elements.len()];
+        let mut current_offset = 0;
+
+        // 3. Process elements individually (for connectivity and offsets)
+        for element in &mesh_data.elements {
+            connectivity.extend(element.nodes.iter().map(|&id| id as u64));
+            current_offset += element.nodes.len() as u64;
+            offsets.push(current_offset);
+        }
+
+        // 4. Process groups ONLY for cell types
+        for group in &mesh_data.element_type_info {
+            let vtk_type = group.element_type.eltype_vtk();
+            
+            // Fill cell types for this group
+            for i in group.start_index..(group.start_index + group.num_elements) {
+                if i < cell_types.len() {
+                    cell_types[i] = vtk_type;
+                } else {
+                    panic!("Element index out of bounds: {} >= {}", i, cell_types.len());
+                }
+            }
+        }
+
+
+        let mut cell_attributes = Vec::new();
+
+        // Add Element Quality Data as Cell Attributes
+        let mut quality_values = vec![0.0; mesh_data.elements.len()];
+        for quality in &element_quality.element_qualities {
+            if quality.element_id < quality_values.len() {
+                quality_values[quality.element_id] = quality.det_jacobian_value;
+            }
+        }
+        
+        let quality_attr = Attribute::scalars("Element_Quality", 1)
+            .with_data(IOBuffer::F64(quality_values));
+        cell_attributes.push(quality_attr);
+
+        // Add Number of Gaussian Points as Cell Attributes
+        let mut gauss_points_values = vec![0.0; mesh_data.elements.len()];
+        for gauss_point in &gaussian_points_report.gauss_point_numbers {
+            if gauss_point.element_id < gauss_points_values.len() {
+                gauss_points_values[gauss_point.element_id] = gauss_point.optimal_number as f64;
+            }
+        }
+        
+        let gauss_points_attr = Attribute::scalars("Optimal_Gaussian_Points", 1)
+            .with_data(IOBuffer::F64(gauss_points_values));
+        cell_attributes.push(gauss_points_attr);
+
+        // Add Theoretical Gaussian Points as Cell Attributes
+        let mut theoretical_gauss_values = vec![0.0; mesh_data.elements.len()];
+        for gauss_point in &gaussian_points_report.gauss_point_numbers {
+            if gauss_point.element_id < theoretical_gauss_values.len() {
+                theoretical_gauss_values[gauss_point.element_id] = gauss_point.theoretical_number as f64;
+            }
+        }
+        
+        let theoretical_gauss_attr = Attribute::scalars("Theoretical_Gaussian_Points", 1)
+            .with_data(IOBuffer::F64(theoretical_gauss_values));
+        cell_attributes.push(theoretical_gauss_attr);
+
+        // Add the Difference Between Theoretical and Optimal Gaussian Points as Cell Attributes
+        let mut gauss_point_diff = vec![0.0; mesh_data.elements.len()];
+        for (i, gauss_point) in gaussian_points_report.gauss_point_numbers.iter().enumerate() {
+            if gauss_point.element_id < gauss_point_diff.len() {
+                gauss_point_diff[gauss_point.element_id] = gauss_point.theoretical_number as f64 - gauss_point.optimal_number as f64;
+            }
+        }
+
+        let difference_gauss_attr = Attribute::scalars("Gaussian_Point_Difference", 1)
+            .with_data(IOBuffer::F64(gauss_point_diff));
+        cell_attributes.push(difference_gauss_attr);
+
+        println!("Total elements: {}", mesh_data.elements.len());
+        println!("Cell types count: {}", cell_types.len());
+        println!("Offsets count: {}", offsets.len());
+        assert_eq!(cell_types.len(), mesh_data.elements.len());
+        assert_eq!(offsets.len(), mesh_data.elements.len());
+
+        Vtk {
+            version: Version { major: 2, minor: 2 },
+            title: String::new(),
+            byte_order: ByteOrder::LittleEndian,
+            file_path: None,
+            data: DataSet::inline(UnstructuredGridPiece {
+                points: IOBuffer::F64(points_data),
+                cells: Cells {
+                    cell_verts: VertexNumbers::XML {
+                        connectivity: connectivity,
+                        offsets: offsets, 
+                    },
+                    types: cell_types,
+                },
+                data: Attributes {
+                    point: Default::default(),  // No point attributes in this case
+                    cell: cell_attributes,
+                },
+            }),
+        }.write_xml(&mut vtu)?;
+
+        // Write the vector to file
+        fs::write(output_path, &vtu)?;
+
+        Ok(())
+    }
 }

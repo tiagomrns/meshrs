@@ -58,6 +58,21 @@ impl From<ParseError> for ElementError {
     }
 }
 
+// Convert &str errors to ElementError
+impl From<&str> for ElementError {
+    fn from(err: &str) -> Self {
+        ElementError::GeometryError(err.to_string())
+    }
+}
+
+// Convert String errors to ElementError
+impl From<String> for ElementError {
+    fn from(err: String) -> Self {
+        ElementError::GeometryError(err)
+    }
+}
+
+
 #[derive(Debug, Clone)]
 pub enum GaussError {
     UnsupportedOrder(usize),
@@ -81,5 +96,12 @@ impl From<ElementError> for GaussError {
 impl From<ParseError> for GaussError {
     fn from(err: ParseError) -> Self {
         GaussError::GeometryError(format!("Parse error: {:?}", err))
+    }
+}
+
+// Convert &str errors to GaussError
+impl From<&str> for GaussError {
+    fn from(err: &str) -> Self {
+        GaussError::GeometryError(err.to_string())
     }
 }
