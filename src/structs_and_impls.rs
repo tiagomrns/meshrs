@@ -140,6 +140,92 @@ impl MonomialPolynomial {
         Ok(result)
     }
 
+    /// Divide two polynomials using long division algorithm
+    /// Returns quotient where: check this !! give only quotient not the remainder 
+    pub fn divide(dividend: &[f64], divisor: &[f64]) -> Result<Vec<f64>, &'static str> { // check what it as result gives !! i only need quotient
+        // Check for zero divisor
+        if divisor.iter().all(|&c| c.abs() < 1e-15) {
+            return Err("Cannot divide by zero polynomial");
+        }
+
+        let dividend_degree = Self::infer_max_degree(dividend.len())?;
+        let divisor_degree = Self::infer_max_degree(divisor.len())?;
+        
+        // If dividend degree < divisor degree, quotient is 0
+        if Self::total_degree_polynomial(dividend) < Self::total_degree_polynomial(divisor) {
+            return Ok(vec![0.0; Self::expected_length(0)]);
+        }
+
+        let mut remainder = dividend.to_vec();
+        let max_result_degree = dividend_degree;
+        let mut quotient = vec![0.0; Self::expected_length(max_result_degree)];
+        
+        let dividend_basis = Self::generate_basis(dividend_degree);
+        let divisor_basis = Self::generate_basis(divisor_degree);
+        
+        // Find leading term of divisor (highest degree non-zero term)
+        let divisor_lead_idx = divisor_basis.iter().enumerate()
+            .rev()
+            .find(|(idx, _)| divisor[*idx].abs() > 1e-15)
+            .map(|(idx, _)| idx)
+            .ok_or("Divisor has no non-zero terms")?;
+        let divisor_lead_coeff = divisor[divisor_lead_idx];
+        let divisor_lead_exp = divisor_basis[divisor_lead_idx];
+        
+        // Polynomial long division
+        let max_iterations = 1000; // Prevent infinite loops
+        for _ in 0..max_iterations {
+            // Find leading term of remainder
+            let remainder_basis = Self::generate_basis(Self::infer_max_degree(remainder.len())?);
+            let remainder_lead_opt = remainder_basis.iter().enumerate()
+                .rev()
+                .find(|(idx, _)| remainder[*idx].abs() > 1e-15);
+            
+            if remainder_lead_opt.is_none() {
+                break; // Remainder is zero, done
+            }
+            
+            let (remainder_lead_idx, &remainder_lead_exp) = remainder_lead_opt.unwrap();
+            let remainder_lead_coeff = remainder[remainder_lead_idx];
+            
+            // Check if we can divide (remainder degree >= divisor degree for this term)
+            if remainder_lead_exp.0 < divisor_lead_exp.0 ||
+               remainder_lead_exp.1 < divisor_lead_exp.1 ||
+               remainder_lead_exp.2 < divisor_lead_exp.2 {
+                break; // Cannot divide further
+            }
+            
+            // Calculate quotient term: remainder_lead / divisor_lead
+            let quotient_term_coeff = remainder_lead_coeff / divisor_lead_coeff;
+            let quotient_term_exp = (
+                remainder_lead_exp.0 - divisor_lead_exp.0,
+                remainder_lead_exp.1 - divisor_lead_exp.1,
+                remainder_lead_exp.2 - divisor_lead_exp.2,
+            );
+            
+            // Add to quotient
+            let quotient_idx = Self::map_index(quotient_term_exp);
+            quotient[quotient_idx] += quotient_term_coeff;
+            
+            // Subtract (divisor * quotient_term) from remainder
+            for (div_idx, &div_exp) in divisor_basis.iter().enumerate() {
+                if divisor[div_idx].abs() < 1e-15 {
+                    continue;
+                }
+                
+                let result_exp = (
+                    div_exp.0 + quotient_term_exp.0,
+                    div_exp.1 + quotient_term_exp.1,
+                    div_exp.2 + quotient_term_exp.2,
+                );
+                let result_idx = Self::map_index(result_exp);
+                remainder[result_idx] -= divisor[div_idx] * quotient_term_coeff;
+            }
+        }
+        
+        Ok(quotient)
+    }
+
     // Evaluate polynomial at a point (x, y, z)
     pub fn evaluate(coeffs: &[f64], point: (f64, f64, f64)) -> Result<f64, &'static str> {
         let max_degree = Self::infer_max_degree(coeffs.len())?;
@@ -269,9 +355,25 @@ pub struct Jacobian {
 }
 
 impl Jacobian {
+    /* 
     pub fn evaluate_determinant_at_point(&self, point: (f64, f64, f64)) -> Result<f64, &'static str> {
     MonomialPolynomial::evaluate(&self.determinant, point)
-}
+    }
+    */
+    pub fn evaluate_matrix_at_point(&self, point: (f64, f64, f64)) -> Result<Vec<Vec<f64>>, &'static str> {
+        let rows = self.matrix.len();
+        let cols = if rows > 0 { self.matrix[0].len() } else { 0 };
+        let mut evaluated = vec![vec![0.0; cols]; rows];
+        
+        for i in 0..rows {
+            for j in 0..cols {
+                evaluated[i][j] = MonomialPolynomial::evaluate(&self.matrix[i][j], point)?;
+            }
+        }
+        
+        Ok(evaluated)
+    }
+    //evaluate adjacent matrix at a point
 }
 
 /// Element types available in VTK 
@@ -325,7 +427,7 @@ impl ElementType {
             ElementType::Tetra => CellType::Tetra,  
             ElementType::QuadraticTetra => CellType::QuadraticTetra,  
             ElementType::Pyramid => CellType::Pyramid,
-            //ElementType::QuadraticPyramid => CellType::QuadraticPyramid,
+            // ElementType::QuadraticPyramid => CellType::QuadraticPyramid,
             // ElementType::TriquadraticPyramid => CellType::TriquadraticPyramid,   
             ElementType::Wedge => CellType::Wedge,   
             ElementType::QuadraticWedge => CellType::QuadraticWedge,
@@ -1779,7 +1881,14 @@ pub struct ElementValueData {
 #[derive(Debug, Clone)]
 pub struct ElementQuality {
     pub element_id: usize,      // ID of the element being analyzed
-    pub det_jacobian_value: f64,      // determinant of the Jacobian matrix
+    pub det_jacobian_value: f64,      // determinant of the Jacobian matrix  //delete this volume shape can be used instead
+    pub shape_metric: f64,          // shape metric value
+    pub skewness_metric: f64,       // skewness metric value
+    pub length_ratio: f64,        // length ratio metric value
+    pub orientation_metric: f64,   // orientation metric value
+    pub volume_metric: f64,             // volume of the element
+    pub volume_shape_metric: f64, // volume shape metric
+    pub volume_shape_orientation_metric: f64, // volume shape orientation
 
     // more quality metrics can be added here
 }
@@ -1809,6 +1918,33 @@ pub enum IntegrationType {
     Mass,      // Mass matrix integration: ∫ ρ N_i N_j dΩ
     Stiffness, // Stiffness matrix integration
 }
+
+#[derive(Debug, Clone)]
+pub enum MaterialProperty {
+    Scalar(Vec<f64>),           // For mass matrix (density)
+    Matrix(Vec<Vec<Vec<f64>>>), // For stiffness matrix (anisotropic material)
+}
+
+impl MaterialProperty {
+    pub fn as_scalar(&self) -> Result<&[f64], GaussError> {
+        match self {
+            MaterialProperty::Scalar(coeffs) => Ok(coeffs),
+            _ => Err(GaussError::InvalidMaterialProperty(
+                "Expected scalar material property".to_string(),
+            )),
+        }
+    }
+
+    pub fn as_matrix(&self) -> Result<&Vec<Vec<Vec<f64>>>, GaussError> {
+        match self {
+            MaterialProperty::Matrix(matrix) => Ok(matrix),
+            _ => Err(GaussError::InvalidMaterialProperty(
+                "Expected matrix material property".to_string(),
+            )),
+        }
+    }
+}
+
 
 #[derive(Debug, Clone)]
 pub struct GaussianPointNumber {

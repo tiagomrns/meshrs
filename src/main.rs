@@ -39,7 +39,7 @@ struct CommandLineArgs {
     optimize_gauss: bool,             // Flag to enable Gaussian quadrature optimization
     gauss_tolerance: f64,             // Tolerance for Gaussian quadrature optimization
     integration_type: IntegrationType, // Type of integration (Mass or Stiffness)
-    material_property: Vec<f64>,      // Material property polynomial coefficients in monomial form
+    material_property: MaterialProperty,      // Material property polynomial coefficients in monomial form
 }
 
 /// Enum to specify which type of values to parse from txt file(s)
@@ -70,7 +70,7 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
     let mut optimize_gauss = false;                   // Default to not optimizing Gaussian quadrature
     let mut gauss_tolerance = 1e-6;                   // Default tolerance for Gaussian quadrature
     let mut integration_type = IntegrationType::Mass; // Default integration type
-    let mut material_property = vec![1.0]; // Default material property polynomial coefficients in monomial form
+    let mut material_property = MaterialProperty::Scalar(vec![1.0]); // Default material property polynomial coefficients in monomial form
 
     // Start parsing from index 1 (skip program name at index 0)
     let mut i = 1;
@@ -116,13 +116,59 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
                 if i >= args.len() {
                     return Err("Missing value for --material-property".to_string());
                 }
-                material_property = args[i].split(',')
-                    .map(|s| s.trim().parse::<f64>())
-                    .collect::<Result<Vec<f64>, _>>()
-                    .map_err(|_| format!("Invalid material property coefficients: {}", args[i]))?;
-                if material_property.is_empty() {
-                    return Err("Material property coefficients cannot be empty".to_string());
-                }
+                
+                // Parse based on integration type
+                material_property = match integration_type {
+                    IntegrationType::Mass => {
+                        // For mass: scalar coefficients
+                        let coefficients: Vec<f64> = args[i].split(',')
+                            .map(|s| s.trim().parse::<f64>())
+                            .collect::<Result<Vec<f64>, _>>()
+                            .map_err(|_| format!("Invalid material property coefficients: {}", args[i]))?;
+                        if coefficients.is_empty() {
+                            return Err("Material property coefficients cannot be empty".to_string());
+                        }
+                        MaterialProperty::Scalar(coefficients)
+                    }
+                    IntegrationType::Stiffness => {
+                        // For stiffness: matrix format "rows,cols,values..."
+                        let parts: Vec<&str> = args[i].split(',').collect();
+                        if parts.len() < 2 {
+                            return Err("For stiffness matrix, provide: rows,cols,values...".to_string());
+                        }
+                        
+                        let rows: usize = parts[0].parse()
+                            .map_err(|_| format!("Invalid rows: {}", parts[0]))?;
+                        let cols: usize = parts[1].parse()
+                            .map_err(|_| format!("Invalid cols: {}", parts[1]))?;
+                        
+                        let expected_values = rows * cols;
+                        if parts.len() < 2 + expected_values {
+                            return Err(format!(
+                                "Expected {} values for {}x{} matrix, got {}",
+                                expected_values, rows, cols, parts.len() - 2
+                            ));
+                        }
+                        
+                        let values: Vec<f64> = parts[2..2 + expected_values]
+                            .iter()
+                            .map(|s| s.parse::<f64>())
+                            .collect::<Result<Vec<f64>, _>>()
+                            .map_err(|_| format!("Invalid matrix value in: {}", args[i]))?;
+                        
+                        // Convert to 3D tensor format: [alpha][beta][coefficients]
+                        let mut material_tensor = vec![vec![vec![]; cols]; rows];
+                        let mut index = 0;
+                        for i in 0..rows {
+                            for j in 0..cols {
+                                // Each component is a constant polynomial
+                                material_tensor[i][j] = vec![values[index]];
+                                index += 1;
+                            }
+                        }
+                        MaterialProperty::Matrix(material_tensor)
+                    }
+                };
             },
             file if file.ends_with(".mphtxt") || file.ends_with(".inp") => { // Check if file is a mesh file
                 if mesh_file.is_some() {              // Check if we already found a mesh file
@@ -214,9 +260,13 @@ fn print_usage(program_name: &str) {
     eprintln!("  --analyze-mesh        Perform mesh quality analysis");          // Analysis option description 
     eprintln!("  --optimize-gauss      Optimize Gaussian quadrature points");    // Gauss optimization description
     eprintln!("  --gauss-tolerance <val> Set tolerance for Gauss optimization (default: 1e-6)"); // Tolerance description
-    eprintln!("  --mass-integration    Use mass matrix integration (default)");   // Mass integration description
-    eprintln!("  --stiffness-integration Use stiffness matrix integration");     // Stiffness integration description
-    eprintln!("  --material-property <coeffs> Material property polynomial coefficients as comma-separated values (default: 1.0)"); // Material property description
+    eprintln!("  --mass-integration    Use mass matrix integration (default)");
+    eprintln!("  --stiffness-integration Use stiffness matrix integration");
+    eprintln!("  --material-property <spec> Material property specification:");
+    eprintln!("     For mass: comma-separated coefficients (default: 1.0)");
+    eprintln!("        Example: --material-property 1.0,0.5,0.1");
+    eprintln!("     For stiffness: rows,cols,matrix_values");
+    eprintln!("        Example: --material-property 2,2,1.0,0.0,0.0,1.0");
     eprintln!(); // Empty line for separation
     eprintln!("Note: Mesh file is always required. Value type must be specified when using txt files."); // Important usage note
     eprintln!(); // Empty line for separation
@@ -228,10 +278,11 @@ fn print_usage(program_name: &str) {
     eprintln!("  {} model.inp nodes.txt elements.txt --both-values --print-vtu # Parse all with output", program_name); // Full featured example
     eprintln!("  {} mesh.mphtxt --analyze-mesh               # Parse mesh + quality analysis", program_name); // Analysis example  
     eprintln!("  {} mesh.mphtxt nodes.txt --node-values --analyze-mesh # Parse + analyze both meshes", program_name); // Full analysis example 
-    eprintln!("  {} mesh.mphtxt --optimize-gauss --mass-integration # Optimize Gauss points for mass matrix", program_name);
-    eprintln!("  {} mesh.mphtxt --optimize-gauss --gauss-tolerance 1e-8 # Custom tolerance", program_name);
-    eprintln!("  {} mesh.mphtxt --analyze-mesh --optimize-gauss # Both analysis and optimization", program_name);
-    eprintln!("  {} mesh.mphtxt --optimize-gauss --material-property 1.0 # Constant density variation", program_name);
+    eprintln!("  {} mesh.mphtxt --optimize-gauss --mass-integration --material-property 2.5", program_name); 
+    eprintln!("  {} mesh.mphtxt --optimize-gauss --mass-integration --material-property 1.0,0.5", program_name); 
+    eprintln!("  {} mesh.mphtxt --optimize-gauss --gauss-tolerance 1e-8 # Custom tolerance", program_name); 
+    eprintln!("  {} mesh.mphtxt --analyze-mesh --optimize-gauss # Both analysis and optimization", program_name); 
+    eprintln!("  {} mesh.mphtxt --optimize-gauss --stiffness-integration --material-property 2,2,2.0,0.5,0.5,1.0", program_name); // Stiffness example
 }
 
 /// Perform mesh quality analysis and write results to text file 
@@ -262,7 +313,7 @@ fn optimize_gaussian_quadrature(
     mesh_data: &MeshData,
     integration_type: IntegrationType,
     tolerance: f64,
-    material_property: &[f64],
+    material_property: &MaterialProperty,
     output_dir: &Path,
     mesh_name: &str,
 ) -> Result<(), String> {
