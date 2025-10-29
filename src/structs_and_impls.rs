@@ -33,7 +33,7 @@ impl MonomialPolynomial {
 
     // Infer max_degree from coefficient vector length (always 3D)
     // Uses formula: length = (max_degree + 1) * (max_degree + 2) * (max_degree + 3) / 6
-    fn infer_max_degree(len: usize) -> Result<u32, &'static str> {
+    pub fn infer_max_degree(len: usize) -> Result<u32, &'static str> {
         // For 3D: length = (max_degree + 1) * (max_degree + 2) * (max_degree + 3) / 6
         for max_degree in 0..=100 {
             let expected = ((max_degree + 1) * (max_degree + 2) * (max_degree + 3) / 6) as usize;
@@ -56,14 +56,14 @@ impl MonomialPolynomial {
     // Generate graded lexicographic basis for 3D with given maximum degree
     // Order: [1, x, y, z, x^2, xy, xz, y^2, yz, z^2, x^3, ...]
     // Sorted by total degree, then by x, then by y
-    fn generate_basis(max_degree: u32) -> Vec<(u32, u32, u32)> {
+    pub fn generate_basis(max_degree: u32) -> Vec<(u32, u32, u32)> {
         let mut basis = Vec::new();
         
         // Iterate through all possible total degrees
-        for total_degree in 0..=max_degree {
+        for total_degree in 0..max_degree {
             // Generate all combinations (i, j, k) such that i + j + k = total_degree
-            for i in (0..=total_degree).rev() {
-                for j in (0..=(total_degree - i)).rev() {
+            for i in (0..total_degree).rev() {
+                for j in (0..(total_degree - i)).rev() {
                     let k = total_degree - i - j;
                     basis.push((i, j, k));
                 }
@@ -83,15 +83,15 @@ impl MonomialPolynomial {
 
     // Add two polynomials
     pub fn add(first: &[f64], second: &[f64]) -> Result<Vec<f64>, &'static str> {
-    let max_len = first.len().max(second.len());
-    let result = (0..max_len)
-        .map(|i| {
-            first.get(i).unwrap_or(&0.0) + second.get(i).unwrap_or(&0.0)
-        })
-        .collect();
-    
-    Ok(result)
-}
+        let max_len = first.len().max(second.len());
+        let result = (0..max_len)
+            .map(|i| {
+                first.get(i).unwrap_or(&0.0) + second.get(i).unwrap_or(&0.0)
+            })
+            .collect();
+        
+        Ok(result)
+    }
 
     // Multiply polynomial by scalar
     pub fn multiply_scalar(coeffs: &[f64], scalar: f64) -> Vec<f64> {
@@ -140,92 +140,6 @@ impl MonomialPolynomial {
         Ok(result)
     }
 
-    /// Divide two polynomials using long division algorithm
-    /// Returns quotient where: check this !! give only quotient not the remainder 
-    pub fn divide(dividend: &[f64], divisor: &[f64]) -> Result<Vec<f64>, &'static str> { // check what it as result gives !! i only need quotient
-        // Check for zero divisor
-        if divisor.iter().all(|&c| c.abs() < 1e-15) {
-            return Err("Cannot divide by zero polynomial");
-        }
-
-        let dividend_degree = Self::infer_max_degree(dividend.len())?;
-        let divisor_degree = Self::infer_max_degree(divisor.len())?;
-        
-        // If dividend degree < divisor degree, quotient is 0
-        if Self::total_degree_polynomial(dividend) < Self::total_degree_polynomial(divisor) {
-            return Ok(vec![0.0; Self::expected_length(0)]);
-        }
-
-        let mut remainder = dividend.to_vec();
-        let max_result_degree = dividend_degree;
-        let mut quotient = vec![0.0; Self::expected_length(max_result_degree)];
-        
-        let dividend_basis = Self::generate_basis(dividend_degree);
-        let divisor_basis = Self::generate_basis(divisor_degree);
-        
-        // Find leading term of divisor (highest degree non-zero term)
-        let divisor_lead_idx = divisor_basis.iter().enumerate()
-            .rev()
-            .find(|(idx, _)| divisor[*idx].abs() > 1e-15)
-            .map(|(idx, _)| idx)
-            .ok_or("Divisor has no non-zero terms")?;
-        let divisor_lead_coeff = divisor[divisor_lead_idx];
-        let divisor_lead_exp = divisor_basis[divisor_lead_idx];
-        
-        // Polynomial long division
-        let max_iterations = 1000; // Prevent infinite loops
-        for _ in 0..max_iterations {
-            // Find leading term of remainder
-            let remainder_basis = Self::generate_basis(Self::infer_max_degree(remainder.len())?);
-            let remainder_lead_opt = remainder_basis.iter().enumerate()
-                .rev()
-                .find(|(idx, _)| remainder[*idx].abs() > 1e-15);
-            
-            if remainder_lead_opt.is_none() {
-                break; // Remainder is zero, done
-            }
-            
-            let (remainder_lead_idx, &remainder_lead_exp) = remainder_lead_opt.unwrap();
-            let remainder_lead_coeff = remainder[remainder_lead_idx];
-            
-            // Check if we can divide (remainder degree >= divisor degree for this term)
-            if remainder_lead_exp.0 < divisor_lead_exp.0 ||
-               remainder_lead_exp.1 < divisor_lead_exp.1 ||
-               remainder_lead_exp.2 < divisor_lead_exp.2 {
-                break; // Cannot divide further
-            }
-            
-            // Calculate quotient term: remainder_lead / divisor_lead
-            let quotient_term_coeff = remainder_lead_coeff / divisor_lead_coeff;
-            let quotient_term_exp = (
-                remainder_lead_exp.0 - divisor_lead_exp.0,
-                remainder_lead_exp.1 - divisor_lead_exp.1,
-                remainder_lead_exp.2 - divisor_lead_exp.2,
-            );
-            
-            // Add to quotient
-            let quotient_idx = Self::map_index(quotient_term_exp);
-            quotient[quotient_idx] += quotient_term_coeff;
-            
-            // Subtract (divisor * quotient_term) from remainder
-            for (div_idx, &div_exp) in divisor_basis.iter().enumerate() {
-                if divisor[div_idx].abs() < 1e-15 {
-                    continue;
-                }
-                
-                let result_exp = (
-                    div_exp.0 + quotient_term_exp.0,
-                    div_exp.1 + quotient_term_exp.1,
-                    div_exp.2 + quotient_term_exp.2,
-                );
-                let result_idx = Self::map_index(result_exp);
-                remainder[result_idx] -= divisor[div_idx] * quotient_term_coeff;
-            }
-        }
-        
-        Ok(quotient)
-    }
-
     // Evaluate polynomial at a point (x, y, z)
     pub fn evaluate(coeffs: &[f64], point: (f64, f64, f64)) -> Result<f64, &'static str> {
         let max_degree = Self::infer_max_degree(coeffs.len())?;
@@ -239,25 +153,6 @@ impl MonomialPolynomial {
                 coeff * x.powi(i as i32) * y.powi(j as i32) * z.powi(k as i32)
             })
             .sum())
-    }
-
-    // Helper to pad polynomial to a higher degree (fills with zeros)
-    pub fn pad_to_degree(coeffs: &[f64], target_degree: u32) -> Result<Vec<f64>, &'static str> {
-        let current_degree = Self::infer_max_degree(coeffs.len())?;
-        
-        if target_degree < current_degree {
-            return Err("Target degree must be >= current degree");
-        }
-        
-        if target_degree == current_degree {
-            return Ok(coeffs.to_vec());
-        }
-        
-        let target_len = Self::expected_length(target_degree);
-        let mut result = coeffs.to_vec();
-        result.resize(target_len, 0.0);
-        
-        Ok(result)
     }
 
     /// Get 1D coefficients (only x powers): [a₀, a₁, a₂, ...] for a₀ + a₁x + a₂x² + ...
@@ -440,9 +335,8 @@ impl ElementType {
         }
     }
 
-    /// Monomial shape functions and their derivatives for standard elements
+    /// Monomial shape functions and their derivatives for standard elements in transposed format N'
     /// Monomial rule for Graded Lexicographic Order:
-    
     pub fn get_shape_functions(
         element_type: &ElementType
     ) -> Option<ShapeFunction> {                  
@@ -1969,29 +1863,25 @@ mod tests {
     fn test_monomial_polynomial_basic_operations() {
         // Test with valid 3D polynomials
         // For degree 1 in 3D: [1, x, y, z] - length should be 4
-        let poly1 = vec![1.0, 2.0, 0.0, 0.0]; // Represents 1 + 2x in 3D basis
-        let poly2 = vec![2.0, 1.0, 0.0, 0.0]; // Represents 2 + x in 3D basis
+        let poly1 = vec![1.0, 2.0, -1.0, 0.0]; // Represents 1 + 2x - y in 3D basis
+        let poly2 = vec![-1.0, 1.0, 0.0, 0.0]; // Represents -1 + x in 3D basis
         
         // Test addition
         let sum = MonomialPolynomial::add(&poly1, &poly2).unwrap();
-        assert_eq!(sum, vec![3.0, 3.0, 0.0, 0.0]);
-        
+        assert_eq!(sum, vec![0.0, 3.0, -1.0, 0.0]);  // Represents 3x - y in 3D basis
+
         // Test scalar multiplication
-        let scaled = MonomialPolynomial::multiply_scalar(&poly1, 2.0);
-        assert_eq!(scaled, vec![2.0, 4.0, 0.0, 0.0]);
+        let scaled = MonomialPolynomial::multiply_scalar(&poly1, 1.5);
+        assert_eq!(scaled, vec![1.5, 3.0, -1.5, 0.0]);
         
         // Test polynomial multiplication - this will create degree 2 polynomial
         let product = MonomialPolynomial::multiply(&poly1, &poly2).unwrap();
-        // (1 + 2x)(2 + x) = 2 + x + 4x + 2x² = 2 + 5x + 2x²
+        // (1 + 2x - y)(-1 + x) = -1 - 2x + y + x + 2x^2 - xy = -1 - x + y + 2x^2 - xy
+        assert_eq!(product, vec![-1.0, -1.0, 1.0, 0.0, 2.0, -1.0, 0.0, 0.0, 0.0, 0.0]);
+
         // In 3D degree 2 basis: [1, x, y, z, x², xy, xz, y², yz, z²]
-        let expected_length = MonomialPolynomial::expected_length(2); // Should be 10
-        assert_eq!(product.len(), expected_length);
-        
-        // Check specific coefficients
-        let coeffs_1d = MonomialPolynomial::get_coefficients_1d(&product).unwrap();
-        assert!((coeffs_1d[0] - 2.0).abs() < 1e-12); // constant term
-        assert!((coeffs_1d[1] - 5.0).abs() < 1e-12); // x term
-        assert!((coeffs_1d[2] - 2.0).abs() < 1e-12); // x² term
+        let expected_length = MonomialPolynomial::expected_length(2); 
+        assert_eq!(expected_length, 10); // Should be 10
     }
 
     #[test]
@@ -2002,10 +1892,10 @@ mod tests {
         // Test evaluation at (1.0, 0.0, 0.0)
         let result = MonomialPolynomial::evaluate(&poly, (1.0, 0.0, 0.0)).unwrap();
         assert!((result - 3.0).abs() < 1e-12); // 1 + 2*1 + 3*0 = 3
-        
-        // Test evaluation at (2.0, 1.0, 0.0)
-        let result = MonomialPolynomial::evaluate(&poly, (2.0, 1.0, 0.0)).unwrap();
-        assert!((result - 8.0).abs() < 1e-12); // 1 + 2*2 + 3*1 = 8
+
+        // Test evaluation at (-0.5, 3.0, 0.0)
+        let result = MonomialPolynomial::evaluate(&poly, (-0.5, 3.0, 0.0)).unwrap();
+        assert!((result - 8.0).abs() < 1e-12); // 1 + 2*(-0.5) + 3*3 = 8
     }
 
     #[test]
@@ -2022,16 +1912,29 @@ mod tests {
 
     #[test]
     fn test_monomial_polynomial_coefficient_extraction() {
-        // Create a polynomial: 1 + 2x + 3y + 5x² + 6xy
-        // For degree 2 in 3D: [1, x, y, z, x², xy, xz, y², yz, z²]
-        let poly = vec![1.0, 2.0, 3.0, 0.0, 5.0, 6.0, 0.0, 0.0, 0.0, 0.0];
+        // Check specific coefficients
+        let coeffs_1d = MonomialPolynomial::get_coefficients_1d(&[0.0, 1.5, 0.0, 0.0]).unwrap();
+        assert!((coeffs_1d[0] - 0.0).abs() < 1e-12); // constant term
+        assert!((coeffs_1d[1] - 1.5).abs() < 1e-12); // x term
 
-        // Test 2D coefficient extraction
-        let coeffs_2d = MonomialPolynomial::get_coefficients_2d(&poly).unwrap();
-        assert_eq!(coeffs_2d[0][0], 1.0); // constant
-        assert_eq!(coeffs_2d[1][0], 2.0); // x
-        assert_eq!(coeffs_2d[0][1], 3.0); // y
-        assert_eq!(coeffs_2d[1][1], 6.0); // xy
-        assert_eq!(coeffs_2d[2][0], 5.0); // x²
+        let coeffs_2d = MonomialPolynomial::get_coefficients_2d(&[3.0, 1.5, 0.0, 0.0, -1.0, 0.3, 0.0, 1.0, 0.0, 0.0]).unwrap();
+        assert!((coeffs_2d[0][0] - 3.0).abs() < 1e-12); // constant term
+        assert!((coeffs_2d[1][0] - 1.5).abs() < 1e-12); // x term
+        assert!((coeffs_2d[0][1] - 0.0).abs() < 1e-12); // y term
+        assert!((coeffs_2d[2][0] + 1.0).abs() < 1e-12); // x^2 term
+        assert!((coeffs_2d[0][0] - 0.3).abs() < 1e-12); // xy term
+        assert!((coeffs_2d[1][0] - 1.0).abs() < 1e-12); // y^2 term
+
+        let coeffs_3d = MonomialPolynomial::get_coefficients_3d(&[-1.0, 0.5, 0.7, -2.3, 23.0, 60.5, -12.0, 1.4, 0.95, 0.0]).unwrap();
+        assert!((coeffs_3d[0][0][0] + 1.0).abs() < 1e-12); // constant term
+        assert!((coeffs_3d[1][0][0] - 0.5).abs() < 1e-12); // x term
+        assert!((coeffs_3d[0][1][0] - 0.7).abs() < 1e-12); // y term
+        assert!((coeffs_3d[0][0][1] + 2.3).abs() < 1e-12); // z term
+        assert!((coeffs_3d[2][0][0] - 23.0).abs() < 1e-12); // x^2 term
+        assert!((coeffs_3d[1][1][0] - 60.5).abs() < 1e-12); // xy term
+        assert!((coeffs_3d[1][0][1] + 12.0).abs() < 1e-12); // xz term
+        assert!((coeffs_3d[0][2][0] - 1.4).abs() < 1e-12); // y^2 term
+        assert!((coeffs_3d[0][1][1] - 0.95).abs() < 1e-12); // yz term
+        assert!((coeffs_3d[0][0][2] - 0.0).abs() < 1e-12); // z^2 term
     }
 }

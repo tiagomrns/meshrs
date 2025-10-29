@@ -85,6 +85,7 @@ pub enum GaussError {
     InvalidTolerance,
     InvalidMaterialProperty(String),
     PolynomialError(String),
+    InvalidIntegrationType(String),
 }
 
 // Implement conversion from ElementError to GaussError
