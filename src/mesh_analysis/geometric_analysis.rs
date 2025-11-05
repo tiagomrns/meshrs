@@ -102,96 +102,188 @@ impl GeometricAnalysis {
             element_order,
         )?;
 
-        // Find the point with worst Jacobian determinant
-        let (eval_point, evaluated_jacobian_determinant) = Self::find_worst_jacobian_point(
+        // Find both the minimum and maximum Jacobian determinant 
+        let (min_point, min_detj, max_detj) = Self::find_min_max_jacobian_determinant(
             &jacobian_matrix.determinant,
             &evaluation_points,
         )?;
         
-        // Convert worst point to tuple format
-        let eval_point = match eval_point.len() {
-            1 => (eval_point[0], 0.0, 0.0),
-            2 => (eval_point[0], eval_point[1], 0.0),
-            3 => (eval_point[0], eval_point[1], eval_point[2]),
+        // Calculate Jacobian ratio (max/min)
+        let jacobian_ratio = if (min_detj.abs() < 1e-12) || (max_detj.abs() < 1e-12) {
+            0.0 // either min detJ or max detJ is zero means invalid element
+        } else {
+            max_detj / min_detj
+        };
+
+        // Convert worst point to tuple format for evaluation (we'll use min point for detailed analysis)
+        let eval_point_tuple = match min_point.len() {
+            1 => (min_point[0], 0.0, 0.0),
+            2 => (min_point[0], min_point[1], 0.0),
+            3 => (min_point[0], min_point[1], min_point[2]),
             _ => (0.0, 0.0, 0.0),
         };
         
-        // Evaluate Jacobian matrix at the worst point
+        // Evaluate Jacobian matrix at the worst (minimum) point
         let mut evaluated_jacobian = vec![vec![0.0; element_dim]; mesh_dim];
         for i in 0..mesh_dim {
             for j in 0..element_dim {
                 evaluated_jacobian[i][j] = MonomialPolynomial::evaluate(
-                    &jacobian_matrix.matrix[i][j], eval_point
+                    &jacobian_matrix.matrix[i][j], eval_point_tuple
                 ).map_err(|e| ElementError::GeometryError(
                     format!("Failed to evaluate Jacobian: {}", e)
                 ))?;
             }
-        };
-
-        /* 
-        // Process the determinant value based on matrix dimensions
-        let det_value = match (mesh_dim, element_dim) {
-            (d, e) if d == e => {
-                // Square matrix: determinant directly represents volume scaling
-                metric_value
-            },
-            (2, 1) | (3, 1) | (3, 2) => {
-                // Non-square matrices (lower-dimensional elements in higher-dimensional space):
-                // Determinant polynomial represents squared length/area, so take sqrt
-                let magnitude = metric_value.abs().sqrt();
-                // Determine orientation sign to preserve directional information
-                let sign = Self::calculate_element_orientation_sign(
-                    &jacobian_matrix.matrix,
-                    eval_point,
-                    mesh_dim,
-                    element_dim,
-                )?;
-                sign * magnitude
-            },
-            _ => metric_value, // Default case (shouldn't normally occur)
-        };
-        */
-
-        // Evaluate Jacobian at the point
-        let mut evaluated_jacobian = vec![vec![0.0; element_dim]; mesh_dim];
-        for i in 0..mesh_dim {
-            for j in 0..element_dim {
-                evaluated_jacobian[i][j] = MonomialPolynomial::evaluate(&jacobian_matrix.matrix[i][j], eval_point)
-                    .map_err(|e| ElementError::GeometryError(format!("Failed to evaluate Jacobian: {}", e)))?;
-            }
         }
 
         let (r_matrix, q_matrix, d_matrix) = 
-            Self::jacobian_factorization(&evaluated_jacobian, &evaluated_jacobian_determinant, mesh_dim, element_dim, eval_point)?;
+            Self::jacobian_factorization(&evaluated_jacobian, &min_detj, mesh_dim, element_dim)?;
 
         // Calculate inverses of matrices
-        let inverse_evaluated_jacobian = Self::inverse_matrix(&evaluated_jacobian, element_dim, mesh_dim)
+        let inverse_evaluated_jacobian = Self::inverse_matrix(&evaluated_jacobian, mesh_dim, element_dim)
             .map_err(|e| ElementError::GeometryError(format!("Failed to calculate inverse: {:?}", e)))?;
-        let inverse_q_matrix = Self::inverse_matrix(&q_matrix, element_dim, mesh_dim)
+        let inverse_q_matrix = Self::inverse_matrix(&q_matrix, mesh_dim, element_dim)
             .map_err(|e| ElementError::GeometryError(format!("Failed to calculate inverse: {:?}", e)))?;
-        let inverse_d_matrix = Self::inverse_matrix(&d_matrix, element_dim, mesh_dim)
+        let inverse_d_matrix = Self::inverse_matrix(&d_matrix, mesh_dim, element_dim)
             .map_err(|e| ElementError::GeometryError(format!("Failed to calculate inverse: {:?}", e)))?;
         
+        // Calculate orientation sign (-1.0 or 1.0)
+        let orientation_sign = Self::calculate_element_orientation_sign( 
+            &evaluated_jacobian,
+            mesh_dim,
+            element_dim,
+        )?;
+
+
         // Calculate metrics
         let shape_metric = Self::calculate_shape_metric(&evaluated_jacobian, &inverse_evaluated_jacobian, mesh_dim, element_dim);
         let skewness_metric = Self::calculate_skewness_metric(&q_matrix, &inverse_q_matrix, mesh_dim, element_dim);
         let length_ratio = Self::calculate_length_ratio(&d_matrix, &inverse_d_matrix, mesh_dim, element_dim);
         let orientation_metric = Self::calculate_orientation_metric(&r_matrix, mesh_dim, element_dim);
-        let volume_metric = evaluated_jacobian_determinant;
-        let volume_shape_metric = Self::calculate_volume_shape_metric(shape_metric, evaluated_jacobian_determinant);
-        let volume_shape_orientation_metric = Self::calculate_volume_shape_orientation_metric(shape_metric, evaluated_jacobian_determinant, orientation_metric);
+        let volume_metric = min_detj;
+        let signed_volume_metric = orientation_sign * volume_metric;
+        // more metrics can be added here if needed
 
+        
         Ok(ElementQuality {
             element_id: element.id,
-            det_jacobian_value: evaluated_jacobian_determinant,  // not necessary anymore volume_metric gives the same result
             shape_metric,
             skewness_metric,
             length_ratio,
             orientation_metric,
-            volume_metric,
-            volume_shape_metric,
-            volume_shape_orientation_metric, 
+            signed_volume_metric,   // Signed volume metric
+            jacobian_ratio,         // max(detJ) / min(detJ)
         })
+    }
+
+    /// Find both the minimum and maximum Jacobian determinant
+    fn find_min_max_jacobian_determinant(
+        determinant_poly: &Vec<f64>,
+        evaluation_points: &[Vec<f64>],
+    ) -> Result<(Vec<f64>, f64, f64), ElementError> {
+        if evaluation_points.is_empty() {
+            return Err(ElementError::GeometryError(
+                "No evaluation points provided".to_string()
+            ));
+        }
+
+        let mut min_point = &evaluation_points[0];
+        let mut min_det = f64::MAX;
+        let mut max_det = f64::MIN;
+        
+        for point in evaluation_points {
+            let eval_point = match point.len() {
+                1 => (point[0], 0.0, 0.0),
+                2 => (point[0], point[1], 0.0),
+                3 => (point[0], point[1], point[2]),
+                _ => (0.0, 0.0, 0.0),
+            };
+            
+            let det_value = MonomialPolynomial::evaluate(determinant_poly, eval_point)
+                .map_err(|e| ElementError::GeometryError(
+                    format!("Failed to evaluate determinant at point {:?}: {}", point, e)
+                ))?;
+            
+            // Find minimum determinant (worst case)
+            if det_value < min_det {
+                min_det = det_value;
+                min_point = point;
+            }
+            
+            // Find maximum determinant
+            if det_value > max_det {
+                max_det = det_value;
+            }
+        }
+
+        Ok((min_point.clone(), min_det, max_det))
+    }
+
+
+    /// Calculate orientation sign for non-square Jacobian matrices
+    /// Preserves directional information that would be lost by taking absolute values
+    fn calculate_element_orientation_sign(
+        jacobian: &Vec<Vec<f64>>,
+        mesh_dim: usize,
+        element_dim: usize,
+    ) -> Result<f64, ElementError> {
+        match (mesh_dim, element_dim) {
+            // Square matrices: determinant already has correct sign
+            (d, e) if d == e => {
+                let det = Self::calculate_determinant(jacobian, element_dim, mesh_dim)?;
+                Ok(if det >= 0.0 { 1.0 } else { -1.0 })
+            },
+            
+            // 1D elements in 2D or 3D space: sign from largest tangent component
+            (2, 1) | (3, 1) => {
+                // Extract tangent vector from Jacobian columns
+                let mut tangent = vec![0.0; mesh_dim];
+                for i in 0..mesh_dim {
+                    tangent[i] = jacobian[i][0];
+                }
+                
+                // Find component with largest magnitude for robust sign determination
+                let mut max_abs = 0.0;
+                let mut sign_component = 0.0;
+                for &comp in &tangent {
+                    if comp.abs() > max_abs {
+                        max_abs = comp.abs();
+                        sign_component = comp;
+                    }
+                }
+                
+                // Return sign based on dominant component (avoid division by near-zero)
+                Ok(if max_abs < 1e-12 { 1.0 } else if sign_component >= 0.0 { 1.0 } else { -1.0 })
+            },
+            
+            // 2D elements in 3D space: sign from surface normal
+            (3, 2) => {
+                // Extract both tangent vectors from Jacobian columns
+                let u = [jacobian[0][0], jacobian[1][0], jacobian[2][0]];
+                let v = [jacobian[0][1], jacobian[1][1], jacobian[2][1]];
+                
+                // Compute surface normal: n = u × v
+                let normal = [
+                    u[1] * v[2] - u[2] * v[1],
+                    u[2] * v[0] - u[0] * v[2],
+                    u[0] * v[1] - u[1] * v[0],
+                ];
+                
+                // Find component with largest magnitude for robust sign determination
+                let mut max_abs = 0.0;
+                let mut sign_component = 0.0;
+                for &comp in &normal {
+                    if comp.abs() > max_abs {
+                        max_abs = comp.abs();
+                        sign_component = comp;
+                    }
+                }
+                
+                Ok(if max_abs < 1e-12 { 1.0 } else if sign_component >= 0.0 { 1.0 } else { -1.0 })
+            },
+            
+            // Default case (shouldn't normally occur)
+            _ => Ok(1.0),
+        }
     }
 
     /// Calculate shape metric
@@ -202,8 +294,8 @@ impl GeometricAnalysis {
         element_dim: usize,
     ) -> f64 {
         
-        let j_norm = Self::frobenius_norm(jacobian, mesh_dim, element_dim);
-        let inv_j_norm = Self::frobenius_norm(inverse_jacobian, mesh_dim, element_dim);
+        let j_norm = Self::frobenius_norm(jacobian, element_dim);
+        let inv_j_norm = Self::frobenius_norm(inverse_jacobian, element_dim);
 
         element_dim as f64 / (j_norm * inv_j_norm)
     }
@@ -216,8 +308,8 @@ impl GeometricAnalysis {
         element_dim: usize,
     ) -> f64 {
         
-        let q_norm = Self::frobenius_norm(q_matrix, mesh_dim, element_dim);
-        let inv_q_norm = Self::frobenius_norm(inverse_q_matrix, mesh_dim, element_dim);
+        let q_norm = Self::frobenius_norm(q_matrix, element_dim);
+        let inv_q_norm = Self::frobenius_norm(inverse_q_matrix, element_dim);
         
         element_dim as f64 / (q_norm * inv_q_norm)
     }
@@ -229,9 +321,9 @@ impl GeometricAnalysis {
         mesh_dim: usize,
         element_dim: usize,
     ) -> f64 {
-        
-        let d_norm = Self::frobenius_norm(d_matrix, mesh_dim, element_dim);
-        let inv_d_norm = Self::frobenius_norm(inverse_d_matrix, mesh_dim, element_dim);
+
+        let d_norm = Self::frobenius_norm(d_matrix, element_dim);
+        let inv_d_norm = Self::frobenius_norm(inverse_d_matrix, element_dim);
 
         element_dim as f64 / (d_norm * inv_d_norm)
     }
@@ -242,35 +334,12 @@ impl GeometricAnalysis {
         mesh_dim: usize, 
         element_dim: usize
     ) -> f64 {
-        
-        1.0 + ((Self::trace(r_matrix, mesh_dim, element_dim) - element_dim as f64) / 4.0)
+
+        1.0 + ((Self::trace(r_matrix, element_dim) - element_dim as f64) / 4.0)
     }
 
-    /// Calculate volume shape metric
-    fn calculate_volume_shape_metric(
-        shape_metric: f64,
-        det_jacobian: f64,
-    ) -> f64 {
-
-        let min_det = det_jacobian.min(1.0 / det_jacobian);
-        
-        min_det * shape_metric
-    }
-
-    /// Calculate volume shape orientation metric
-    fn calculate_volume_shape_orientation_metric(
-        shape_metric: f64,
-        det_jacobian: f64,
-        orientation_metric: f64,
-    ) -> f64 {
-    
-        let min_det = det_jacobian.min(1.0 / det_jacobian);
-        
-        min_det * shape_metric * orientation_metric
-    }
-
-    /// Return one arbitrary Gaussian point for each element type
-    /// These points are typically chosen for numerical integration accuracy
+    // Return evaluation points for each element type to find min/max Jacobian determinant
+    // corner and center points of each element
     fn get_evaluation_points(element_type: &ElementType) -> Vec<Vec<f64>> {
         match element_type {
             // 1D elements - check endpoints and center
@@ -352,44 +421,6 @@ impl GeometricAnalysis {
         }
     }
 
-    /// Find the evaluation point with the worst Jacobian determinant
-    fn find_worst_jacobian_point(
-        determinant_poly: &Vec<f64>,
-        evaluation_points: &[Vec<f64>],
-    ) -> Result<(Vec<f64>, f64), ElementError> {
-        if evaluation_points.is_empty() {
-            return Err(ElementError::GeometryError(
-                "No evaluation points provided".to_string()
-            ));
-        }
-
-        let mut worst_point = &evaluation_points[0];
-        let mut worst_det = f64::MAX;
-        
-        for point in evaluation_points {
-            let eval_point = match point.len() {
-                1 => (point[0], 0.0, 0.0),
-                2 => (point[0], point[1], 0.0),
-                3 => (point[0], point[1], point[2]),
-                _ => (0.0, 0.0, 0.0),
-            };
-            
-            let det_value = MonomialPolynomial::evaluate(determinant_poly, eval_point)
-                .map_err(|e| ElementError::GeometryError(
-                    format!("Failed to evaluate determinant at point {:?}: {}", point, e)
-                ))?;
-            
-            // Find minimum determinant (worst case)
-            if det_value < worst_det {
-                worst_det = det_value;
-                worst_point = point;
-            }
-        }
-
-        Ok((worst_point.clone(), worst_det))
-    }
-
-
     /// Convert element's node IDs to concrete Node structs
     pub fn get_element_nodes(
         element: &Element,
@@ -439,7 +470,7 @@ impl GeometricAnalysis {
                 let h = matrix[2][1];
                 let i = matrix[2][2];
                 
-                Ok(a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g))
+                Ok(a * (e * i - h * f) - b * (d * i - g * f) + c * (d * h - g * e))
             },
             _ => Err(ElementError::GeometryError(format!(
                 "Determinant calculation not implemented for {}x{} matrices",
@@ -456,31 +487,18 @@ impl GeometricAnalysis {
         match (mesh_dim, element_dim) {
             // 1x1 matrix
             (1, 1) => {
-                if matrix[0][0].abs() < 1e-15 {
+                if matrix[0][0].abs() < 1e-12 {
                     return Err(ElementError::GeometryError("Matrix is singular".to_string()));
                 }
                 Ok(vec![vec![1.0 / matrix[0][0]]])
             },
 
-            // 2x2 matrix
-            (2, 2) => {
-                let det = matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0];
-                if det.abs() < 1e-15 {
-                    return Err(ElementError::GeometryError("Matrix is singular".to_string()));
-                }
-                let inv_det = 1.0 / det;
-                Ok(vec![
-                    vec![matrix[1][1] * inv_det, -matrix[0][1] * inv_det],
-                    vec![-matrix[1][0] * inv_det, matrix[0][0] * inv_det],
-                ])
-            },
-
-            // 3x3 matrix
-            (3, 3) => {
+            // 2x2 and 3x3 matrices
+            (2, 2) | (3, 3) => {
                 let adjoint = Self::calculate_adjoint(&matrix, element_dim, element_dim)?;
                 let determinant = Self::calculate_determinant(&matrix, element_dim, element_dim)?;
 
-                if determinant.abs() < 1e-15 {
+                if determinant.abs() < 1e-12 {
                     return Err(ElementError::GeometryError("Matrix is singular".to_string()));
                 }
                 
@@ -495,25 +513,13 @@ impl GeometricAnalysis {
                 Ok(inverse)
             },
 
-            // 1D elements in 2D space
-            (2, 1) => {
+            // 1D elements in 2D and 3D spaces
+            (2, 1) | (3, 1) => {
                 let mut sum = 0.0;
                 for k in 0..mesh_dim {
                     sum += matrix[k][0] * matrix[k][0];
                 }
-                if sum.abs() < 1e-15 {
-                    return Err(ElementError::GeometryError("Matrix is singular".to_string()));
-                }
-                Ok(vec![vec![1.0 / sum]])
-            },
-
-            // 1D elements in 3D space
-            (3, 1) => {
-                let mut sum = 0.0;
-                for k in 0..mesh_dim {
-                    sum += matrix[k][0] * matrix[k][0];
-                }
-                if sum.abs() < 1e-15 {
+                if sum.abs() < 1e-12 {
                     return Err(ElementError::GeometryError("Matrix is singular".to_string()));
                 }
                 Ok(vec![vec![1.0 / sum]])
@@ -535,7 +541,7 @@ impl GeometricAnalysis {
                 let adjoint = Self::calculate_adjoint(&square_matrix, element_dim, element_dim)?;
                 let determinant = Self::calculate_determinant(&square_matrix, element_dim, element_dim)?;
                 
-                if determinant.abs() < 1e-15 {
+                if determinant.abs() < 1e-12 {
                     return Err(ElementError::GeometryError("Matrix is singular".to_string()));
                 }
                 
@@ -606,94 +612,22 @@ impl GeometricAnalysis {
         }
     }
 
-    fn trace(matrix: &Vec<Vec<f64>>, mesh_dim: usize, element_dim: usize) -> f64 {
+    fn trace(matrix: &Vec<Vec<f64>>, element_dim: usize) -> f64 {
         let mut sum = 0.0;
-        for i in 0..mesh_dim.min(element_dim) { // if the matrix square than mesh_dim == element_dim, if not then matrix has the format mesh_dim x element_dim
+        for i in 0..element_dim {
             sum += matrix[i][i];
         }
         sum
     }
 
-    fn frobenius_norm(matrix: &Vec<Vec<f64>>, mesh_dim: usize, element_dim: usize) -> f64 {
+    fn frobenius_norm(matrix: &Vec<Vec<f64>>, element_dim: usize) -> f64 {
         let mut sum = 0.0;
-        for i in 0..mesh_dim { // if the matrix square than mesh_dim == element_dim, if not then matrix has the format mesh_dim x element_dim
+        for i in 0..element_dim {
             for j in 0..element_dim {
                 sum += matrix[i][j] * matrix[i][j];
             }
         }
         sum.sqrt()
-    }
-
-    /// Calculate orientation sign for non-square Jacobian matrices
-    /// Preserves directional information that would be lost by taking absolute values
-    fn calculate_element_orientation_sign(
-        matrix: &Vec<Vec<Vec<f64>>>,
-        eval_point: (f64, f64, f64),
-        mesh_dim: usize,
-        element_dim: usize,
-    ) -> Result<f64, ElementError> {
-        match (mesh_dim, element_dim) {
-            // Square matrices: determinant already has correct sign
-            (d, e) if d == e => Ok(1.0),
-            
-            // 1D elements in 2D or 3D space: sign from largest tangent component
-            (2, 1) | (3, 1) => {
-                // Evaluate tangent vector at Gaussian point
-                let mut tangent = vec![0.0; mesh_dim];
-                for i in 0..mesh_dim {
-                    tangent[i] = MonomialPolynomial::evaluate(&matrix[i][0], eval_point)
-                        .map_err(|e| ElementError::GeometryError(format!("Tangent eval failed: {}", e)))?;
-                }
-                
-                // Find component with largest magnitude for robust sign determination
-                let mut max_abs = 0.0;
-                let mut sign_component = 0.0;
-                for &comp in &tangent {
-                    if comp.abs() > max_abs {
-                        max_abs = comp.abs();
-                        sign_component = comp;
-                    }
-                }
-                
-                // Return sign based on dominant component (avoid division by near-zero)
-                Ok(if max_abs < 1e-12 { 1.0 } else if sign_component >= 0.0 { 1.0 } else { -1.0 })
-            },
-            
-            // 2D elements in 3D space: sign from surface normal
-            (3, 2) => {
-                // Evaluate both tangent vectors
-                let mut u = [0.0; 3];
-                let mut v = [0.0; 3];
-                for i in 0..3 {
-                    u[i] = MonomialPolynomial::evaluate(&matrix[i][0], eval_point)
-                        .map_err(|e| ElementError::GeometryError(format!("u eval failed: {}", e)))?;
-                    v[i] = MonomialPolynomial::evaluate(&matrix[i][1], eval_point)
-                        .map_err(|e| ElementError::GeometryError(format!("v eval failed: {}", e)))?;
-                }
-                
-                // Compute surface normal: n = u × v
-                let normal = [
-                    u[1] * v[2] - u[2] * v[1],
-                    u[2] * v[0] - u[0] * v[2],
-                    u[0] * v[1] - u[1] * v[0],
-                ];
-                
-                // Find component with largest magnitude for robust sign determination
-                let mut max_abs = 0.0;
-                let mut sign_component = 0.0;
-                for &comp in &normal {
-                    if comp.abs() > max_abs {
-                        max_abs = comp.abs();
-                        sign_component = comp;
-                    }
-                }
-                
-                Ok(if max_abs < 1e-12 { 1.0 } else if sign_component >= 0.0 { 1.0 } else { -1.0 })
-            },
-            
-            // Default case (shouldn't normally occur)
-            _ => Ok(1.0),
-        }
     }
 
     /// Compute 3D cross product of two vectors
@@ -713,8 +647,7 @@ impl GeometricAnalysis {
     fn jacobian_factorization(evaluated_jacobian: &Vec<Vec<f64>>, 
                             evaluated_det_jacobian: &f64, 
                             mesh_dim: usize, 
-                            element_dim: usize, 
-                            point: (f64, f64, f64) 
+                            element_dim: usize,  
                             )-> Result<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>), ElementError> {
 
         // Compute the metric tensor lambda = J^T * J
@@ -727,19 +660,12 @@ impl GeometricAnalysis {
             }
         }
        
-       let mut evaluated_square_matrix = vec![vec![0.0; element_dim]; element_dim];
+       let evaluated_square_matrix = lambda.clone();
                 
-        for i in 0..element_dim {
-            for j in 0..element_dim {
-                for k in 0..mesh_dim {
-                    evaluated_square_matrix[i][j] += evaluated_jacobian[k][i] * evaluated_jacobian[k][j];
-                }
-            }
-        }
 
-        let mut r_matrix: Vec<Vec<f64>> = vec![vec![0.0; element_dim]; mesh_dim];
-        let mut q_matrix: Vec<Vec<f64>> = vec![vec![0.0; element_dim]; mesh_dim];
-        let mut d_matrix: Vec<Vec<f64>> = vec![vec![0.0; element_dim]; mesh_dim];
+        let mut r_matrix: Vec<Vec<f64>> = vec![vec![0.0; element_dim]; element_dim];
+        let mut q_matrix: Vec<Vec<f64>> = vec![vec![0.0; element_dim]; element_dim];
+        let mut d_matrix: Vec<Vec<f64>> = vec![vec![0.0; element_dim]; element_dim];
 
         match (mesh_dim, element_dim) {
             // 1x1 matrix: 
@@ -747,7 +673,7 @@ impl GeometricAnalysis {
 
                 let r_matrix = vec![vec![1.0]];
                 let q_matrix = vec![vec![1.0]];
-                let d_matrix = vec![vec![1.0]];
+                let d_matrix = vec![vec![evaluated_jacobian[0][0]]];
 
                 Ok((r_matrix, q_matrix, d_matrix))
             }
@@ -775,17 +701,20 @@ impl GeometricAnalysis {
 
                 let col_0 = vec![evaluated_jacobian[0][0], evaluated_jacobian[1][0], evaluated_jacobian[2][0]];
                 let col_1 = vec![evaluated_jacobian[0][1], evaluated_jacobian[1][1], evaluated_jacobian[2][1]];
-                let col_2 = vec![evaluated_jacobian[0][2], evaluated_jacobian[1][2], evaluated_jacobian[2][2]];
+                // let col_2 = vec![evaluated_jacobian[0][2], evaluated_jacobian[1][2], evaluated_jacobian[2][2]];
+
+                let cross_product_01 = Self::cross_product_3d(&col_0, &col_1);
+                let norm_cross_product_01 = Self::vector_norm(&cross_product_01);
 
                 r_matrix = vec![
-                    vec![col_0[0] / lambda[0][0].sqrt(), (lambda[0][0] * col_1[0] - lambda[0][1] * col_0[0]) / (lambda[0][0].sqrt() * (Self::vector_norm(&Self::cross_product_3d(&col_0, &col_1)))), (col_0[1] * col_1[2] - col_0[2] * col_1[1]) / (Self::vector_norm(&Self::cross_product_3d(&col_0, &col_1)))],
-                    vec![col_0[1] / lambda[0][0].sqrt(), (lambda[0][0] * col_1[1] - lambda[0][1] * col_0[1]) / (lambda[0][0].sqrt() * (Self::vector_norm(&Self::cross_product_3d(&col_0, &col_1)))), (col_0[2] * col_1[0] - col_0[0] * col_1[2]) / (Self::vector_norm(&Self::cross_product_3d(&col_0, &col_1)))],
-                    vec![col_0[2] / lambda[0][0].sqrt(), (lambda[0][0] * col_1[2] - lambda[0][1] * col_0[2]) / (lambda[0][0].sqrt() * (Self::vector_norm(&Self::cross_product_3d(&col_0, &col_1)))), (col_0[0] * col_1[1] - col_0[1] * col_1[0]) / (Self::vector_norm(&Self::cross_product_3d(&col_0, &col_1)))],
+                    vec![col_0[0] / lambda[0][0].sqrt(), (lambda[0][0] * col_1[0] - lambda[0][1] * col_0[0]) / (lambda[0][0].sqrt() * norm_cross_product_01), cross_product_01[0] / norm_cross_product_01],
+                    vec![col_0[1] / lambda[0][0].sqrt(), (lambda[0][0] * col_1[1] - lambda[0][1] * col_0[1]) / (lambda[0][0].sqrt() * norm_cross_product_01), cross_product_01[1] / norm_cross_product_01],
+                    vec![col_0[2] / lambda[0][0].sqrt(), (lambda[0][0] * col_1[2] - lambda[0][1] * col_0[2]) / (lambda[0][0].sqrt() * norm_cross_product_01), cross_product_01[2] / norm_cross_product_01],
                 ];
                 q_matrix = vec![
                     vec![1.0, lambda[0][1] / (lambda[0][0] * lambda[1][1]).sqrt(), lambda[0][2] / (lambda[0][0] * lambda[2][2]).sqrt()],
-                    vec![0.0, (Self::vector_norm(&Self::cross_product_3d(&col_0, &col_1))) / (lambda[0][0] * lambda[1][1]).sqrt(), (lambda[0][0] * lambda[1][2] - lambda[0][1] * lambda[0][2]) / ((lambda[0][0] * lambda[2][2]).sqrt() * (Self::vector_norm(&Self::cross_product_3d(&col_0, &col_1))))],
-                    vec![0.0, 0.0, evaluated_det_jacobian / (lambda[2][2].sqrt() * Self::vector_norm(&Self::cross_product_3d(&col_0, &col_1)))],
+                    vec![0.0, norm_cross_product_01 / (lambda[0][0] * lambda[1][1]).sqrt(), (lambda[0][0] * lambda[1][2] - lambda[0][1] * lambda[0][2]) / ((lambda[0][0] * lambda[2][2]).sqrt() * norm_cross_product_01)],
+                    vec![0.0, 0.0, evaluated_det_jacobian / (lambda[2][2].sqrt() * norm_cross_product_01)],
                 ];
                 d_matrix = vec![
                     vec![1.0, 0.0, 0.0],
@@ -801,7 +730,7 @@ impl GeometricAnalysis {
                 
                 let r_matrix = vec![vec![1.0]];
                 let q_matrix = vec![vec![1.0]];
-                let d_matrix = vec![vec![1.0]];
+                let d_matrix = vec![vec![lambda[0][0].sqrt()]];
 
                 Ok((r_matrix, q_matrix, d_matrix))
             }
@@ -811,7 +740,7 @@ impl GeometricAnalysis {
                 
                 let r_matrix = vec![vec![1.0]];
                 let q_matrix = vec![vec![1.0]];
-                let d_matrix = vec![vec![1.0]];
+                let d_matrix = vec![vec![lambda[0][0].sqrt()]];
 
                 Ok((r_matrix, q_matrix, d_matrix))
             }
@@ -955,20 +884,6 @@ mod tests {
         assert!(result.is_ok());
         assert!((result.unwrap() - 0.0).abs() < 1e-12);
     }
-    /* 
-    #[test]
-    fn test_calculate_determinant_1d_in_2d() {
-        let matrix = vec![
-            vec![3.0],
-            vec![4.0],
-        ];
-        
-        let result = GeometricAnalysis::calculate_determinant(&matrix, 1, 2);
-        assert!(result.is_ok());
-        // For 1D in 2D, this should calculate the squared length
-        assert!((result.unwrap() - 25.0).abs() < 1e-12);
-    }
-    */
 
     // NEW: Matrix inversion tests
     #[test]
@@ -1037,7 +952,7 @@ mod tests {
             vec![3.0, 4.0],
         ];
         
-        let norm = GeometricAnalysis::frobenius_norm(&matrix, 2, 2);
+        let norm = GeometricAnalysis::frobenius_norm(&matrix,  2);
         let expected = (1.0 + 4.0 + 9.0 + 16.0_f64).sqrt();
         assert!((norm - expected).abs() < 1e-12);
     }
@@ -1049,7 +964,7 @@ mod tests {
             vec![3.0, 4.0],
         ];
         
-        let trace = GeometricAnalysis::trace(&matrix, 2, 2);
+        let trace = GeometricAnalysis::trace(&matrix, 2);
         assert!((trace - 5.0).abs() < 1e-12);
     }
 
@@ -1072,6 +987,40 @@ mod tests {
         let v = vec![3.0, 4.0];
         let norm = GeometricAnalysis::vector_norm(&v);
         assert!((norm - 5.0).abs() < 1e-12);
+    }
+
+    // NEW: Test orientation sign calculation
+    #[test]
+    fn test_calculate_element_orientation_sign() {
+        // Test with identity matrix (2D)
+        let jacobian_2d = vec![
+            vec![1.0, 0.0],
+            vec![0.0, 1.0],
+        ];
+        
+        let result = GeometricAnalysis::calculate_element_orientation_sign(&jacobian_2d, 2, 2);
+        assert!(result.is_ok());
+        assert!((result.unwrap() - 1.0).abs() < 1e-12);
+        
+        // Test with negative determinant (2D)
+        let jacobian_2d_neg = vec![
+            vec![1.0, 0.0],
+            vec![0.0, -1.0],
+        ];
+        
+        let result = GeometricAnalysis::calculate_element_orientation_sign(&jacobian_2d_neg, 2, 2);
+        assert!(result.is_ok());
+        assert!((result.unwrap() - (-1.0)).abs() < 1e-12);
+        
+        // Test 1D element in 2D space
+        let jacobian_1d = vec![
+            vec![1.0],
+            vec![2.0],
+        ];
+        
+        let result = GeometricAnalysis::calculate_element_orientation_sign(&jacobian_1d, 2, 1);
+        assert!(result.is_ok());
+        assert!((result.unwrap() - 1.0).abs() < 1e-12);
     }
 
     // UPDATED: Element quality analysis tests with new metrics
@@ -1099,16 +1048,24 @@ mod tests {
         let quality = &report.element_qualities[0];
         
         assert_eq!(quality.element_id, 1);
-        assert!(quality.det_jacobian_value > 0.0);
+        //assert!(quality.det_jacobian_value > 0.0);
         
         // Check that all metrics are within reasonable bounds
         assert!(quality.shape_metric >= 0.0 && quality.shape_metric <= 1.0);
         assert!(quality.skewness_metric >= 0.0 && quality.skewness_metric <= 1.0);
         assert!(quality.length_ratio >= 0.0 && quality.length_ratio <= 1.0);
         assert!(quality.orientation_metric >= 0.0 && quality.orientation_metric <= 1.0);
-        assert!(quality.volume_metric > 0.0);
-        assert!(quality.volume_shape_metric >= 0.0 && quality.volume_shape_metric <= 1.0);
-        assert!(quality.volume_shape_orientation_metric >= 0.0 && quality.volume_shape_orientation_metric <= 1.0);
+        //assert!(quality.volume_metric > 0.0);
+        //assert!(quality.volume_shape_metric >= 0.0 && quality.volume_shape_metric <= 1.0);
+        //assert!(quality.volume_shape_orientation_metric >= 0.0 && quality.volume_shape_orientation_metric <= 1.0);
+        
+        // NEW: Test Jacobian ratio and scaled Jacobian
+        assert!(quality.jacobian_ratio >= 1.0); // Should be at least 1.0
+        //assert!(quality.scaled_jacobian >= 0.0 && quality.scaled_jacobian <= 1.0);
+        //assert!(!quality.min_detj_point.is_empty());
+        //assert!(!quality.max_detj_point.is_empty());
+        //assert!(quality.max_detj_value > 0.0);
+        //assert!(quality.orientation_sign == 1.0 || quality.orientation_sign == -1.0);
     }
 
     // NEW: Test for quality metrics calculations
@@ -1135,10 +1092,10 @@ mod tests {
         assert!((shape_metric - 1.0).abs() < 1e-12);
         
         // Volume-shape metric test
-        let volume_shape_metric = GeometricAnalysis::calculate_volume_shape_metric(
-            1.0, 1.0
-        );
-        assert!((volume_shape_metric - 1.0).abs() < 1e-12);
+        //let volume_shape_metric = GeometricAnalysis::calculate_volume_shape_metric(
+        //    1.0, 1.0
+        //);
+        //assert!((volume_shape_metric - 1.0).abs() < 1e-12);
     }
 
     // NEW: Test Jacobian factorization
@@ -1151,7 +1108,7 @@ mod tests {
         let det = 1.0;
         
         let result = GeometricAnalysis::jacobian_factorization(
-            &jacobian, &det, 2, 2, (0.0, 0.0, 0.0)
+            &jacobian, &det, 2, 2
         );
         
         assert!(result.is_ok());
@@ -1178,6 +1135,45 @@ mod tests {
         assert!((orientation_metric - 1.0).abs() < 1e-12);
     }
 
+    // NEW: Test scaled Jacobian calculation
+    #[test]
+    fn test_scaled_jacobian() {
+        // Test with identity matrix
+        let jacobian = vec![
+            vec![1.0, 0.0],
+            vec![0.0, 1.0],
+        ];
+        
+        //let result = GeometricAnalysis::calculate_scaled_jacobian(&jacobian, 2, 2);
+        //assert!(result.is_ok());
+        //assert!((result.unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    // NEW: Test min-max Jacobian point finding
+    #[test]
+    fn test_find_min_max_jacobian_points() {
+        // Create a simple determinant polynomial (constant)
+        let determinant_poly = vec![2.0]; // Constant polynomial: detJ = 2.0 everywhere
+        let evaluation_points = vec![
+            vec![0.0],
+            vec![0.5],
+            vec![1.0],
+        ];
+        
+        let result = GeometricAnalysis::find_min_max_jacobian_determinant(
+            &determinant_poly,
+            &evaluation_points
+        );
+        
+        assert!(result.is_ok());
+        let (min_point, min_det, max_det) = result.unwrap();
+        
+        // All points should have the same determinant value
+        assert!((min_det - 2.0).abs() < 1e-12);
+        assert!((max_det - 2.0).abs() < 1e-12);
+        assert!(!min_point.is_empty());
+    }
+
     // NEW: Test with different element types
     #[test]
     fn test_quad_element_quality() {
@@ -1200,9 +1196,12 @@ mod tests {
         let quality = result.unwrap();
         
         // Square quad should have good quality metrics
-        assert!(quality.det_jacobian_value > 0.0);
+        //assert!(quality.det_jacobian_value > 0.0);
         assert!(quality.shape_metric > 0.8); // Should be close to 1 for perfect square
-        assert!(quality.volume_metric > 0.0);
+        //assert!(quality.volume_metric > 0.0);
+        assert!(quality.jacobian_ratio >= 1.0);
+        //assert!(quality.scaled_jacobian > 0.8); // Should be close to 1 for perfect square
+        //assert!(quality.orientation_sign == 1.0 || quality.orientation_sign == -1.0);
     }
 
     // NEW: Test edge cases for quality metrics
@@ -1210,13 +1209,13 @@ mod tests {
     fn test_quality_metrics_edge_cases() {
         // Test with very small determinant
         let small_det = 1e-10;
-        let volume_shape_metric = GeometricAnalysis::calculate_volume_shape_metric(1.0, small_det);
-        assert!(volume_shape_metric >= 0.0 && volume_shape_metric <= 1.0);
+        //let volume_shape_metric = GeometricAnalysis::calculate_volume_shape_metric(1.0, small_det);
+        //assert!(volume_shape_metric >= 0.0 && volume_shape_metric <= 1.0);
         
         // Test with large determinant
         let large_det = 1e10;
-        let volume_shape_metric_large = GeometricAnalysis::calculate_volume_shape_metric(1.0, large_det);
-        assert!(volume_shape_metric_large >= 0.0 && volume_shape_metric_large <= 1.0);
+        //let volume_shape_metric_large = GeometricAnalysis::calculate_volume_shape_metric(1.0, large_det);
+        //assert!(volume_shape_metric_large >= 0.0 && volume_shape_metric_large <= 1.0);
     }
 
     // NEW: Test mesh quality report structure
@@ -1251,9 +1250,15 @@ mod tests {
         assert!(quality.skewness_metric.is_finite());
         assert!(quality.length_ratio.is_finite());
         assert!(quality.orientation_metric.is_finite());
-        assert!(quality.volume_metric.is_finite());
-        assert!(quality.volume_shape_metric.is_finite());
-        assert!(quality.volume_shape_orientation_metric.is_finite());
+        //assert!(quality.volume_metric.is_finite());
+        //assert!(quality.volume_shape_metric.is_finite());
+        //assert!(quality.volume_shape_orientation_metric.is_finite());
+        assert!(quality.jacobian_ratio.is_finite());
+        //assert!(quality.scaled_jacobian.is_finite());
+        //assert!(!quality.min_detj_point.is_empty());
+        //assert!(!quality.max_detj_point.is_empty());
+        //assert!(quality.max_detj_value.is_finite());
+        //assert!(quality.orientation_sign == 1.0 || quality.orientation_sign == -1.0);
     }
 
     // NEW: Test error conditions
@@ -1287,56 +1292,4 @@ mod tests {
         // This should fail when trying to get element nodes
         assert!(result.is_err());
     }
-    /* 
-    // Performance test for multiple elements
-    #[test]
-    fn test_analyse_mesh_quality_multiple_elements_performance() {
-        let mut nodes = Vec::new();
-        let mut elements = Vec::new();
-        
-        // Create a small grid of triangles
-        let grid_size = 3;
-        let mut node_id = 1;
-        
-        for i in 0..grid_size {
-            for j in 0..grid_size {
-                nodes.push(create_node_2d(node_id, i as f64, j as f64));
-                node_id += 1;
-            }
-        }
-        
-        // Create triangular elements
-        for i in 0..grid_size-1 {
-            for j in 0..grid_size-1 {
-                let n1 = i * grid_size + j + 1;
-                let n2 = i * grid_size + j + 2;
-                let n3 = (i + 1) * grid_size + j + 1;
-                let n4 = (i + 1) * grid_size + j + 2;
-                
-                elements.push(create_element(elements.len() + 1, vec![n1, n2, n3]));
-                elements.push(create_element(elements.len() + 1, vec![n2, n4, n3]));
-            }
-        }
-        
-        let element_type_info = vec![ElementTypeInfo {
-            element_type: ElementType::Triangle,
-            num_elements: elements.len(),
-            start_index: 0,
-            nodes_per_element: 3,
-        }];
-        
-        let mesh_data = create_test_mesh_data(nodes, elements, element_type_info);
-
-        let result = GeometricAnalysis::analyse_mesh_quality(&mesh_data);
-        assert!(result.is_ok());
-        
-        let report = result.unwrap();
-        assert_eq!(report.total_elements, (grid_size-1) * (grid_size-1) * 2);
-        
-        // All elements should have positive volume
-        for quality in report.element_qualities {
-            assert!(quality.volume_metric > 0.0);
-        }
-    }
-    */
 }

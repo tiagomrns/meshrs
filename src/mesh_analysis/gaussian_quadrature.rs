@@ -1,9 +1,9 @@
 use core::num;
 use std::f64;
+use std::vec;
 use crate::structs_and_impls::*;
 use crate::error::*;
 use super::geometric_analysis::GeometricAnalysis;
-use num_traits::ops::inv;
 use once_cell::sync::Lazy;
 
 // Precompute factorials for efficient error calculation
@@ -28,7 +28,6 @@ fn factorial(n: usize) -> f64 {
     }
 }
 
-/// Utility struct for Gaussian quadrature error estimation and optimization
 pub struct GaussianQuadrature;
 
 impl GaussianQuadrature {
@@ -187,7 +186,6 @@ impl GaussianQuadrature {
                 &integrand,
                 n,
                 element_dim,
-                shape_function.num_nodes,
             )?;
 
             // Find maximum error in the matrix
@@ -237,7 +235,7 @@ impl GaussianQuadrature {
         max_val
     }
 
-    /// Calculate integrand for given element and integration type
+    // Calculate integrand for given element and integration type
     pub fn calculate_integrand(
         int_type: &IntegrationType,
         element_type: &ElementType,
@@ -276,14 +274,14 @@ impl GaussianQuadrature {
             element_dim,
         ).map_err(|e| GaussError::GeometryError(format!("Failed to calculate inverse Jacobian: {:?}", e)))?;
 
-        let mut integrand = vec![vec![vec![]; num_nodes]; num_nodes];
+        let matrix_size = mesh_dim * num_nodes;
+        let mut integrand = vec![vec![vec![]; matrix_size]; matrix_size];
+        
 
         match int_type {
             IntegrationType::Mass => {
-                // Mass matrix: M = int rho(x) N_i(x) N_j(x) det(J) dxi
-                // Mass matrix integrand: rho(x) * N' N * det(J)
-
-                let rho_physical = material_property.as_scalar()?; // Density polynomial coefficients in monomial form
+                // Mass matrix: M = ∫ ρ(x) N_i(x) N_j(x) det(J) dξ
+                let rho_physical = material_property.as_scalar()?;
                 let rho_isoparametric = Self::transform_material_property_scalar(
                     rho_physical,
                     element_nodes,
@@ -291,28 +289,33 @@ impl GaussianQuadrature {
                     mesh_dim,
                 )?;
 
-                // Calculate rho * det(J)
+                // Calculate ρ * det(J)
                 let rho_detj = MonomialPolynomial::multiply(&rho_isoparametric, &det_j)?;
 
+                // Mass matrix is block-diagonal: M = [m_ij * I] where I is identity matrix
                 for i in 0..num_nodes {
                     for j in 0..num_nodes {
                         let ni_nj = MonomialPolynomial::multiply(
                             &shape_function.values[i],
                             &shape_function.values[j]
                         )?;
-
-                        // Final integrand: rho * N_i * N_j * det(J)
-                        integrand[i][j] = MonomialPolynomial::multiply(&rho_detj, &ni_nj)?;
+                        let m_ij = MonomialPolynomial::multiply(&rho_detj, &ni_nj)?;
+                        
+                        // Distribute to all spatial dimensions
+                        for dim in 0..mesh_dim {
+                            let row = mesh_dim * i + dim;
+                            let col = mesh_dim * j + dim;
+                            integrand[row][col] = m_ij.clone();
+                        }
                     }
                 }
                 
                 Ok(integrand)
             }
             IntegrationType::Stiffness => {
-                // Stiffness matrix: K = int B_i^T * D * B_j * det(J) dxi
-                // where B is derivative and combination of rows of N
-
-                // Build B matrix
+                // Stiffness matrix: K = ∫ B^T * C * B * det(J) dξ
+                
+                // Build B matrix with correct dimensions
                 let b_matrix = Self::build_b_matrix(
                     &shape_function.derivatives,
                     &inv_jacobian,
@@ -321,7 +324,7 @@ impl GaussianQuadrature {
                     element_dim,
                 )?;
 
-                let c_matrix_physical = material_property.as_matrix()?; // Material property matrix C in monomial form
+                let c_matrix_physical = material_property.as_matrix()?;
                 let c_matrix_isoparametric = Self::transform_material_property_tensor(
                     c_matrix_physical,
                     element_nodes,
@@ -329,180 +332,151 @@ impl GaussianQuadrature {
                     mesh_dim,
                 )?;
 
-                // Validate material matrix dimensions based on element dimension
+                // Validate material matrix dimensions
                 let expected_c_size = match mesh_dim {
                     1 => 1,  // 1D: 1x1
                     2 => 3,  // 2D: 3x3 (plane stress/strain)
                     3 => 6,  // 3D: 6x6
-                    _ => return Err(GaussError::UnsupportedDimension(element_dim)),
+                    _ => return Err(GaussError::UnsupportedDimension(mesh_dim)),
                 };
 
                 if c_matrix_isoparametric.len() != expected_c_size {
                     return Err(GaussError::InvalidMaterialProperty(format!(
                         "Material matrix has {} rows, expected {} for {}D elements",
-                        c_matrix_isoparametric.len(), expected_c_size, element_dim
+                        c_matrix_isoparametric.len(), expected_c_size, mesh_dim
                     )));
                 }
-                
-                for i in 0..expected_c_size {
-                    if c_matrix_isoparametric[i].len() != expected_c_size {
-                        return Err(GaussError::InvalidMaterialProperty(format!(
-                            "Material matrix row {} has {} columns, expected {}",
-                            i, c_matrix_isoparametric[i].len(), expected_c_size
-                        )));
-                    }
-                }
 
-                match mesh_dim {
-                    1 => {
-                        // 1D: K[i][j] = B[i] * C[0][0] * B[j] * det(J)
-                        for i in 0..num_nodes {
-                            for j in 0..num_nodes {
-                                let bt_c = MonomialPolynomial::multiply(&b_matrix[0][i], &c_matrix_isoparametric[0][0])?;
-                                let bt_c_b = MonomialPolynomial::multiply(&bt_c, &b_matrix[0][j])?;
-                                integrand[i][j] = MonomialPolynomial::multiply(&bt_c_b, &det_j)?;
-                            }
+                // Compute K = B^T * C * B * det(J)
+                let voigt_size = b_matrix.len();
+                
+                // Precompute C * B
+                let mut c_times_b = vec![vec![vec![]; matrix_size]; voigt_size];
+                for i in 0..voigt_size {
+                    for j in 0..matrix_size {
+                        let mut sum = vec![];
+                        for k in 0..voigt_size {
+                            let term = MonomialPolynomial::multiply(&c_matrix_isoparametric[i][k], &b_matrix[k][j])?;
+                            sum = if sum.is_empty() { term } else { MonomialPolynomial::add(&sum, &term)? };
                         }
+                        c_times_b[i][j] = sum;
                     }
-                    2 => {
-                        // 2D: K[i][j] = sum_k sum_l B[k][i] * C[k][l] * B[l][j] * det(J)
-                        for i in 0..num_nodes {
-                            for j in 0..num_nodes {
-                                let mut bt_c_b = vec![];
-                                
-                                for k in 0..3 {
-                                    for l in 0..3 {
-                                        let bt_c = MonomialPolynomial::multiply(&b_matrix[k][i], &c_matrix_isoparametric[k][l])?;
-                                        let part = MonomialPolynomial::multiply(&bt_c, &b_matrix[l][j])?;
-                                        bt_c_b = if bt_c_b.is_empty() {
-                                            part
-                                        } else {
-                                            MonomialPolynomial::add(&bt_c_b, &part)?
-                                        };
-                                    }
-                                }
-                                
-                                integrand[i][j] = MonomialPolynomial::multiply(&bt_c_b, &det_j)?;
-                            }
-                        }
-                    }
-                    3 => {
-                        // 3D: K[i][j] = sum_k sum_l B[k][i] * C[k][l] * B[l][j] * det(J)
-                        for i in 0..num_nodes {
-                            for j in 0..num_nodes {
-                                let mut bt_c_b = vec![];
-                                
-                                for k in 0..6 {
-                                    for l in 0..6 {
-                                        let bt_c = MonomialPolynomial::multiply(&b_matrix[k][i], &c_matrix_isoparametric[k][l])?;
-                                        let part = MonomialPolynomial::multiply(&bt_c, &b_matrix[l][j])?;
-                                        bt_c_b = if bt_c_b.is_empty() {
-                                            part
-                                        } else {
-                                            MonomialPolynomial::add(&bt_c_b, &part)?
-                                        };
-                                    }
-                                }
-                                
-                                integrand[i][j] = MonomialPolynomial::multiply(&bt_c_b, &det_j)?;
-                            }
-                        }
-                    }
-                    _ => return Err(GaussError::UnsupportedDimension(mesh_dim)),
                 }
-            
+                
+                // Compute B^T * (C * B) * det(J)
+                for i in 0..matrix_size {
+                    for j in 0..matrix_size {
+                        let mut sum = vec![];
+                        for k in 0..voigt_size {
+                            let term = MonomialPolynomial::multiply(&b_matrix[k][i], &c_times_b[k][j])?;
+                            sum = if sum.is_empty() { term } else { MonomialPolynomial::add(&sum, &term)? };
+                        }
+                        integrand[i][j] = MonomialPolynomial::multiply(&sum, &det_j)?;
+                    }
+                }
+                
                 Ok(integrand)
             }
-            
-            _ => Err(GaussError::InvalidIntegrationType(format!(
-                "Unsupported integration type for integrand calculation"
-            ))),
         }
     }
 
 
     // Build B matrix
     fn build_b_matrix(
-        shape_derivatives: &Vec<Vec<Vec<f64>>>,
-        inv_jacobian: &Vec<Vec<Vec<f64>>>,
+        shape_derivatives: &Vec<Vec<Vec<f64>>>, // [node][param_dim][coefficients]
+        inv_jacobian: &Vec<Vec<Vec<f64>>>,      // [element_dim][mesh_dim][coefficients] - CORRECTED dimensions
         num_nodes: usize,
         mesh_dim: usize,
         element_dim: usize,
     ) -> Result<Vec<Vec<Vec<f64>>>, GaussError> {
+        
+        // Compute dN/dx = [num_nodes × mesh_dim] 
+        // dN/dx = dN/dξ * ∂ξ/∂x = dN/dξ * inv(J)
+        let mut dn_dx = vec![vec![vec![]; mesh_dim]; num_nodes]; // [num_nodes × mesh_dim]
 
-        // Calculate derivatives of shape functions w.r.t physical coordinates
-        // dN/dx = inv(J) * dN/dxi
-        let mut dn_dx = vec![vec![vec![]; num_nodes]; mesh_dim];
-
-        for i in 0..mesh_dim {
-            for j in 0..num_nodes {
+        for node in 0..num_nodes {
+            for phys_dim in 0..mesh_dim {
                 let mut sum = vec![];
-                for k in 0..element_dim {
-                    let part = MonomialPolynomial::multiply(
-                        &inv_jacobian[i][k],
-                        &shape_derivatives[j][k]
-                    ).map_err(|e| GaussError::GeometryError(e.to_string()))?;
-                    
-                    sum = if sum.is_empty() {
-                        part
-                    } else {
-                        MonomialPolynomial::add(&sum, &part)
-                            .map_err(|e| GaussError::GeometryError(e.to_string()))?
+                for param_dim in 0..element_dim {
+                    let term = MonomialPolynomial::multiply(
+                        &shape_derivatives[node][param_dim], // dN/dξ
+                        &inv_jacobian[param_dim][phys_dim]   // ∂ξ/∂x from inv(J)
+                    )?;
+                    sum = if sum.is_empty() { 
+                        term 
+                    } else { 
+                        MonomialPolynomial::add(&sum, &term)? 
                     };
                 }
-                dn_dx[i][j] = sum;
+                dn_dx[node][phys_dim] = sum;
             }
         }
 
-        match mesh_dim{
+        // Build B matrix according to standard Voigt notation
+        match mesh_dim {
             1 => {
-                // 1D: B is 1 x num_nodes
+                // 1D: B = [dN1/dx, dN2/dx, ...] - size [1 × num_nodes]
                 let mut b_matrix = vec![vec![vec![]; num_nodes]; 1];
-                
-                for i in 0..num_nodes {
-                    b_matrix[0][i] = dn_dx[i][0].clone(); // monomial coefficients
+                for node in 0..num_nodes {
+                    b_matrix[0][node] = dn_dx[node][0].clone(); // dN/dx
                 }
                 Ok(b_matrix)
             }
             2 => {
-                let mut b_matrix = vec![vec![vec![]; 2 * num_nodes]; 3]; // row number = 3
-                for i in 0..num_nodes {
-                    b_matrix[0][0+(2*i)] = dn_dx[0+i][0].clone();
-                    b_matrix[2][0+(2*i)] = dn_dx[0+i][1].clone();
-
-                    b_matrix[1][1+(2*i)] = dn_dx[0+i][1].clone();
-                    b_matrix[2][1+(2*i)] = dn_dx[0+i][0].clone();
+                // 2D Voigt: ε = [ε_xx, ε_yy, γ_xy]^T
+                // B matrix size: [3 × (2*num_nodes)]
+                let mut b_matrix = vec![vec![vec![]; 2 * num_nodes]; 3];
+                
+                for node in 0..num_nodes {
+                    let u_col = 2 * node;      // u displacement
+                    let v_col = 2 * node + 1;  // v displacement
+                    
+                    // ε_xx = ∂u/∂x
+                    b_matrix[0][u_col] = dn_dx[node][0].clone();
+                    
+                    // ε_yy = ∂v/∂y  
+                    b_matrix[1][v_col] = dn_dx[node][1].clone();
+                    
+                    // γ_xy = ∂u/∂y + ∂v/∂x
+                    b_matrix[2][u_col] = dn_dx[node][1].clone(); // ∂u/∂y
+                    b_matrix[2][v_col] = dn_dx[node][0].clone(); // ∂v/∂x
                 }
                 Ok(b_matrix)
             }
             3 => {
-                let mut b_matrix = vec![vec![vec![]; 3 * num_nodes]; 6]; // row number = 6
-                for i in 0..num_nodes {
-                    b_matrix[0][0+(3*i)] = dn_dx[0+i][0].clone();
-                    b_matrix[3][0+(3*i)] = dn_dx[0+i][1].clone();
-                    b_matrix[5][0+(3*i)] = dn_dx[0+i][2].clone();
-
-                    b_matrix[1][1+(3*i)] = dn_dx[0+i][1].clone();
-                    b_matrix[3][1+(3*i)] = dn_dx[0+i][0].clone();
-                    b_matrix[4][1+(3*i)] = dn_dx[0+i][2].clone();
-
-                    b_matrix[2][2+(3*i)] = dn_dx[0+i][2].clone();
-                    b_matrix[4][2+(3*i)] = dn_dx[0+i][1].clone();
-                    b_matrix[5][2+(3*i)] = dn_dx[0+i][0].clone();
+                // 3D Voigt: ε = [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_zx]^T  
+                // B matrix size: [6 × (3*num_nodes)]
+                let mut b_matrix = vec![vec![vec![]; 3 * num_nodes]; 6];
+                
+                for node in 0..num_nodes {
+                    let u_col = 3 * node;      // u displacement
+                    let v_col = 3 * node + 1;  // v displacement
+                    let w_col = 3 * node + 2;  // w displacement
+                    
+                    // Normal strains
+                    b_matrix[0][u_col] = dn_dx[node][0].clone(); // ε_xx = ∂u/∂x
+                    b_matrix[1][v_col] = dn_dx[node][1].clone(); // ε_yy = ∂v/∂y
+                    b_matrix[2][w_col] = dn_dx[node][2].clone(); // ε_zz = ∂w/∂z
+                    
+                    // Shear strains  
+                    b_matrix[3][u_col] = dn_dx[node][1].clone(); // γ_xy = ∂u/∂y
+                    b_matrix[3][v_col] = dn_dx[node][0].clone(); // γ_xy = ∂v/∂x
+                    
+                    b_matrix[4][v_col] = dn_dx[node][2].clone(); // γ_yz = ∂v/∂z  
+                    b_matrix[4][w_col] = dn_dx[node][1].clone(); // γ_yz = ∂w/∂y
+                    
+                    b_matrix[5][w_col] = dn_dx[node][0].clone(); // γ_zx = ∂w/∂x
+                    b_matrix[5][u_col] = dn_dx[node][2].clone(); // γ_zx = ∂u/∂z
                 }
                 Ok(b_matrix)
             }
-            _ => panic!("Unsupported mesh dimension: {}", mesh_dim), // unsupported mesh dimension
+            _ => Err(GaussError::UnsupportedDimension(mesh_dim)),
         }
     }
 
-    /// Transform scalar material property (density ρ) from physical to isoparametric coordinates
-    /// 
-    /// Input: ρ(x,y,z) in monomial format
-    /// Output: ρ(xi,eta,psi) in monomial format
-    /// 
-    /// Substitutes: x → x(xi,eta,psi), y → y(xi,eta,psi), z → z(xi,eta,psi)
-    /// where coordinate mappings come from isoparametric formulation
+    // Transform scalar material property (density ρ) from physical to isoparametric coordinates 
+    // Input: ρ(x,y,z) in monomial format. Output: ρ(xi,eta,psi) in monomial format
+    // Substitutes: x → x(xi,eta,psi), y → y(xi,eta,psi), z → z(xi,eta,psi), where x = Σ N_i * x_i_real
     pub fn transform_material_property_scalar(
         material_property_physical: &[f64],
         element_nodes: &Vec<Node>,
@@ -522,16 +496,14 @@ impl GaussianQuadrature {
 
     }
 
-    /// Transform tensor material property (elasticity matrix C) from physical to isoparametric
-    ///
-    /// Input: C(x,y,z) as matrix where each component C_ij is a monomial polynomial
-    /// Output: C(xi,eta,psi) with each component transformed
-    ///
-    /// Handles anisotropic materials where each C_ij(x,y,z) varies spatially
+    // Transform tensor material property (elasticity matrix C) from physical to isoparametric
+    // Input: C(x,y,z) as matrix where each component C_ij is a monomial polynomial
+    // Output: C(xi,eta,psi) with each component transformed
+    // Substitutes: x → x(xi,eta,psi), y → y(xi,eta,psi), z → z(xi,eta,psi), where x = Σ N_i * x_i_real
     pub fn transform_material_property_tensor(
         material_property_physical: &Vec<Vec<Vec<f64>>>,
         element_nodes: &Vec<Node>,
-        shape_function_values: &[Vec<f64>],  // Shape function VALUES (not derivatives)
+        shape_function_values: &[Vec<f64>], 
         mesh_dim: usize,
     ) -> Result<Vec<Vec<Vec<f64>>>, GaussError> {
         
@@ -558,11 +530,9 @@ impl GaussianQuadrature {
         Ok(material_property_isoparametric)
     }
     
-    /// Build coordinate mappings for isoparametric formulation
-    /// 
-    /// Returns: [x(xi,eta,psi), y(xi,eta,psi), z(xi,eta,psi)] as monomial polynomials
-    /// 
-    /// For each coordinate: coordinate(xi,eta,psi) = Σ N_i(xi,eta,psi) × coordinate_i
+    // Build coordinate mappings for isoparametric formulation
+    // Returns: [x(xi,eta,psi), y(xi,eta,psi), z(xi,eta,psi)] as monomial polynomials
+    // x(xi,eta,psi) = Σ N_i(xi,eta,psi) × x_i , y(xi,eta,psi) = Σ N_i(xi,eta,psi) × y_i , etc.
     fn build_coordinate_maps(
         element_nodes: &Vec<Node>,
         shape_function_values: &[Vec<f64>],
@@ -573,26 +543,26 @@ impl GaussianQuadrature {
         let mut coordinate_maps = Vec::with_capacity(mesh_dim);
         
         // For each spatial dimension (x, y, z)
-        for dim in 0..mesh_dim {
+        for i in 0..mesh_dim {
             let mut coord_poly = vec![];
             
-            // Build: xᵢ(ξ,η,ψ) = Σₖ Nₖ(ξ,η,ψ) × xᵢₖ
-            for node_idx in 0..num_nodes {
+            // Build: x_i(xi,eta,psi) = Σ_k N_k(xi,eta,psi) * x_ik
+            for j in 0..num_nodes {
                 // Get physical coordinate value for this node
-                let coord_value = element_nodes[node_idx].coordinates[dim];
-                
+                let coord_value = element_nodes[j].coordinates[i];  // x_ik
+
                 // Skip if coordinate is zero (optimization)
-                if coord_value.abs() < 1e-15 {
+                if coord_value.abs() < 1e-12 {
                     continue;
                 }
                 
-                // Multiply: Nₖ(ξ,η,ψ) × xᵢₖ
+                // N_k(xi,eta,psi) * x_ik
                 let term = MonomialPolynomial::multiply_scalar(
-                    &shape_function_values[node_idx],
+                    &shape_function_values[j],
                     coord_value,
                 );
                 
-                // Accumulate: sum all contributions
+                // Sum of N_k(xi,eta,psi) * x_ik
                 coord_poly = if coord_poly.is_empty() {
                     term
                 } else {
@@ -612,17 +582,14 @@ impl GaussianQuadrature {
         Ok(coordinate_maps)
     }
     
-    /// Substitute physical coordinates with parametric coordinate polynomials
-    /// 
-    /// Given: f(x,y,z) = Σ aᵢⱼₖ × xⁱ × yʲ × zᵏ (in graded lexicographic format)
-    /// Returns: f(ξ,η,ψ) by substituting x→x(ξ,η,ψ), y→y(ξ,η,ψ), z→z(ξ,η,ψ)
-    /// 
-    /// Algorithm:
-    /// 1. Parse each term aᵢⱼₖ × xⁱ × yʲ × zᵏ from the physical polynomial
-    /// 2. Compute x(ξ,η,ψ)^i, y(ξ,η,ψ)^j, z(ξ,η,ψ)^k using polynomial powers
-    /// 3. Multiply and accumulate: aᵢⱼₖ × [x(ξ,η,ψ)]^i × [y(ξ,η,ψ)]^j × [z(ξ,η,ψ)]^k
-    /// 
-    /// Uses the graded lexicographic basis to iterate through all terms
+    // Substitute physical coordinates with parametric coordinate polynomials
+    // Given: f(x,y,z) = Σ a_ijk * x^i * y^j * z^k (in graded lexicographic format)
+    // Returns: f(xi,eta,psi) by substituting x→x(xi,eta,psi), y→y(xi,eta,psi), z→z(xi,eta,psi)
+    // Algorithm:
+    // 1. Parse each term a_ijk * x^i * y^j * z^k from the physical polynomial
+    // 2. Compute x(xi,eta,psi)^i, y(xi,eta,psi)^j, z(xi,eta,psi)^k using polynomial powers
+    // 3. Multiply and accumulate: a_ijk * [x(xi,eta,psi)]^i * [y(xi,eta,psi)]^j * [z(xi,eta,psi)]^k
+    // Uses the graded lexicographic basis to iterate through all terms
     fn substitute_polynomial(
         physical_poly: &[f64],
         coordinate_maps: &Vec<Vec<f64>>,
@@ -646,7 +613,7 @@ impl GaussianQuadrature {
             let coefficient = physical_poly[idx];
             
             // Skip negligible terms for numerical stability
-            if coefficient.abs() < 1e-15 {
+            if coefficient.abs() < 1e-12 {
                 continue;
             }
             
@@ -711,55 +678,46 @@ impl GaussianQuadrature {
         }
     }
 
-    /// Compute Jacobian struct 
+    // Compute Jacobian struct 
     pub fn calculate_jacobian_monomial(
         element_nodes: &Vec<Node>,
-        shape_derivatives: &[Vec<Vec<f64>>],
+        shape_derivatives: &[Vec<Vec<f64>>], // [node][param_dim][coefficients]
         element_dim: usize,
         num_nodes: usize,
         mesh_dim: usize,
         element_order: usize,
     ) -> Result<Jacobian, ElementError> {
 
-        // Build the full polynomial Jacobian matrix
+        let max_len = match element_order {
+            1 => 4,  // [1, x, y, z]
+            2 => 10, // [1, x, y, z, x^2, xy, xz, y^2, yz, z^2]
+            3 => 20, // [1, x, y, z, x^2, xy, xz, y^2, yz, z^2, x^3, x^2y, x^2z, xy^2, xyz, xz^2, y^3, y^2z, yz^2, z^3]
+            // Extendable for higher orders if needed
+            _ => return Err(ElementError::GeometryError(format!(
+                "Unsupported element order {}", element_order
+            ))),
+        };
 
-        // Determine maximum polynomial length based on element order
-        let max_len = if element_order == 1 {
-            4 //[1, x, y, z]
-        }   
-        else if element_order == 2 {
-            10 //[1, x, y, z, x^2, xy, xz, y^2, yz, z^2]
-        }   
-        else {
-            0; // Unsupported order
-            return Err(ElementError::GeometryError(format!(
-                "Unsupported element order {} for Jacobian construction",
-                element_order
-            )));
-        }; 
-
-        // Initialize 3D Jacobian matrix: [mesh_dim][element_dim][polynomial_coeffs]
+        // Initialize Jacobian matrix: J[physical_dim][parametric_dim]
         let mut jacobian_matrix: Vec<Vec<Vec<f64>>> = 
             vec![vec![vec![0.0; max_len]; element_dim]; mesh_dim];
 
-        // Build Jacobian matrix by summing contributions from all nodes
-        // J_ij = Σ_node (x_node_i * ∂N_node/∂ξ_j) where N_node are shape functions
-        for i in 0..mesh_dim {           // Physical space dimension
-            for j in 0..element_dim {    // Parametric space dimension  
-                for k in 0..num_nodes {  // Node index
-                    let coord = element_nodes[k].coordinates[i];
-                    let derivative_poly = &shape_derivatives[k][j];
+        // J_ij = Σ_node (x_node_i * ∂N_node/∂ξ_j)
+        for phys_dim in 0..mesh_dim {           // Physical space dimension
+            for param_dim in 0..element_dim {   // Parametric space dimension  
+                for node in 0..num_nodes {      // Node index
+                    let coord = element_nodes[node].coordinates[phys_dim];
+                    let derivative_poly = &shape_derivatives[node][param_dim];
                     
-                    // Multiply shape function derivative by nodal coordinate
                     let scaled_poly = MonomialPolynomial::multiply_scalar(derivative_poly, coord);
-                    // Accumulate contribution to Jacobian component
-                    jacobian_matrix[i][j] = MonomialPolynomial::add(&jacobian_matrix[i][j], &scaled_poly)
-                        .map_err(|e| ElementError::GeometryError(format!("Failed to add polynomials: {}", e)))?;
+                    jacobian_matrix[phys_dim][param_dim] = MonomialPolynomial::add(
+                        &jacobian_matrix[phys_dim][param_dim], 
+                        &scaled_poly
+                    ).map_err(|e| ElementError::GeometryError(format!("Failed to add polynomials: {}", e)))?;
                 }
             }
         }
 
-        // Calculate determinant as polynomial
         let det_jacobian = Self::calculate_determinant_monomial(&jacobian_matrix, mesh_dim, element_dim)?;
 
         Ok(Jacobian {
@@ -768,156 +726,100 @@ impl GaussianQuadrature {
         })
     }
 
-    // Inverse of a matrix with monomial polynomial entries
+    
+    // Inverse of a matrix with monomial polynomial entries for square Jacobian matrices and pseudo-inverse for non-square Jacobian matrices
     pub fn inverse_matrix_monomial(matrix: &Vec<Vec<Vec<f64>>>, mesh_dim: usize, element_dim: usize) -> Result<Vec<Vec<Vec<f64>>>, ElementError> {
-        // Inversion only implemented for 2x2 and 3x3 matrices
         match (mesh_dim, element_dim) {
-            // 1x1 matrix: determinant is the single element
+            // Square matrices - inverse has same dimensions [element_dim × mesh_dim] = [mesh_dim × element_dim]
             (1, 1) => {
-                let mut inverse_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; element_dim]; element_dim];
-
-                match MonomialPolynomial::divide(&[1.0, 0.0, 0.0, 0.0], &matrix[0][0]) {
-                    Ok(coefficients) => {
-                        inverse_matrix[0][0] = coefficients;
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-
+                let mut inverse_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; mesh_dim]; element_dim];
+                let inv_determinant = Self::calculate_inverse_determinant_monomial(matrix, 1, 1)?;
+                inverse_matrix[0][0] = inv_determinant;
                 Ok(inverse_matrix)
             },
-
-            // 2x2 matrix: 
-            (2, 2) => {
-                let mut inverse_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; element_dim]; element_dim];
-
-                let adjoint = Self::calculate_adjoint_monomial(&matrix, element_dim, element_dim)
-                    .map_err(|e| ElementError::GeometryError(format!("Failed to calculate adjoint: {:?}", e)))?;
-                let determinant = GaussianQuadrature::calculate_determinant_monomial(&matrix, element_dim, element_dim)
-                    .map_err(|e| ElementError::GeometryError(format!("Failed to calculate determinant: {:?}", e)))?;
-
+            (2, 2) | (3, 3) => {
+                // Combined square matrix case for 2x2 and 3x3
+                let mut inverse_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; mesh_dim]; element_dim];
+                let adjoint = Self::calculate_adjoint_monomial(matrix, element_dim)?;
+                let inv_determinant = Self::calculate_inverse_determinant_monomial(matrix, mesh_dim, element_dim)?;
                 for i in 0..element_dim {
-                    for j in 0..element_dim {
-                        match MonomialPolynomial::divide(&adjoint[i][j], &determinant) {
-                            Ok(coefficients) => {
-                                inverse_matrix[i][j] = coefficients;
-                            }
-                            Err(e) => return Err(e.into()),
-                        }
+                    for j in 0..mesh_dim {
+                        inverse_matrix[i][j] = MonomialPolynomial::multiply(&adjoint[i][j], &inv_determinant)?;
                     }
                 }
                 Ok(inverse_matrix)
             },
-
-            // 3x3 matrix: det = a(ei−fh) − b(di−fg) + c(dh−eg)
-            (3, 3) => {
-                let mut inverse_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; element_dim]; element_dim];
-
-                let adjoint = Self::calculate_adjoint_monomial(&matrix, element_dim, element_dim)
-                    .map_err(|e| ElementError::GeometryError(format!("Failed to calculate adjoint: {:?}", e)))?;
-                let determinant = GaussianQuadrature::calculate_determinant_monomial(&matrix, element_dim, element_dim)
-                    .map_err(|e| ElementError::GeometryError(format!("Failed to calculate determinant: {:?}", e)))?;
-
-                for i in 0..element_dim {
-                    for j in 0..element_dim {
-                        match MonomialPolynomial::divide(&adjoint[i][j], &determinant) {
-                            Ok(coefficients) => {
-                                inverse_matrix[i][j] = coefficients;
-                            }
-                            Err(e) => return Err(e.into()),
-                        }
-                    }
-                }
-                Ok(inverse_matrix)
-            }
-            // 1D elements in 2D space: 
-            (2, 1) => {
-
-                let mut inverse_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; element_dim]; element_dim];
-                let mut square_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; element_dim]; element_dim];
-
+            
+            // 1D elements in higher dimensional spaces - pseudo-inverse has dimensions [element_dim × mesh_dim]
+            (2, 1) | (3, 1) => {
+                // Combined case for 1D elements in 2D or 3D space
+                // J = [mesh_dim × 1], J⁺ = [1 × mesh_dim]
+                let mut inverse_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; mesh_dim]; element_dim]; // [1 × mesh_dim]
                 
+                // Compute G = JᵀJ [1 × 1]
+                let mut g_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; 1]; 1];
                 let mut sum = vec![];
                 for k in 0..mesh_dim {
                     let prod = MonomialPolynomial::multiply(&matrix[k][0], &matrix[k][0])?;
                     sum = MonomialPolynomial::add(&sum, &prod)?;
                 }
-                square_matrix[0][0] = sum;
-                    
+                g_matrix[0][0] = sum;
+
+                // Compute G⁻¹ = adj(G)/det(G)
+                let adj_g = Self::calculate_adjoint_monomial(&g_matrix, 1)?;
+                let inv_det_g = Self::calculate_inverse_determinant_monomial(&g_matrix, 1, 1)?;
+                let inv_g = MonomialPolynomial::multiply(&adj_g[0][0], &inv_det_g)?;
                 
-
-                match MonomialPolynomial::divide(&[1.0, 0.0, 0.0, 0.0], &square_matrix[0][0]) {
-                    Ok(coefficients) => {
-                        inverse_matrix[0][0] = coefficients;
-                    }
-                    Err(e) => return Err(e.into()),
+                // Compute J⁺ = G⁻¹Jᵀ = [1 × 1] * [1 × mesh_dim] = [1 × mesh_dim]
+                for j in 0..mesh_dim {
+                    inverse_matrix[0][j] = MonomialPolynomial::multiply(&inv_g, &matrix[j][0])?;
                 }
-
+                
                 Ok(inverse_matrix)
-            }
-
-            // 1D elements in 3D space:
-            (3, 1) => {
-                let mut inverse_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; element_dim]; element_dim];
-                let mut square_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; element_dim]; element_dim];
-
-                
-                let mut sum = vec![];
-                for k in 0..mesh_dim {
-                    let prod = MonomialPolynomial::multiply(&matrix[k][0], &matrix[k][0])?;
-                    sum = MonomialPolynomial::add(&sum, &prod)?;
-                }
-                square_matrix[0][0] = sum;
-                    
-                
-
-                match MonomialPolynomial::divide(&[1.0, 0.0, 0.0, 0.0], &square_matrix[0][0]) {
-                    Ok(coefficients) => {
-                        inverse_matrix[0][0] = coefficients;
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-
-                Ok(inverse_matrix)
-            }
-
-            // 2D elements in 3D space: metric determinant from first fundamental form
+            },
             (3, 2) => {
-                let mut inverse_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; element_dim]; element_dim];
-                let mut square_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; element_dim]; element_dim];
-
-                for i in 0..element_dim {
-                    for j in 0..element_dim {
+                // J = [3 × 2], J⁺ = [2 × 3]
+                let mut inverse_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; mesh_dim]; element_dim]; // [2 × 3]
+                
+                // Compute G = JᵀJ [2 × 2]
+                let mut g_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; 2]; 2];
+                for i in 0..2 {
+                    for j in 0..2 {
                         let mut sum = vec![];
-                        for k in 0..mesh_dim {
+                        for k in 0..3 {
                             let prod = MonomialPolynomial::multiply(&matrix[k][i], &matrix[k][j])?;
                             sum = MonomialPolynomial::add(&sum, &prod)?;
                         }
-                        square_matrix[i][j] = sum;
+                        g_matrix[i][j] = sum;
                     }
                 }
 
-                let adjoint = Self::calculate_adjoint_monomial(&square_matrix, element_dim, element_dim)
-                    .map_err(|e| ElementError::GeometryError(format!("Failed to calculate adjoint: {:?}", e)))?;
-                let determinant = GaussianQuadrature::calculate_determinant_monomial(&square_matrix, element_dim, element_dim)
-                    .map_err(|e| ElementError::GeometryError(format!("Failed to calculate determinant: {:?}", e)))?;
+                // Compute G⁻¹ = adj(G)/det(G)
+                let adj_g = Self::calculate_adjoint_monomial(&g_matrix, 2)?;
+                let inv_det_g = Self::calculate_inverse_determinant_monomial(&g_matrix, 2, 2)?;
+                let mut inv_g = vec![vec![vec![]; 2]; 2];
+                for i in 0..2 {
+                    for j in 0..2 {
+                        inv_g[i][j] = MonomialPolynomial::multiply(&adj_g[i][j], &inv_det_g)?;
+                    }
+                }
 
+                // Compute J⁺ = G⁻¹Jᵀ = [2 × 2] * [2 × 3] = [2 × 3]
                 for i in 0..element_dim {
-                    for j in 0..element_dim {
-                        match MonomialPolynomial::divide(&adjoint[i][j], &determinant) {
-                            Ok(coefficients) => {
-                                inverse_matrix[i][j] = coefficients;
-                            }
-                            Err(e) => return Err(e.into()),
+                    for j in 0..mesh_dim {
+                        let mut sum = vec![];
+                        for k in 0..2 {
+                            let term = MonomialPolynomial::multiply(&inv_g[i][k], &matrix[j][k])?;
+                            sum = if sum.is_empty() { term } else { MonomialPolynomial::add(&sum, &term)? };
                         }
+                        inverse_matrix[i][j] = sum;
                     }
                 }
 
                 Ok(inverse_matrix)
-            }
-
-            // Unsupported matrix dimensions
+            },
             _ => Err(ElementError::GeometryError(format!(
-                "Jacobian determinant calculation not implemented for {}x{} (mesh_dim x element_dim) matrices",
+                "Jacobian inverse calculation not implemented for {}x{} matrices",
                 mesh_dim, element_dim
             ))),
         }
@@ -925,20 +827,18 @@ impl GaussianQuadrature {
     
 
     // Adjoint of a matrix with monomial polynomial entries
-    pub fn calculate_adjoint_monomial(matrix: &Vec<Vec<Vec<f64>>>, element_dim: usize, mesh_dim: usize) -> Result<Vec<Vec<Vec<f64>>>, ElementError> {
+    pub fn calculate_adjoint_monomial(matrix: &Vec<Vec<Vec<f64>>>, element_dim: usize) -> Result<Vec<Vec<Vec<f64>>>, ElementError> {
         // Adjoint calculation only implemented for 2x2 and 3x3 matrices
-        let mesh_dim = matrix.len();
-        let element_dim = if mesh_dim > 0 { matrix[0].len() } else { 0 };
 
-        match (mesh_dim, element_dim) {
-            (2, 2) => {
+        match element_dim {
+            2 => {
                 let adj = vec![
                     vec![matrix[1][1].clone(), MonomialPolynomial::multiply_scalar(&matrix[0][1], -1.0)],
                     vec![MonomialPolynomial::multiply_scalar(&matrix[1][0], -1.0), matrix[0][0].clone()],
                 ];
                 Ok(adj)
             },
-            (3, 3) => {
+            3 => {
                 let a0 = &matrix[0][0];
                 let a1 = &matrix[0][1];
                 let a2 = &matrix[0][2];
@@ -969,8 +869,8 @@ impl GaussianQuadrature {
                 Ok(adj)
             },
             _ => Err(ElementError::GeometryError(format!(
-                "Jacobian adjoint calculation not implemented for {}x{} (mesh_dim x element_dim) matrices",
-                mesh_dim, element_dim
+                "Jacobian adjoint calculation not implemented for {}x{} (element_dim x element_dim) matrices",
+                element_dim, element_dim
             ))),
         }
     }
@@ -1073,19 +973,44 @@ impl GaussianQuadrature {
         }
     }
 
+    /// Calculate inverse of Jacobian determinant/metric for polynomial matrices
+    pub fn calculate_inverse_determinant_monomial( 
+        matrix: &Vec<Vec<Vec<f64>>>,
+        mesh_dim: usize,
+        element_dim: usize,
+    ) -> Result<Vec<f64>, ElementError> {
+        let wished_n = 5; // Can be parameterized later
+        let determinant = Self::calculate_determinant_monomial(matrix, mesh_dim, element_dim)?;
+    
+        let nominal_determinant = MonomialPolynomial::multiply_scalar(&determinant, 1.0/determinant[0]);
+        let mut term = vec![vec![0.0; nominal_determinant.len()]; wished_n];
+        term[0] = vec![1.0, 0.0, 0.0, 0.0]; // Constant term is 1
+        term[1] = nominal_determinant;
+        for i in 2..wished_n {
+            term[i] = MonomialPolynomial::multiply(&term[i-1], &term[1])
+                .map_err(|e| ElementError::GeometryError(format!("Failed to compute inverse determinant power {}: {}", i, e)))?;
+        }
+        let mut result = vec![0.0; term[0].len()];
+        for j in 0..wished_n {
+            result = MonomialPolynomial::add(&result, &term[j])
+                .map_err(|e| ElementError::GeometryError(format!("Failed to compute inverse determinant sum: {}", e)))?;
+        }
+        Ok(result)
+    }
 
-    /// Calculate error based on element type and dispatch to appropriate quadrature rule
+
+    // Calculate error based on element type and dispatch to appropriate quadrature rule
     pub fn calculate_error(
         integrand: &Vec<Vec<Vec<f64>>>,
         n: usize,
         element_dim: usize,
-        num_nodes: usize,
     ) -> Result<Vec<Vec<f64>>, GaussError> {
 
-        let mut errors = vec![vec![0.0; num_nodes]; num_nodes];
+        let matrix_size = integrand.len(); // This gives mesh_dim * num_nodes
+        let mut errors = vec![vec![0.0; matrix_size]; matrix_size];
         
-        for i in 0..num_nodes {
-            for j in 0..num_nodes {
+        for i in 0..matrix_size {
+            for j in 0..matrix_size {
                 errors[i][j] = Self::gauss_legendre_error(&integrand[i][j], n, element_dim)?;
             }
         }
@@ -1093,7 +1018,7 @@ impl GaussianQuadrature {
         Ok(errors)
     }
 
-    /// Gauss-Legendre quadrature error estimation
+    // Gauss-Legendre quadrature error estimation
     fn gauss_legendre_error(
         integrand: &[f64],
         n: usize,
@@ -1117,7 +1042,7 @@ impl GaussianQuadrature {
                     let upper = poly_degree.min(coeff_vector.len() - 1);
                     for k in (2 * n)..=upper {
                         let ak = coeff_vector[k].abs();
-                        if ak > 1e-15 {
+                        if ak > 1e-12 {
                             s += ak * (factorial(k) / factorial(k - 2 * n));
                         }
                     }
@@ -1138,7 +1063,7 @@ impl GaussianQuadrature {
                 for i in (2 * n)..=poly_degree_x.min(coeff_matrix.len().saturating_sub(1)) {
                     for j in 0..=poly_degree_y.min(coeff_matrix[i].len().saturating_sub(1)) {
                         let aij = coeff_matrix[i][j].abs();
-                        if aij > 1e-15 {
+                        if aij > 1e-12 {
                             term1 += aij * (factorial(i) / factorial(i - 2 * n));
                         }
                     }
@@ -1148,7 +1073,7 @@ impl GaussianQuadrature {
                 for i in 0..=poly_degree_x.min(coeff_matrix.len().saturating_sub(1)) {
                     for j in (2 * n)..=poly_degree_y.min(coeff_matrix[i].len().saturating_sub(1)) {
                         let aij = coeff_matrix[i][j].abs();
-                        if aij > 1e-15 {
+                        if aij > 1e-12 {
                             term2 += aij * (factorial(j) / factorial(j - 2 * n));
                         }
                     }
@@ -1170,7 +1095,7 @@ impl GaussianQuadrature {
                     for j in 0..=poly_degree_y.min(coeff_tensor[i].len().saturating_sub(1)) {
                         for k in 0..=poly_degree_z.min(coeff_tensor[i][j].len().saturating_sub(1)) {
                             let aijk = coeff_tensor[i][j][k].abs();
-                            if aijk > 1e-15 {
+                            if aijk > 1e-12 {
                                 term1 += aijk
                                     * (factorial(i) / factorial(i - 2 * n));
                             }
@@ -1183,7 +1108,7 @@ impl GaussianQuadrature {
                     for j in (2 * n)..=poly_degree_y.min(coeff_tensor[i].len().saturating_sub(1)) {
                         for k in 0..=poly_degree_z.min(coeff_tensor[i][j].len().saturating_sub(1)) {
                             let aijk = coeff_tensor[i][j][k].abs();
-                            if aijk > 1e-15 {
+                            if aijk > 1e-12 {
                                 term2 += aijk
                                     * (factorial(j) / factorial(j - 2 * n));
                             }
@@ -1196,7 +1121,7 @@ impl GaussianQuadrature {
                     for j in 0..=poly_degree_y.min(coeff_tensor[i].len().saturating_sub(1)) {
                         for k in (2 * n)..=poly_degree_z.min(coeff_tensor[i][j].len().saturating_sub(1)) {
                             let aijk = coeff_tensor[i][j][k].abs();
-                            if aijk > 1e-15 {
+                            if aijk > 1e-12 {
                                 term3 += aijk * (factorial(k) / factorial(k - 2 * n));
                             }
                         }
@@ -1213,12 +1138,7 @@ impl GaussianQuadrature {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::f64::consts::PI;
-
-    // first create element and mesh data (1d linear in 1d-2d-3d, 1d quadratic in 1d-2d-3d, 2d linear in 2d-3d, 2d quadratic in 2d-3d, 3d linear in 3d, 3d quadratic in 3d)
+// first create element and mesh data (1d linear in 1d-2d-3d, 1d quadratic in 1d-2d-3d, 2d linear in 2d-3d, 2d quadratic in 2d-3d, 3d linear in 3d, 3d quadratic in 3d)
     // then check shape functions and its derivatives (also monomial representation)
     // then check jacobian calculation
     // then check detJ, adjJ and invJ
@@ -1230,440 +1150,547 @@ mod tests {
     // then check the number of gaussian points for given error tolerance (give multiple tolerances and check the number of points selected)
     // test the exactness number d = 2n-1 
 
-    fn create_node_1d(id: usize, x: f64) -> Node {
-        Node {
-            id,
-            coordinates: vec![x],
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::structs_and_impls::*;
+
+    // Test helper functions
+    mod helper_tests {
+        use super::*;
+
+        #[test]
+        fn test_factorial_small_values() {
+            // Test factorial for small values that are precomputed
+            assert_eq!(factorial(0), 1.0);
+            assert_eq!(factorial(1), 1.0);
+            assert_eq!(factorial(2), 2.0);
+            assert_eq!(factorial(3), 6.0);
+            assert_eq!(factorial(4), 24.0);
+            assert_eq!(factorial(5), 120.0);
         }
-        pub struct MeshData {                               // Defines a structure to represent a mesh
-        pub dimension: usize,                           // Spatial dimension (from # sdim tag)
-        pub num_nodes: usize,                           // Number of nodes (from # number of mesh vertices tag)
-        pub min_node_index: usize,                      // Lowest mesh vertex index (from # lowest mesh vertex index tag) 
-        pub nodes: Vec<Node>,                           // All nodes with their coordinates
-        pub num_eltypes: usize,                         // Number of element types (from # number of element types tag)
-        pub elements: Vec<Element>,                     // All elements with their connectivity
-        pub element_type_info: Vec<ElementTypeInfo>,    // Information about each element type
-}
-    }
 
-    fn create_test_mesh_data( // here create a meshdata from single element with its nodes and element type info and coordinates
-        nodes: Vec<Node>,
-        elements: Vec<Element>,
-        element_type_info: Vec<ElementTypeInfo>,
-    ) -> MeshData {
-        MeshData {
-            dimension: if !nodes.is_empty() {
-                nodes[0].coordinates.len()
-            } else {
-                3
-            },
-            num_nodes: nodes.len(),
-            min_node_index: nodes.iter().map(|n| n.id).min().unwrap_or(1),
-            nodes,
-            num_eltypes: element_type_info.len(),
-            elements,
-            element_type_info,
+        #[test]
+        fn test_factorial_large_values() {
+            // Test factorial for larger values using Stirling's approximation
+            // We'll check that it's reasonably close to expected values
+            let fact_10 = factorial(10);
+            let expected_10 = 3628800.0;
+            assert!((fact_10 - expected_10).abs() / expected_10 < 0.01, 
+                   "Factorial(10) should be close to 3628800, got {}", fact_10);
+
+            let fact_20 = factorial(20);
+            let expected_20 = 2432902008176640000.0;
+            assert!((fact_20 - expected_20).abs() / expected_20 < 0.001,
+                   "Factorial(20) should be reasonably accurate");
+        }
+
+        #[test]
+        fn test_detect_polynomial_order_1d() {
+            // Test constant polynomial
+            let coeffs_constant = vec![1.0, 0.0, 0.0, 0.0];
+            assert_eq!(GaussianQuadrature::detect_polynomial_order_1d(&coeffs_constant), 0);
+
+            // Test linear polynomial
+            let coeffs_linear = vec![1.0, 2.0, 0.0, 0.0];
+            assert_eq!(GaussianQuadrature::detect_polynomial_order_1d(&coeffs_linear), 1);
+
+            // Test quadratic polynomial
+            let coeffs_quadratic = vec![1.0, 2.0, 3.0, 0.0];
+            assert_eq!(GaussianQuadrature::detect_polynomial_order_1d(&coeffs_quadratic), 2);
+
+            // Test cubic polynomial
+            let coeffs_cubic = vec![1.0, 2.0, 3.0, 4.0];
+            assert_eq!(GaussianQuadrature::detect_polynomial_order_1d(&coeffs_cubic), 3);
+
+            // Test with tolerance - small coefficients should be ignored
+            let coeffs_with_noise = vec![1.0, 1e-13, 1e-13, 2.0];
+            assert_eq!(GaussianQuadrature::detect_polynomial_order_1d(&coeffs_with_noise), 0);
+        }
+
+        #[test]
+        fn test_detect_polynomial_orders_2d() {
+            // Test constant polynomial in 2D
+            let coeffs_constant = vec![
+                vec![1.0, 0.0],
+                vec![0.0, 0.0],
+            ];
+            assert_eq!(GaussianQuadrature::detect_polynomial_orders_2d(&coeffs_constant), (0, 0));
+
+            // Test mixed orders
+            let coeffs_mixed = vec![
+                vec![1.0, 2.0, 0.0],
+                vec![3.0, 4.0, 5.0],
+                vec![0.0, 6.0, 0.0],
+            ];
+            assert_eq!(GaussianQuadrature::detect_polynomial_orders_2d(&coeffs_mixed), (2, 2));
+        }
+
+        #[test]
+        fn test_detect_polynomial_orders_3d() {
+            // Simple 3D test case
+            let coeffs = vec![
+                vec![
+                    vec![1.0, 0.0],
+                    vec![0.0, 2.0],
+                ],
+                vec![
+                    vec![0.0, 0.0],
+                    vec![3.0, 0.0],
+                ],
+            ];
+            assert_eq!(GaussianQuadrature::detect_polynomial_orders_3d(&coeffs), (1, 1, 1));
         }
     }
 
-    // Helper function for factorial in tests
-    fn fact(n: usize) -> f64 {
-        (1..=n).fold(1.0, |acc, k| acc * k as f64)
+    // Test monomial polynomial operations
+    mod monomial_tests {
+        use super::*;
+
+        #[test]
+        fn test_total_degree_polynomial() {
+            // Test constant polynomial
+            assert_eq!(MonomialPolynomial::total_degree_polynomial(&vec![1.0]), 0);
+            
+            // Test linear polynomial
+            assert_eq!(MonomialPolynomial::total_degree_polynomial(&vec![1.0, 2.0]), 1);
+            
+            // Test quadratic polynomial
+            assert_eq!(MonomialPolynomial::total_degree_polynomial(&vec![1.0, 2.0, 3.0]), 2);
+        }
     }
 
-    fn create_test_element_and_nodes() -> (Element, Vec<Node>) {
-        let element = Element {
-            id: 0,
-            nodes: vec![0, 1, 2],
-        };
-        
-        let nodes = vec![
-            Node { id: 0, coordinates: vec![0.0, 0.0] },
-            Node { id: 1, coordinates: vec![1.0, 0.0] },
-            Node { id: 2, coordinates: vec![0.0, 1.0] },
-        ];
-        
-        (element, nodes)
+    // Main test for 1D line element mass integration
+    mod line_element_1d_tests {
+        use super::*;
+
+        pub fn create_1d_line_element() -> (Element, Vec<Node>, ElementType, MaterialProperty, MeshData) {
+            // Create a simple 1D line element from x=0 to x=1 with 0-based indexing
+            let element = Element {
+                id: 0,
+                nodes: vec![0, 1],  // 0-based node indices
+            };
+
+            let nodes = vec![
+                Node {
+                    id: 0,
+                    coordinates: vec![-1.0, 0.0, 0.0],
+                },
+                Node {
+                    id: 1,
+                    coordinates: vec![1.0, 0.0, 0.0],
+                },
+            ];
+
+            // Constant density material property
+            let material_property = MaterialProperty::Scalar(vec![1.0]); // ρ = 1.0
+
+            // Create minimal mesh data for testing
+            let mesh_data = MeshData {
+                dimension: 3,
+                num_nodes: 2,
+                min_node_index: 0,
+                nodes: nodes.clone(),
+                num_eltypes: 1,
+                elements: vec![element.clone()],
+                element_type_info: vec![ElementTypeInfo {
+                    element_type: ElementType::Line,
+                    num_elements: 1,
+                    start_index: 0,
+                    nodes_per_element: 2,
+                }],
+            };
+
+            (element, nodes, ElementType::Line, material_property, mesh_data)
+        }
+
+        #[test]
+        fn test_1d_line_shape_functions() {
+            let (_, _, element_type, _, _) = create_1d_line_element();
+            let shape_function = ElementType::get_shape_functions(&element_type).unwrap();
+            
+            // Line2 element should have 2 nodes
+            assert_eq!(shape_function.num_nodes, 2);
+            
+            // Shape function values should be for parametric coordinate ξ ∈ [-1, 1]
+            // N1 = (1 - ξ)/2, N2 = (1 + ξ)/2
+            let n1 = &shape_function.values[0]; // N1 coefficients
+            let n2 = &shape_function.values[1]; // N2 coefficients
+            
+            // N1 = 0.5 - 0.5ξ → coefficients: [0.5, -0.5] for basis [1, ξ]
+            assert_eq!(n1.len(), 2);
+            assert!((n1[0] - 0.5).abs() < 1e-12, "N1 constant term should be 0.5");
+            assert!((n1[1] - (-0.5)).abs() < 1e-12, "N1 linear term should be -0.5");
+            
+            // N2 = 0.5 + 0.5ξ → coefficients: [0.5, 0.5] for basis [1, ξ]
+            assert!((n2[0] - 0.5).abs() < 1e-12, "N2 constant term should be 0.5");
+            assert!((n2[1] - 0.5).abs() < 1e-12, "N2 linear term should be 0.5");
+        }
+
+        #[test]
+        fn test_1d_line_shape_function_derivatives() {
+            let (_, _, element_type, _, _) = create_1d_line_element();
+            let shape_function = ElementType::get_shape_functions(&element_type).unwrap();
+            
+            // Derivatives: dN1/dξ = -0.5, dN2/dξ = 0.5
+            let dn1_dxi = &shape_function.derivatives[0][0]; // dN1/dξ
+            let dn2_dxi = &shape_function.derivatives[1][0]; // dN2/dξ
+            
+            // Derivatives should be constant polynomials
+            assert_eq!(dn1_dxi.len(), 1);
+            assert!((dn1_dxi[0] - (-0.5)).abs() < 1e-12, "dN1/dξ should be -0.5");
+            
+            assert_eq!(dn2_dxi.len(), 1);
+            assert!((dn2_dxi[0] - 0.5).abs() < 1e-12, "dN2/dξ should be 0.5");
+        }
+
+        #[test]
+        fn test_1d_line_jacobian() {
+            let (_, nodes, element_type, _, _) = create_1d_line_element();
+            let shape_function = ElementType::get_shape_functions(&element_type).unwrap();
+            
+            let jacobian = GaussianQuadrature::calculate_jacobian_monomial(
+                &nodes,
+                &shape_function.derivatives,
+                1, // element_dim
+                2, // num_nodes  
+                3, // mesh_dim (3D space)
+                1, // element_order
+            ).unwrap();
+
+            // For a straight line from (0,0,0) to (1,0,0):
+            // x(ξ) = (1-ξ)/2 * 0 + (1+ξ)/2 * 1 = (1+ξ)/2
+            // dx/dξ = 0.5
+            // Similarly, y and z coordinates are zero, so their derivatives are zero
+            
+            // Jacobian matrix should be [dx/dξ, dy/dξ, dz/dξ] = [0.5, 0, 0]
+            let j_matrix = &jacobian.matrix;
+            
+            // Check dx/dξ = 0.5
+            assert_eq!(j_matrix[0][0].len(), 1); // Constant polynomial
+            assert!((j_matrix[0][0][0] - 0.5).abs() < 1e-12, "dx/dξ should be 0.5");
+            
+            // Check dy/dξ = 0
+            assert!((j_matrix[1][0][0]).abs() < 1e-12, "dy/dξ should be 0");
+            
+            // Check dz/dξ = 0
+            assert!((j_matrix[2][0][0]).abs() < 1e-12, "dz/dξ should be 0");
+        }
+
+        #[test]
+        fn test_1d_line_jacobian_determinant() {
+            let (_, nodes, element_type, _, _) = create_1d_line_element();
+            let shape_function = ElementType::get_shape_functions(&element_type).unwrap();
+            
+            let jacobian = GaussianQuadrature::calculate_jacobian_monomial(
+                &nodes,
+                &shape_function.derivatives,
+                1, // element_dim
+                2, // num_nodes  
+                3, // mesh_dim (3D space)
+                1, // element_order
+            ).unwrap();
+
+            // For 1D element in 3D space, determinant is metric: dx² + dy² + dz²
+            // dx/dξ = 0.5, dy/dξ = 0, dz/dξ = 0 → det = (0.5)² = 0.25
+            let det_j = &jacobian.determinant;
+            
+            assert_eq!(det_j.len(), 1); // Should be constant
+            assert!((det_j[0] - 0.25).abs() < 1e-12, "detJ should be 0.25");
+        }
+
+        #[test]
+        fn test_1d_line_inverse_jacobian() {
+            let (_, nodes, element_type, _, _) = create_1d_line_element();
+            let shape_function = ElementType::get_shape_functions(&element_type).unwrap();
+            
+            let jacobian = GaussianQuadrature::calculate_jacobian_monomial(
+                &nodes,
+                &shape_function.derivatives,
+                1, // element_dim
+                2, // num_nodes  
+                3, // mesh_dim (3D space)
+                1, // element_order
+            ).unwrap();
+
+            // For 1D in 3D, we compute pseudo-inverse
+            let inv_j = GaussianQuadrature::inverse_matrix_monomial(
+                &jacobian.matrix,
+                3, // mesh_dim
+                1, // element_dim
+            ).unwrap();
+
+            // For J = [0.5, 0, 0]^T, J⁺ = [2, 0, 0] (pseudo-inverse)
+            // Dimensions: [element_dim × mesh_dim] = [1 × 3]
+            assert_eq!(inv_j.len(), 1); // 1 row (element_dim)
+            assert_eq!(inv_j[0].len(), 3); // 3 columns (mesh_dim)
+            
+            // Check inv_j[0][0] = 2.0
+            assert!((inv_j[0][0][0] - 2.0).abs() < 1e-12, "invJ[0][0] should be 2.0");
+            assert!((inv_j[0][1][0]).abs() < 1e-12, "invJ[0][1] should be 0");
+            assert!((inv_j[0][2][0]).abs() < 1e-12, "invJ[0][2] should be 0");
+        }
+
+        #[test]
+        fn test_1d_line_mass_integrand() {
+            let (element, nodes, element_type, material_property, _) = create_1d_line_element();
+            
+            let integrand = GaussianQuadrature::calculate_integrand(
+                &IntegrationType::Mass,
+                &element_type,
+                &nodes,
+                &material_property,
+                3, // mesh_dim
+            ).unwrap();
+
+            // Mass matrix integrand: ρ * N_i * N_j * detJ
+            // ρ = 1.0, detJ = 0.25
+            // N1 = 0.5 - 0.5ξ, N2 = 0.5 + 0.5ξ
+            
+            // For 2 nodes in 3D, mass matrix is 6x6 (2 nodes × 3 DOF each)
+            assert_eq!(integrand.len(), 6);
+            assert_eq!(integrand[0].len(), 6);
+
+            // Check M11 component: ρ * N1 * N1 * detJ = 1.0 * (0.5 - 0.5ξ)² * 0.25
+            // = 0.25 * (0.25 - 0.5ξ + 0.25ξ²) = 0.0625 - 0.125ξ + 0.0625ξ²
+            let m11 = &integrand[0][0]; // First DOF of first node
+            let expected_m11 = vec![0.0625, -0.125, 0.0625]; // [constant, ξ, ξ²] coefficients
+            
+            assert_eq!(m11.len(), expected_m11.len());
+            for (actual, expected) in m11.iter().zip(expected_m11.iter()) {
+                assert!((actual - expected).abs() < 1e-12, 
+                       "M11 coefficient: expected {}, got {}", expected, actual);
+            }
+
+            // Check M12 component: ρ * N1 * N2 * detJ = 1.0 * (0.5 - 0.5ξ)(0.5 + 0.5ξ) * 0.25
+            // = 0.25 * (0.25 - 0.25ξ²) = 0.0625 - 0.0625ξ²
+            let m12 = &integrand[0][3]; // First DOF of first node × first DOF of second node
+            let expected_m12 = vec![0.0625, 0.0, -0.0625];
+            
+            assert_eq!(m12.len(), expected_m12.len());
+            for (actual, expected) in m12.iter().zip(expected_m12.iter()) {
+                assert!((actual - expected).abs() < 1e-12,
+                       "M12 coefficient: expected {}, got {}", expected, actual);
+            }
+        }
+
+        #[test]
+        fn test_1d_line_gauss_error_estimation() {
+            let (element, nodes, element_type, material_property, _) = create_1d_line_element();
+            
+            // Calculate integrand first
+            let integrand = GaussianQuadrature::calculate_integrand(
+                &IntegrationType::Mass,
+                &element_type,
+                &nodes,
+                &material_property,
+                3, // mesh_dim
+            ).unwrap();
+
+            // Test error calculation for different numbers of Gauss points
+            let error_1pt = GaussianQuadrature::calculate_error(&integrand, 1, 1).unwrap();
+            let error_2pt = GaussianQuadrature::calculate_error(&integrand, 2, 1).unwrap();
+
+            // For mass matrix with quadratic polynomials, 2-point Gauss should be exact
+            // So error for 2 points should be very small
+            let max_error_2pt = GaussianQuadrature::find_max_in_matrix(&error_2pt);
+            assert!(max_error_2pt < 1e-12, "2-point Gauss should be exact for quadratic polynomials, error: {}", max_error_2pt);
+
+            // 1-point Gauss should have some error for quadratic polynomials
+            let max_error_1pt = GaussianQuadrature::find_max_in_matrix(&error_1pt);
+            assert!(max_error_1pt > 1e-12, "1-point Gauss should have error for quadratic polynomials");
+        }
+
+        #[test]
+        fn test_1d_line_optimal_gauss_points() {
+            let (element, nodes, element_type, material_property, _) = create_1d_line_element();
+            
+            let tolerance = 1e-10;
+            
+            let result = GaussianQuadrature::find_optimal_gauss_points(
+                IntegrationType::Mass,
+                &element,
+                &element_type,
+                &nodes,
+                3, // mesh_dim
+                tolerance,
+                &material_property,
+            ).unwrap();
+
+            // For quadratic polynomials (max degree 2), theoretical points = ceil((2+1)/2) = 2
+            assert_eq!(result.theoretical_number, 2);
+            
+            // Optimal should also be 2 since it's exact
+            assert_eq!(result.optimal_number, 2);
+        }
+
+        #[test]
+        fn test_1d_line_polynomial_order_detection() {
+            let (_, nodes, element_type, material_property, _) = create_1d_line_element();
+            
+            let integrand = GaussianQuadrature::calculate_integrand(
+                &IntegrationType::Mass,
+                &element_type,
+                &nodes,
+                &material_property,
+                3, // mesh_dim
+            ).unwrap();
+
+            // Find maximum degree in the integrand matrix
+            let max_degree = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+            
+            // Mass matrix integrand for line element should have max degree 2
+            // (from N_i * N_j terms where both are linear)
+            assert_eq!(max_degree, 2);
+        }
+
+        #[test]
+        fn test_1d_line_gauss_legendre_error_function() {
+            // Test the error function directly with known polynomials
+            
+            // Quadratic polynomial: x² coefficients in graded lex order for 1D
+            // For 1D, basis is [1, x, x², x³, ...]
+            let quadratic_poly = vec![0.0, 0.0, 1.0]; // x²
+            
+            // Error for 1-point Gauss on quadratic polynomial should be non-zero
+            let error_1pt = GaussianQuadrature::gauss_legendre_error(&quadratic_poly, 1, 1).unwrap();
+            assert!(error_1pt > 0.0, "1-point Gauss should have error for quadratic polynomial");
+            
+            // Error for 2-point Gauss on quadratic polynomial should be zero (exact)
+            let error_2pt = GaussianQuadrature::gauss_legendre_error(&quadratic_poly, 2, 1).unwrap();
+            assert!(error_2pt.abs() < 1e-12, "2-point Gauss should be exact for quadratic polynomial");
+        }
+
+        #[test]
+        fn test_1d_line_mesh_level_analysis() {
+            let (_, _, _, material_property, mesh_data) = create_1d_line_element();
+            
+            let tolerance = 1e-10;
+            
+            let result = GaussianQuadrature::find_optimal_gauss_points_number_mesh(
+                &mesh_data,
+                IntegrationType::Mass,
+                tolerance,
+                &material_property,
+            ).unwrap();
+
+            // Should analyze 1 element
+            assert_eq!(result.total_elements, 1);
+            assert_eq!(result.gauss_point_numbers.len(), 1);
+            
+            let element_report = &result.gauss_point_numbers[0];
+            assert_eq!(element_report.element_id, 0); // 0-based element ID
+            assert_eq!(element_report.theoretical_number, 2);
+            assert_eq!(element_report.optimal_number, 2);
+        }
     }
 
-    // Jacobian calculation tests 
-    #[test]
-    fn test_calculate_jacobian_monomial_1d_line() {
-        let nodes = vec![
-            create_node_1d(1, 0.0),
-            create_node_1d(2, 2.0),
-        ];
-        let element = create_element(1, vec![1, 2]);
-        
-        let shape_derivatives = ElementType::get_shape_functions(&ElementType::Line)
-            .unwrap()
-            .derivatives;
+    // Additional tests for edge cases
+    mod edge_case_tests {
+        use super::*;
 
-        let result = GaussianQuadrature::calculate_jacobian_monomial(
-            &nodes,
-            &shape_derivatives,
-            1, // element_dim
-            2, // num_nodes
-            1, // mesh_dim
-            1, // element_order
-        );
-        
-        assert!(result.is_ok());
-        let jacobian = result.unwrap();
-        
-        // For a 1D line from 0 to 2, Jacobian should be 2
-        let eval_result = MonomialPolynomial::evaluate(&jacobian.determinant, (0.5, 0.0, 0.0));
-        assert!(eval_result.is_ok());
-        assert!((eval_result.unwrap() - 2.0).abs() < 1e-12);
-    }
+        fn create_zero_length_element() -> (Element, Vec<Node>, ElementType, MaterialProperty) {
+            // Test with degenerate element (both nodes at same location)
+            let element = Element {
+                id: 0,
+                nodes: vec![0, 1],
+            };
 
-    #[test]
-    fn test_calculate_jacobian_monomial_2d_triangle() {
-        let nodes = vec![
-            create_node_2d(1, 0.0, 0.0),
-            create_node_2d(2, 1.0, 0.0),
-            create_node_2d(3, 0.0, 1.0),
-        ];
-        
-        let shape_derivatives = ElementType::get_shape_functions(&ElementType::Triangle)
-            .unwrap()
-            .derivatives;
+            let nodes = vec![
+                Node {
+                    id: 0,
+                    coordinates: vec![0.0, 0.0, 0.0],
+                },
+                Node {
+                    id: 1,
+                    coordinates: vec![0.0, 0.0, 0.0], // Same as node 0
+                },
+            ];
 
-        let result = GaussianQuadrature::calculate_jacobian_monomial(
-            &nodes,
-            &shape_derivatives,
-            2, // element_dim
-            3, // num_nodes
-            2, // mesh_dim
-            1, // element_order
-        );
-        
-        assert!(result.is_ok());
-        let jacobian = result.unwrap();
-        
-        // For unit triangle, Jacobian determinant should be 1.0
-        let eval_result = MonomialPolynomial::evaluate(&jacobian.determinant, (0.333, 0.333, 0.0));
-        assert!(eval_result.is_ok());
-        assert!((eval_result.unwrap() - 1.0).abs() < 1e-12);
-    }
+            let material_property = MaterialProperty::Scalar(vec![1.0]);
 
-    #[test]
-    fn test_detect_polynomial_order_1d_basic() {
-        let coeffs = vec![1.0, 2.0, 0.0, 4.0]; // 1 + 2x + 4x³
-        let order = GaussianQuadrature::detect_polynomial_order_1d(&coeffs);
-        assert_eq!(order, 3);
-    }
+            (element, nodes, ElementType::Line, material_property)
+        }
 
-    #[test]
-    fn test_detect_polynomial_order_1d_with_tolerance() {
-        let coeffs = vec![1.0, 1e-13, 0.0, 0.0]; // Coefficients below tolerance should be ignored
-        let order = GaussianQuadrature::detect_polynomial_order_1d(&coeffs);
-        assert_eq!(order, 0);
-    }
+        #[test]
+        fn test_zero_length_element() {
+            let (element, nodes, element_type, material_property) = create_zero_length_element();
 
-    #[test]
-    fn test_detect_polynomial_order_1d_zero_polynomial() {
-        let coeffs = vec![0.0, 0.0, 0.0];
-        let order = GaussianQuadrature::detect_polynomial_order_1d(&coeffs);
-        assert_eq!(order, 0);
-    }
+            let shape_function = ElementType::get_shape_functions(&element_type).unwrap();
+            
+            // Jacobian should be zero
+            let jacobian = GaussianQuadrature::calculate_jacobian_monomial(
+                &nodes,
+                &shape_function.derivatives,
+                1, 2, 3, 1,
+            ).unwrap();
 
-    #[test]
-    fn detect_polynomial_orders_2d_basic() {
-        let mut a = vec![vec![0.0; 3]; 4];
-        a[0][0] = 1.0;
-        a[3][2] = -2.5;
+            // All Jacobian components should be zero
+            for i in 0..3 {
+                assert!((jacobian.matrix[i][0][0]).abs() < 1e-12, 
+                       "Jacobian component should be zero for degenerate element");
+            }
 
-        let (dx, dy) = GaussianQuadrature::detect_polynomial_orders_2d(&a);
-        assert_eq!((dx, dy), (3, 2));
-    }
+            // Determinant should be zero
+            assert!((jacobian.determinant[0]).abs() < 1e-12, 
+                   "detJ should be zero for degenerate element");
+        }
 
-    #[test]
-    fn detect_polynomial_orders_2d_ignores_tiny() {
-        let mut a = vec![vec![0.0; 2]; 2];
-        a[0][0] = 1e-13;  // Below tolerance - should be ignored
-        a[1][1] = 1.0;    // Above tolerance - should be counted
+        #[test]
+        fn test_constant_material_property() {
+            // Test with non-constant material property
+            let element = Element {
+                id: 0,
+                nodes: vec![0, 1],
+            };
 
-        let (dx, dy) = GaussianQuadrature::detect_polynomial_orders_2d(&a);
-        assert_eq!((dx, dy), (1, 1));
-    }
+            let nodes = vec![
+                Node {
+                    id: 0,
+                    coordinates: vec![0.0, 0.0, 0.0],
+                },
+                Node {
+                    id: 1,
+                    coordinates: vec![1.0, 0.0, 0.0],
+                },
+            ];
 
-    #[test]
-    fn detect_polynomial_orders_3d_basic() {
-        let mut a = vec![vec![vec![0.0; 4]; 2]; 3];
-        a[0][0][0] = 0.1;
-        a[2][1][3] = -7.0;
+            // Linear density: ρ(x) = 1 + x
+            // In monomial basis for 1D: [constant, x] = [1.0, 1.0]
+            let material_property = MaterialProperty::Scalar(vec![1.0, 1.0]);
 
-        let (dx, dy, dz) = GaussianQuadrature::detect_polynomial_orders_3d(&a);
-        assert_eq!((dx, dy, dz), (2, 1, 3));
-    }
+            let result = GaussianQuadrature::find_optimal_gauss_points(
+                IntegrationType::Mass,
+                &element,
+                &ElementType::Line,
+                &nodes,
+                3,
+                1e-10,
+                &material_property,
+            );
 
-    #[test]
-    fn test_factorial() {
-        assert_eq!(factorial(0), 1.0);
-        assert_eq!(factorial(5), 120.0);
-        assert!((factorial(10) - 3628800.0).abs() < 1e-6);
-    }
+            // Should succeed and find appropriate Gauss points
+            assert!(result.is_ok());
+            let report = result.unwrap();
+            
+            // With linear density and quadratic shape functions, integrand becomes cubic
+            // Theoretical points = ceil((3+1)/2) = 2, but might need more for tolerance
+            assert!(report.theoretical_number >= 2);
+        }
 
-    #[test]
-    fn test_gauss_legendre_error_1d_linear_polynomial() {
-        // Test error for linear polynomial: 1 + x
-        // With n=1 Gauss point, this should be exact (error = 0)
-        let integrand = vec![1.0, 1.0, 0.0, 0.0]; // 1 + x
-        let error = GaussianQuadrature::gauss_legendre_error(&integrand, 1, 1).unwrap();
-        assert!(error.abs() < 1e-12, "Linear polynomial should be exact with n=1, got error: {}", error);
-    }
-
-    #[test]
-    fn test_gauss_legendre_error_1d_quadratic_polynomial() {
-        // Test error for quadratic polynomial: 1 + x + x²
-        // With n=1 Gauss point, this should have non-zero error
-        // With n=2 Gauss points, this should be exact
-        let integrand = vec![1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]; // 1 + x + x²
-        
-        let error_n1 = GaussianQuadrature::gauss_legendre_error(&integrand, 1, 1).unwrap();
-        assert!(error_n1 > 0.0, "Quadratic polynomial should have error with n=1");
-        
-        let error_n2 = GaussianQuadrature::gauss_legendre_error(&integrand, 2, 1).unwrap();
-        assert!(error_n2.abs() < 1e-12, "Quadratic polynomial should be exact with n=2, got error: {}", error_n2);
-    }
-
-    #[test]
-    fn test_gauss_legendre_error_2d() {
-        // Test 2D polynomial: 1 + x + y
-        let integrand = vec![1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]; // Simplified representation
-        
-        let error = GaussianQuadrature::gauss_legendre_error(&integrand, 1, 2).unwrap();
-        // For linear polynomial in 2D with n=1, error should be small but non-zero
-        assert!(error >= 0.0);
-    }
-
-    /* 
-    #[test]
-    fn test_calculate_integrand_mass_matrix() {
-        let (element, nodes) = create_test_element_and_nodes();
-        let element_type = ElementType::Triangle;
-        let material_property = MaterialProperty::Scalar(vec![1.0]); // Use enum
-        
-        let result = GaussianQuadrature::calculate_integrand(
-            &IntegrationType::Mass,
-            &element_type,
-            &nodes,
-            &material_property, // Pass reference
-            2,
-        );
-        
-        assert!(result.is_ok());
-        let integrand = result.unwrap();
-        
-        // The integrand should be a polynomial representing ρ * ΣNᵢ² * det(J)
-        // For a unit triangle with constant density, this should be non-zero
-        assert!(!integrand.is_empty());
-        
-        // Check that the integrand has reasonable values
-        let max_coeff = integrand.iter().fold(0.0_f64, |max, &val| max.max(val.abs()));
-        assert!(max_coeff > 0.0);
-    }
-    */
-
-    #[test]
-    fn test_calculate_integrand_stiffness_matrix() {
-        let (element, nodes) = create_test_element_and_nodes();
-        let element_type = ElementType::Triangle;
-        
-        // Create a 2x2 identity matrix material property
-        let material_tensor = vec![
-            vec![vec![1.0], vec![0.0]], // D_xx = 1.0, D_xy = 0.0
-            vec![vec![0.0], vec![1.0]], // D_yx = 0.0, D_yy = 1.0
-        ];
-        let material_property = MaterialProperty::Matrix(material_tensor);
-        
-        let result = GaussianQuadrature::calculate_integrand(
-            &IntegrationType::Stiffness,
-            &element_type,
-            &nodes,
-            &material_property,
-            2,
-        );
-        
-        // This might fail due to element type limitations, but the interface should work
-        assert!(result.is_ok() || matches!(result, Err(GaussError::InvalidElement(_))));
-    }
-
-    #[test]
-    fn test_find_optimal_gauss_points_simple_case() {
-        let (element, nodes) = create_test_element_and_nodes();
-        let element_type = ElementType::Triangle;
-        let material_property = MaterialProperty::Scalar(vec![1.0]); // Use enum for constant density
-        
-        let result = GaussianQuadrature::find_optimal_gauss_points(
-            IntegrationType::Mass,
-            &element,
-            &element_type,
-            &nodes,
-            2, // mesh_dim
-            1e-6, // tolerance
-            &material_property, // Pass reference
-        );
-        
-        assert!(result.is_ok());
-        let gauss_info = result.unwrap();
-        
-        assert_eq!(gauss_info.element_id, 0);
-        assert!(gauss_info.theoretical_number >= 1);
-        assert!(gauss_info.optimal_number >= 1);
-        assert!(gauss_info.optimal_number <= gauss_info.theoretical_number);
-    }
-
-    #[test]
-    fn test_find_optimal_gauss_points_mesh() {
-        // Create a simple mesh with one triangle element
-        let nodes = vec![
-            Node { id: 1, coordinates: vec![0.0, 0.0] },
-            Node { id: 2, coordinates: vec![1.0, 0.0] },
-            Node { id: 3, coordinates: vec![0.0, 1.0] },
-        ];
-        
-        let elements = vec![Element {
-            id: 1,
-            nodes: vec![1, 2, 3],
-        }];
-        
-        let element_type_info = vec![ElementTypeInfo {
-            element_type: ElementType::Triangle,
-            num_elements: 1,
-            start_index: 0,
-            nodes_per_element: 3,
-        }];
-        
-        let mesh_data = MeshData {
-            dimension: 2,
-            num_nodes: 3,
-            min_node_index: 1,
-            nodes,
-            num_eltypes: 1,
-            elements,
-            element_type_info,
-        };
-        
-        let material_property = MaterialProperty::Scalar(vec![1.0]); // Use enum for constant density
-        
-        let result = GaussianQuadrature::find_optimal_gauss_points_number_mesh(
-            &mesh_data,
-            IntegrationType::Mass,
-            1e-6,
-            &material_property, // Pass reference
-        );
-        
-        assert!(result.is_ok());
-        let report = result.unwrap();
-        
-        assert_eq!(report.total_elements, 1);
-        assert_eq!(report.gauss_point_numbers[0].element_id, 1);
-        assert!(report.gauss_point_numbers[0].optimal_number >= 1);
-    }
-
-    #[test]
-    fn test_polynomial_coefficient_extraction() {
-        // Test the coefficient extraction functions from MonomialPolynomial
-        
-        // Create a simple 2D polynomial: 1 + 2x + 3y + 4xy
-        // In graded lexicographic order for degree 2: [1, x, y, z, x², xy, xz, y², yz, z²]
-        let poly_2d = vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0];
-        
-        // Extract 1D coefficients (only x terms)
-        let coeffs_1d = MonomialPolynomial::get_coefficients_1d(&poly_2d).unwrap();
-        assert_eq!(coeffs_1d, vec![1.0, 2.0, 0.0]); // Constant, x, x²
-        
-        // Extract 2D coefficients
-        let coeffs_2d = MonomialPolynomial::get_coefficients_2d(&poly_2d).unwrap();
-        assert_eq!(coeffs_2d[0][0], 1.0); // Constant
-        assert_eq!(coeffs_2d[1][0], 2.0); // x
-        assert_eq!(coeffs_2d[0][1], 3.0); // y
-        assert_eq!(coeffs_2d[1][1], 4.0); // xy
-    }
-    /* 
-    #[test]
-    fn test_integration_with_varying_material_properties() {
-        // Test integration with non-constant material properties
-        let (element, nodes) = create_test_element_and_nodes();
-        let element_type = ElementType::Triangle;
-        
-        // Linear density variation: ρ(x) = 1 + x
-        let material_property = MaterialProperty::Scalar(vec![1.0, 1.0]); // 1.0 + 1.0*x
-        
-        let result = GaussianQuadrature::calculate_integrand(
-            &IntegrationType::Mass,
-            &element_type,
-            &nodes,
-            &material_property, // Use enum
-            2,
-        );
-        
-        assert!(result.is_ok());
-        let integrand = result.unwrap();
-        
-        // The integrand should be more complex due to varying density
-        assert!(!integrand.is_empty());
-        
-        // Find optimal Gauss points for this more complex case
-        let gauss_result = GaussianQuadrature::find_optimal_gauss_points(
-            IntegrationType::Mass,
-            &element,
-            &element_type,
-            &nodes,
-            2,
-            1e-6,
-            &material_property, // Use enum
-        );
-        
-        assert!(gauss_result.is_ok());
-    }
-    */
-    #[test]
-    fn test_material_property_enum_methods() {
-        // Test scalar material property
-        let scalar_prop = MaterialProperty::Scalar(vec![1.0, 2.0, 3.0]);
-        assert!(scalar_prop.as_scalar().is_ok());
-        assert!(scalar_prop.as_matrix().is_err());
-        
-        // Test matrix material property
-        let matrix_prop = MaterialProperty::Matrix(vec![
-            vec![vec![1.0], vec![0.0]],
-            vec![vec![0.0], vec![1.0]],
-        ]);
-        assert!(matrix_prop.as_matrix().is_ok());
-        assert!(matrix_prop.as_scalar().is_err());
-    }
-
-    #[test]
-    fn test_integration_type_material_mismatch() {
-        let (element, nodes) = create_test_element_and_nodes();
-        let element_type = ElementType::Triangle;
-        
-        // Try to use scalar material with stiffness integration (should fail)
-        let scalar_prop = MaterialProperty::Scalar(vec![1.0]);
-        let result_stiffness = GaussianQuadrature::calculate_integrand(
-            &IntegrationType::Stiffness,
-            &element_type,
-            &nodes,
-            &scalar_prop,
-            2,
-        );
-        assert!(matches!(result_stiffness, Err(GaussError::InvalidMaterialProperty(_))));
-        
-        // Try to use matrix material with mass integration (should fail)
-        let matrix_prop = MaterialProperty::Matrix(vec![
-            vec![vec![1.0], vec![0.0]],
-            vec![vec![0.0], vec![1.0]],
-        ]);
-        let result_mass = GaussianQuadrature::calculate_integrand(
-            &IntegrationType::Mass,
-            &element_type,
-            &nodes,
-            &matrix_prop,
-            2,
-        );
-        assert!(matches!(result_mass, Err(GaussError::InvalidMaterialProperty(_))));
+        #[test]
+        fn test_element_node_retrieval() {
+            let (element, nodes, _, _, _) = super::line_element_1d_tests::create_1d_line_element();
+            
+            // Test that GeometricAnalysis::get_element_nodes works correctly with 0-based indexing
+            let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+            
+            assert_eq!(element_nodes.len(), 2);
+            assert_eq!(element_nodes[0].id, 0);
+            assert_eq!(element_nodes[1].id, 1);
+            assert_eq!(element_nodes[0].coordinates, vec![0.0, 0.0, 0.0]);
+            assert_eq!(element_nodes[1].coordinates, vec![1.0, 0.0, 0.0]);
+        }
     }
 }
