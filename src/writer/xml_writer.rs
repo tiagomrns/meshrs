@@ -315,16 +315,78 @@ impl VTUWriter {
         let mut cell_attributes = Vec::new();
 
         // Add Element Quality Data as Cell Attributes
-        let mut quality_values = vec![0.0; mesh_data.elements.len()];
+        let mut signed_volume_values = vec![0.0; mesh_data.elements.len()];
         for quality in &element_quality.element_qualities {
-            if quality.element_id < quality_values.len() {
-                quality_values[quality.element_id] = quality.det_jacobian_value;
+            if quality.element_id < signed_volume_values.len() {
+                signed_volume_values[quality.element_id] = quality.signed_volume_metric;
             }
         }
         
-        let quality_attr = Attribute::scalars("Element_Quality", 1)
-            .with_data(IOBuffer::F64(quality_values));
-        cell_attributes.push(quality_attr);
+        let signed_volume_attr = Attribute::scalars("Signed_Volume_Metric", 1)
+            .with_data(IOBuffer::F64(signed_volume_values));
+        cell_attributes.push(signed_volume_attr);
+
+        // Add Shape Metric as Cell Attributes
+        let mut shape_metric_values = vec![0.0; mesh_data.elements.len()];
+        for quality in &element_quality.element_qualities {
+            if quality.element_id < shape_metric_values.len() {
+                shape_metric_values[quality.element_id] = quality.shape_metric;
+            }
+        }
+        
+        let shape_metric_attr = Attribute::scalars("Shape_Metric", 1)
+            .with_data(IOBuffer::F64(shape_metric_values));
+        cell_attributes.push(shape_metric_attr);
+
+        // Add Skewness Metric as Cell Attributes
+        let mut skewness_metric_values = vec![0.0; mesh_data.elements.len()];
+        for quality in &element_quality.element_qualities {
+            if quality.element_id < skewness_metric_values.len() {
+                skewness_metric_values[quality.element_id] = quality.skewness_metric;
+            }
+        }
+        
+        let skewness_metric_attr = Attribute::scalars("Skewness_Metric", 1)
+            .with_data(IOBuffer::F64(skewness_metric_values));
+        cell_attributes.push(skewness_metric_attr);
+
+        // Add Length Ratio as Cell Attributes
+        let mut length_ratio_values = vec![0.0; mesh_data.elements.len()];
+        for quality in &element_quality.element_qualities {
+            if quality.element_id < length_ratio_values.len() {
+                length_ratio_values[quality.element_id] = quality.length_ratio;
+            }
+        }
+        
+        let length_ratio_attr = Attribute::scalars("Length_Ratio", 1)
+            .with_data(IOBuffer::F64(length_ratio_values));
+        cell_attributes.push(length_ratio_attr);
+
+        // Add Orientation Metric as Cell Attributes
+        let mut orientation_metric_values = vec![0.0; mesh_data.elements.len()];
+        for quality in &element_quality.element_qualities {
+            if quality.element_id < orientation_metric_values.len() {
+                orientation_metric_values[quality.element_id] = quality.orientation_metric;
+            }
+        }
+        
+        let orientation_metric_attr = Attribute::scalars("Orientation_Metric", 1)
+            .with_data(IOBuffer::F64(orientation_metric_values));
+        cell_attributes.push(orientation_metric_attr);
+
+        // Add Jacobian Ratio as Cell Attributes
+        let mut jacobian_ratio_values = vec![0.0; mesh_data.elements.len()];
+        for quality in &element_quality.element_qualities {
+            if quality.element_id < jacobian_ratio_values.len() {
+                jacobian_ratio_values[quality.element_id] = quality.jacobian_ratio;
+            }
+        }
+        
+        let jacobian_ratio_attr = Attribute::scalars("Jacobian_Ratio", 1)
+            .with_data(IOBuffer::F64(jacobian_ratio_values));
+        cell_attributes.push(jacobian_ratio_attr);
+
+
 
         // Add Number of Gaussian Points as Cell Attributes
         let mut gauss_points_values = vec![0.0; mesh_data.elements.len()];

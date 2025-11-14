@@ -60,10 +60,10 @@ impl MonomialPolynomial {
         let mut basis = Vec::new();
         
         // Iterate through all possible total degrees
-        for total_degree in 0..max_degree {
+        for total_degree in 0..=max_degree {
             // Generate all combinations (i, j, k) such that i + j + k = total_degree
-            for i in (0..total_degree).rev() {
-                for j in (0..(total_degree - i)).rev() {
+            for i in (0..=total_degree).rev() {
+                for j in (0..=(total_degree - i)).rev() {
                     let k = total_degree - i - j;
                     basis.push((i, j, k));
                 }
@@ -102,8 +102,10 @@ impl MonomialPolynomial {
 
     // Multiply two polynomials using distributive property
     pub fn multiply(first: &[f64], second: &[f64]) -> Result<Vec<f64>, &'static str> {
-        let max_deg_first = Self::infer_max_degree(first.len())?;
-        let max_deg_second = Self::infer_max_degree(second.len())?;
+        let max_deg_first = Self::infer_max_degree(first.len())
+            .map_err(|_| "First polynomial has invalid coefficient length")?;
+        let max_deg_second = Self::infer_max_degree(second.len())
+            .map_err(|_| "Second polynomial has invalid coefficient length")?;
 
         // Generate basis for both polynomials
         let basis_first = Self::generate_basis(max_deg_first);
@@ -120,7 +122,7 @@ impl MonomialPolynomial {
             for (j, &(exp_j_x, exp_j_y, exp_j_z)) in basis_second.iter().enumerate() {
                 let coeff_product = first[i] * second[j];
                 
-                if coeff_product.abs() < 1e-15 {
+                if coeff_product.abs() < 1e-12 {
                     continue; // Skip negligible terms for numerical stability
                 }
                 
@@ -335,7 +337,7 @@ impl ElementType {
         }
     }
 
-    /// Monomial shape functions and their derivatives for standard elements in transposed format N'
+    /// Monomial shape functions and their derivatives for standard elements N and dN/dxi
     /// Monomial rule for Graded Lexicographic Order:
     pub fn get_shape_functions(
         element_type: &ElementType
@@ -1774,15 +1776,13 @@ pub struct ElementValueData {
 
 #[derive(Debug, Clone)]
 pub struct ElementQuality {
-    pub element_id: usize,      // ID of the element being analyzed
-    pub det_jacobian_value: f64,      // determinant of the Jacobian matrix  //delete this volume shape can be used instead
+    pub element_id: usize,          // ID of the element being analyzed
     pub shape_metric: f64,          // shape metric value
     pub skewness_metric: f64,       // skewness metric value
-    pub length_ratio: f64,        // length ratio metric value
-    pub orientation_metric: f64,   // orientation metric value
-    pub volume_metric: f64,             // volume of the element
-    pub volume_shape_metric: f64, // volume shape metric
-    pub volume_shape_orientation_metric: f64, // volume shape orientation
+    pub length_ratio: f64,          // length ratio metric value
+    pub orientation_metric: f64,    // orientation metric value
+    pub signed_volume_metric: f64,  // signed volume metric
+    pub jacobian_ratio: f64,        // max(detJ) / min(detJ)
 
     // more quality metrics can be added here
 }

@@ -595,12 +595,28 @@ impl GaussianQuadrature {
         coordinate_maps: &Vec<Vec<f64>>,
     ) -> Result<Vec<f64>, GaussError> {
         
-        // Infer polynomial degree from coefficient vector length
-        let max_degree = MonomialPolynomial::infer_max_degree(physical_poly.len())
+        // Get the degree of the physical polynomial
+        let physical_degree = MonomialPolynomial::infer_max_degree(physical_poly.len())
             .map_err(|e| GaussError::GeometryError(e.to_string()))?;
         
-        // Generate basis: [(i,j,k)] for all terms in graded lexicographic order
-        let basis = MonomialPolynomial::generate_basis(max_degree);
+        // Get the degrees of the coordinate mappings
+        let mut coord_degrees = Vec::new();
+        for coord_map in coordinate_maps {
+            let deg = MonomialPolynomial::infer_max_degree(coord_map.len())
+                .map_err(|e| GaussError::GeometryError(e.to_string()))?;
+            coord_degrees.push(deg);
+        }
+        
+        // The maximum degree after substitution is the sum of the physical degree 
+        // and the maximum coordinate degree times the maximum exponent
+        // But we need to be conservative - let's compute it properly
+        
+        // For safety, use a conservative estimate: physical_degree + max_coord_degree * physical_degree
+        let max_coord_degree = coord_degrees.iter().max().unwrap_or(&0);
+        let conservative_max_degree = physical_degree + max_coord_degree * physical_degree;
+        
+        // Generate basis for the conservative maximum degree
+        let basis = MonomialPolynomial::generate_basis(conservative_max_degree);
         
         let mut result = vec![];
         
@@ -621,7 +637,7 @@ impl GaussianQuadrature {
             let mut term_poly = vec![coefficient];
             
             // Multiply by x(ξ,η,ψ)^i
-            if i > 0 {
+            if i > 0 && coordinate_maps.len() > 0 {
                 let x_power = Self::polynomial_power(&coordinate_maps[0], i as usize)?;
                 term_poly = MonomialPolynomial::multiply(&term_poly, &x_power)
                     .map_err(|e| GaussError::GeometryError(e.to_string()))?;
@@ -733,7 +749,8 @@ impl GaussianQuadrature {
             // Square matrices - inverse has same dimensions [element_dim × mesh_dim] = [mesh_dim × element_dim]
             (1, 1) => {
                 let mut inverse_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; mesh_dim]; element_dim];
-                let inv_determinant = Self::calculate_inverse_determinant_monomial(matrix, 1, 1)?;
+                let det_matrix = &matrix[0][0];
+                let inv_determinant = Self::calculate_inverse_monomial(&det_matrix)?;
                 inverse_matrix[0][0] = inv_determinant;
                 Ok(inverse_matrix)
             },
@@ -741,7 +758,8 @@ impl GaussianQuadrature {
                 // Combined square matrix case for 2x2 and 3x3
                 let mut inverse_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; mesh_dim]; element_dim];
                 let adjoint = Self::calculate_adjoint_monomial(matrix, element_dim)?;
-                let inv_determinant = Self::calculate_inverse_determinant_monomial(matrix, mesh_dim, element_dim)?;
+                let det_matrix = Self::calculate_determinant_monomial(matrix, mesh_dim, element_dim)?;
+                let inv_determinant = Self::calculate_inverse_monomial(&det_matrix)?;
                 for i in 0..element_dim {
                     for j in 0..mesh_dim {
                         inverse_matrix[i][j] = MonomialPolynomial::multiply(&adjoint[i][j], &inv_determinant)?;
@@ -765,14 +783,13 @@ impl GaussianQuadrature {
                 }
                 g_matrix[0][0] = sum;
 
-                // Compute G⁻¹ = adj(G)/det(G)
-                let adj_g = Self::calculate_adjoint_monomial(&g_matrix, 1)?;
-                let inv_det_g = Self::calculate_inverse_determinant_monomial(&g_matrix, 1, 1)?;
-                let inv_g = MonomialPolynomial::multiply(&adj_g[0][0], &inv_det_g)?;
-                
+                // Compute G⁻¹ = 1/det(G)
+                let det_g = &g_matrix[0][0];
+                let inv_det_g = Self::calculate_inverse_monomial(&det_g)?;
+
                 // Compute J⁺ = G⁻¹Jᵀ = [1 × 1] * [1 × mesh_dim] = [1 × mesh_dim]
                 for j in 0..mesh_dim {
-                    inverse_matrix[0][j] = MonomialPolynomial::multiply(&inv_g, &matrix[j][0])?;
+                    inverse_matrix[0][j] = MonomialPolynomial::multiply(&inv_det_g, &matrix[j][0])?;
                 }
                 
                 Ok(inverse_matrix)
@@ -796,7 +813,8 @@ impl GaussianQuadrature {
 
                 // Compute G⁻¹ = adj(G)/det(G)
                 let adj_g = Self::calculate_adjoint_monomial(&g_matrix, 2)?;
-                let inv_det_g = Self::calculate_inverse_determinant_monomial(&g_matrix, 2, 2)?;
+                let det_g = Self::calculate_determinant_monomial(&g_matrix, 2, 2)?;
+                let inv_det_g = Self::calculate_inverse_monomial(&det_g)?;
                 let mut inv_g = vec![vec![vec![]; 2]; 2];
                 for i in 0..2 {
                     for j in 0..2 {
@@ -925,11 +943,14 @@ impl GaussianQuadrature {
             }
 
             // 1D elements in 2D space: metric = dx² + dy² (squared length)
-            (2, 1) => {
+            (2, 1) => { 
                 let dx_sq = MonomialPolynomial::multiply(&matrix[0][0], &matrix[0][0])?;
                 let dy_sq = MonomialPolynomial::multiply(&matrix[1][0], &matrix[1][0])?;
-                MonomialPolynomial::add(&dx_sq, &dy_sq)
-                    .map_err(|e| ElementError::GeometryError(format!("Add failed: {}", e)))
+                let squared_length = MonomialPolynomial::add(&dx_sq, &dy_sq)
+                    .map_err(|e| ElementError::GeometryError(format!("Add failed: {}", e)))?;
+                
+                // Take square root to get actual length
+                Self::calculate_sqrt_monomial(&squared_length)
             }
 
             // 1D elements in 3D space: metric = dx² + dy² + dz² (squared length)
@@ -938,8 +959,11 @@ impl GaussianQuadrature {
                 let dy_sq = MonomialPolynomial::multiply(&matrix[1][0], &matrix[1][0])?;
                 let dz_sq = MonomialPolynomial::multiply(&matrix[2][0], &matrix[2][0])?;
                 let temp = MonomialPolynomial::add(&dx_sq, &dy_sq)?;
-                MonomialPolynomial::add(&temp, &dz_sq)
-                    .map_err(|e| ElementError::GeometryError(format!("Add failed: {}", e)))
+                let squared_length = MonomialPolynomial::add(&temp, &dz_sq)
+                    .map_err(|e| ElementError::GeometryError(format!("Add failed: {}", e)))?;
+                
+                // Take square root to get actual length
+                Self::calculate_sqrt_monomial(&squared_length)
             }
 
             // 2D elements in 3D space: metric determinant from first fundamental form
@@ -961,8 +985,11 @@ impl GaussianQuadrature {
                 // det(G) = g00*g11 - g01*g10
                 let g00_g11 = MonomialPolynomial::multiply(&g[0][0], &g[1][1])?;
                 let g01_g10 = MonomialPolynomial::multiply(&g[0][1], &g[1][0])?;
-                MonomialPolynomial::add(&g00_g11, &MonomialPolynomial::multiply_scalar(&g01_g10, -1.0))
-                    .map_err(|e| ElementError::GeometryError(format!("Metric det failed: {}", e)))
+                let squared_area = MonomialPolynomial::add(&g00_g11, &MonomialPolynomial::multiply_scalar(&g01_g10, -1.0))
+                    .map_err(|e| ElementError::GeometryError(format!("Metric det failed: {}", e)))?;
+                
+                // Take square root to get actual area
+                Self::calculate_sqrt_monomial(&squared_area)
             }
 
             // Unsupported matrix dimensions
@@ -973,24 +1000,73 @@ impl GaussianQuadrature {
         }
     }
 
+    /// Calculate square root of Jacobian determinant/metric for polynomial matrices
+    pub fn calculate_sqrt_monomial(
+        poly: &Vec<f64>,
+    ) -> Result<Vec<f64>, ElementError> {
+        let wished_n = 5; // 5-term binomial expansion
+        
+        // Handle zero determinant
+        if poly[0].abs() < 1e-12 {
+            return Err(ElementError::GeometryError(
+                "Cannot take square root of zero determinant".to_string()
+            ));
+        }
+        
+        // For constant determinant, return simple square root
+        if poly.len() == 1 {
+            return Ok(vec![poly[0].sqrt()]);
+        }
+        
+        // Normalize: p(x) = a₀ * (1 + q(x)) where q(x) = (p(x)/a₀ - 1)
+        let a0 = poly[0];
+        let sqrt_a0 = a0.sqrt();
+        let normalized_poly = MonomialPolynomial::multiply_scalar(&poly, 1.0/a0);
+
+        // Create q(x) = normalized_poly - 1
+        let mut q = normalized_poly.clone();
+        q[0] = 0.0; // Now q(x) = p(x)/a₀ - 1
+        
+        // Binomial coefficients for sqrt(1+x): [1, 1/2, -1/8, 1/16, -5/128]
+        let binomial_coeffs = [1.0, 0.5, -0.125, 0.0625, -0.0390625];  // for 5 terms
+        
+        let mut term = vec![vec![]; wished_n];
+        term[0] = vec![1.0]; // Constant term is 1
+        
+        // Build terms: term[k] = q^k
+        term[1] = q.clone();
+        for i in 2..wished_n {
+            term[i] = MonomialPolynomial::multiply(&term[i-1], &q)
+                .map_err(|e| ElementError::GeometryError(format!("Failed to compute q power {}: {}", i, e)))?;
+        }
+        
+        // Sum the series: result = sum_{k=0}^{4} [binomial_coeffs[k] * term[k]]
+        let mut result = vec![0.0];
+        for j in 0..wished_n {
+            let scaled_term = MonomialPolynomial::multiply_scalar(&term[j], binomial_coeffs[j]);
+            result = MonomialPolynomial::add(&result, &scaled_term)
+                .map_err(|e| ElementError::GeometryError(format!("Failed to compute sqrt sum: {}", e)))?;
+        }
+        
+        // Multiply by sqrt(a₀)
+        Ok(MonomialPolynomial::multiply_scalar(&result, sqrt_a0))
+    }
+
     /// Calculate inverse of Jacobian determinant/metric for polynomial matrices
-    pub fn calculate_inverse_determinant_monomial( 
-        matrix: &Vec<Vec<Vec<f64>>>,
-        mesh_dim: usize,
-        element_dim: usize,
+    pub fn calculate_inverse_monomial( 
+        poly: &Vec<f64>, 
     ) -> Result<Vec<f64>, ElementError> {
         let wished_n = 5; // Can be parameterized later
-        let determinant = Self::calculate_determinant_monomial(matrix, mesh_dim, element_dim)?;
-    
-        let nominal_determinant = MonomialPolynomial::multiply_scalar(&determinant, 1.0/determinant[0]);
-        let mut term = vec![vec![0.0; nominal_determinant.len()]; wished_n];
-        term[0] = vec![1.0, 0.0, 0.0, 0.0]; // Constant term is 1
-        term[1] = nominal_determinant;
+
+        let nominal_poly = MonomialPolynomial::multiply_scalar(&poly, 1.0/poly[0]);
+        let mut term = vec![vec![]; wished_n];
+        term[0] = vec![1.0]; // Constant term is 1
+        term[1] = nominal_poly;
         for i in 2..wished_n {
             term[i] = MonomialPolynomial::multiply(&term[i-1], &term[1])
                 .map_err(|e| ElementError::GeometryError(format!("Failed to compute inverse determinant power {}: {}", i, e)))?;
         }
-        let mut result = vec![0.0; term[0].len()];
+        let mut result = vec![0.0];
         for j in 0..wished_n {
             result = MonomialPolynomial::add(&result, &term[j])
                 .map_err(|e| ElementError::GeometryError(format!("Failed to compute inverse determinant sum: {}", e)))?;
