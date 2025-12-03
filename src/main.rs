@@ -131,41 +131,67 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
                         MaterialProperty::Scalar(coefficients)
                     }
                     IntegrationType::Stiffness => {
-                        // For stiffness: matrix format "rows,cols,values..."
-                        let parts: Vec<&str> = args[i].split(',').collect();
-                        if parts.len() < 2 {
-                            return Err("For stiffness matrix, provide: rows,cols,values...".to_string());
+                        // For stiffness: each matrix component is a polynomial
+                        // New Format: "size;c00_coeffs;c01_coeffs;...;cNN_coeffs"
+                        // where each component's coefficients are comma-separated
+                        // Example: "3;1.0,0.5;0.2;0.0;0.2;1.0,0.3;0.0;0.0;0.0;0.5"
+                        
+                        let parts: Vec<&str> = args[i].split(';').collect();
+                        if parts.is_empty() {
+                            return Err("For stiffness matrix, provide: size;c00;c01;...".to_string());
                         }
                         
-                        let rows: usize = parts[0].parse()
-                            .map_err(|_| format!("Invalid rows: {}", parts[0]))?;
-                        let cols: usize = parts[1].parse()
-                            .map_err(|_| format!("Invalid cols: {}", parts[1]))?;
+                        // First value is the matrix size (1, 3, or 6)
+                        let matrix_size: usize = parts[0].trim().parse()
+                            .map_err(|_| format!("Invalid matrix size: {}", parts[0]))?;
                         
-                        let expected_values = rows * cols;
-                        if parts.len() < 2 + expected_values {
+                        // Validate matrix size based on dimensionality
+                        if matrix_size != 1 && matrix_size != 3 && matrix_size != 6 {
                             return Err(format!(
-                                "Expected {} values for {}x{} matrix, got {}",
-                                expected_values, rows, cols, parts.len() - 2
+                                "Matrix size must be 1 (1D), 3 (2D), or 6 (3D), got {}",
+                                matrix_size
                             ));
                         }
                         
-                        let values: Vec<f64> = parts[2..2 + expected_values]
-                            .iter()
-                            .map(|s| s.parse::<f64>())
-                            .collect::<Result<Vec<f64>, _>>()
-                            .map_err(|_| format!("Invalid matrix value in: {}", args[i]))?;
+                        // Total number of matrix components
+                        let num_components = matrix_size * matrix_size;
                         
-                        // Convert to 3D tensor format: [alpha][beta][coefficients]
-                        let mut material_tensor = vec![vec![vec![]; cols]; rows];
-                        let mut index = 0;
-                        for i in 0..rows {
-                            for j in 0..cols {
-                                // Each component is a constant polynomial
-                                material_tensor[i][j] = vec![values[index]];
-                                index += 1;
-                            }
+                        // Remaining parts are polynomial coefficients for each component
+                        let component_parts = &parts[1..];
+                        
+                        if component_parts.is_empty() {
+                            return Err("No coefficients provided for stiffness matrix".to_string());
                         }
+                        
+                        if component_parts.len() != num_components {
+                            return Err(format!(
+                                "Expected {} components ({}x{} matrix), got {}. Format: size;c00;c01;...;cNN",
+                                num_components, matrix_size, matrix_size, component_parts.len()
+                            ));
+                        }
+                        
+                        // Parse each component's polynomial coefficients
+                        let mut material_tensor = vec![vec![vec![]; matrix_size]; matrix_size];
+                        
+                        for (idx, component_str) in component_parts.iter().enumerate() {
+                            // Parse comma-separated coefficients for this component
+                            let coefficients: Vec<f64> = component_str
+                                .split(',')
+                                .map(|s| s.trim().parse::<f64>())
+                                .collect::<Result<Vec<f64>, _>>()
+                                .map_err(|_| format!("Invalid coefficient in component {}: '{}'", idx, component_str))?;
+                            
+                            if coefficients.is_empty() {
+                                return Err(format!("Component {} has no coefficients", idx));
+                            }
+                            
+                            // Convert flat index to (i, j) matrix indices (row-major order)
+                            let i = idx / matrix_size;
+                            let j = idx % matrix_size;
+                            
+                            material_tensor[i][j] = coefficients;
+                        }
+                        
                         MaterialProperty::Matrix(material_tensor)
                     }
                 };
@@ -282,7 +308,7 @@ fn print_usage(program_name: &str) {
     eprintln!("  {} mesh.mphtxt --optimize-gauss --mass-integration --material-property 1.0,0.5", program_name); 
     eprintln!("  {} mesh.mphtxt --optimize-gauss --gauss-tolerance 1e-8 # Custom tolerance", program_name); 
     eprintln!("  {} mesh.mphtxt --analyze-mesh --optimize-gauss # Both analysis and optimization", program_name); 
-    eprintln!("  {} mesh.mphtxt --optimize-gauss --stiffness-integration --material-property 2,2,2.0,0.5,0.5,1.0", program_name); // Stiffness example
+    eprintln!("  {} mesh.mphtxt --optimize-gauss --stiffness-integration --material-property '3;2.0,2.0;0.5,0.0;0.5;1.0;0.0;0.0,1.2;0.7;1.0,1.2,2.0;1.0'", program_name); // Stiffness example
 }
 
 /// Perform mesh quality analysis and write results to text file 
@@ -321,7 +347,9 @@ fn optimize_gaussian_quadrature(
     
     let output_path = output_dir.join(format!("{}_gauss_optimization.txt", mesh_name));
     
-    match GaussianQuadrature::find_optimal_gauss_points_number_mesh(mesh_data, integration_type, tolerance, material_property) {
+    match GaussianQuadrature::find_optimal_gauss_points_number_mesh(
+        mesh_data, integration_type, tolerance, material_property
+    ) {
         Ok(optimization_results) => {
             let mut file = File::create(&output_path)
                 .map_err(|e| format!("Failed to create optimization file: {}", e))?;
@@ -329,11 +357,14 @@ fn optimize_gaussian_quadrature(
             writeln!(file, "{:#?}", optimization_results)
                 .map_err(|e| format!("Failed to write optimization results: {}", e))?;
             
-            println!("Gaussian quadrature optimization written to: {}", output_path.display());
+            println!("Gaussian quadrature optimization completed successfully");
+            println!("Successfully analyzed {} elements", optimization_results.total_elements);
             Ok(())
         },
         Err(e) => {
-            Err(format!("Gaussian quadrature optimization failed: {:?}", e))
+            let error_msg = format!("Gaussian quadrature optimization failed: {}", e);
+            println!("{}", error_msg);
+            Err(error_msg)
         }
     }
 }

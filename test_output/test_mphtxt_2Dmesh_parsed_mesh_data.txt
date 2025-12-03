@@ -1,0 +1,313 @@
+MeshData {
+    dimension: 2,
+    num_nodes: 28,
+    min_node_index: 0,
+    nodes: [
+        Node {
+            id: 0,
+            coordinates: [
+                -2.25,
+                0.75,
+            ],
+        },
+        Node {
+            id: 1,
+            coordinates: [
+                -1.25,
+                0.25,
+            ],
+        },
+        Node {
+            id: 2,
+            coordinates: [
+                -0.25,
+                1.25,
+            ],
+        },
+        Node {
+            id: 3,
+            coordinates: [
+                0.25,
+                0.25,
+            ],
+        },
+        Node {
+            id: 4,
+            coordinates: [
+                1.25,
+                1.25,
+            ],
+        },
+        Node {
+            id: 5,
+            coordinates: [
+                0.5,
+                1.0,
+            ],
+        },
+        Node {
+            id: 6,
+            coordinates: [
+                1.75,
+                0.25,
+            ],
+        },
+        Node {
+            id: 7,
+            coordinates: [
+                2.75,
+                0.25,
+            ],
+        },
+        Node {
+            id: 8,
+            coordinates: [
+                2.25,
+                1.25,
+            ],
+        },
+        Node {
+            id: 9,
+            coordinates: [
+                -2.75,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 10,
+            coordinates: [
+                -1.75,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 11,
+            coordinates: [
+                -2.25,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 12,
+            coordinates: [
+                -2.25,
+                -1.4,
+            ],
+        },
+        Node {
+            id: 13,
+            coordinates: [
+                -2.5,
+                -0.6,
+            ],
+        },
+        Node {
+            id: 14,
+            coordinates: [
+                -2.0,
+                -0.6,
+            ],
+        },
+        Node {
+            id: 15,
+            coordinates: [
+                -1.25,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 16,
+            coordinates: [
+                -0.25,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 17,
+            coordinates: [
+                -1.25,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 18,
+            coordinates: [
+                -0.25,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 19,
+            coordinates: [
+                0.25,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 20,
+            coordinates: [
+                1.25,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 21,
+            coordinates: [
+                0.25,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 22,
+            coordinates: [
+                1.25,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 23,
+            coordinates: [
+                0.75,
+                -1.4,
+            ],
+        },
+        Node {
+            id: 24,
+            coordinates: [
+                0.1,
+                -0.75,
+            ],
+        },
+        Node {
+            id: 25,
+            coordinates: [
+                0.75,
+                -0.75,
+            ],
+        },
+        Node {
+            id: 26,
+            coordinates: [
+                1.4,
+                -0.75,
+            ],
+        },
+        Node {
+            id: 27,
+            coordinates: [
+                0.75,
+                -0.1,
+            ],
+        },
+    ],
+    num_eltypes: 7,
+    elements: [
+        Element {
+            id: 0,
+            nodes: [
+                0,
+            ],
+        },
+        Element {
+            id: 1,
+            nodes: [
+                1,
+                2,
+            ],
+        },
+        Element {
+            id: 2,
+            nodes: [
+                3,
+                4,
+                5,
+            ],
+        },
+        Element {
+            id: 3,
+            nodes: [
+                6,
+                7,
+                8,
+            ],
+        },
+        Element {
+            id: 4,
+            nodes: [
+                9,
+                10,
+                11,
+                12,
+                14,
+                13,
+            ],
+        },
+        Element {
+            id: 5,
+            nodes: [
+                15,
+                16,
+                18,
+                17,
+            ],
+        },
+        Element {
+            id: 6,
+            nodes: [
+                19,
+                20,
+                22,
+                21,
+                23,
+                26,
+                27,
+                24,
+                25,
+            ],
+        },
+    ],
+    element_type_info: [
+        ElementTypeInfo {
+            element_type: Vertex,
+            num_elements: 1,
+            start_index: 0,
+            nodes_per_element: 1,
+        },
+        ElementTypeInfo {
+            element_type: Line,
+            num_elements: 1,
+            start_index: 1,
+            nodes_per_element: 2,
+        },
+        ElementTypeInfo {
+            element_type: QuadraticEdge,
+            num_elements: 1,
+            start_index: 2,
+            nodes_per_element: 3,
+        },
+        ElementTypeInfo {
+            element_type: Triangle,
+            num_elements: 1,
+            start_index: 3,
+            nodes_per_element: 3,
+        },
+        ElementTypeInfo {
+            element_type: QuadraticTriangle,
+            num_elements: 1,
+            start_index: 4,
+            nodes_per_element: 6,
+        },
+        ElementTypeInfo {
+            element_type: Quad,
+            num_elements: 1,
+            start_index: 5,
+            nodes_per_element: 4,
+        },
+        ElementTypeInfo {
+            element_type: BiquadraticQuad,
+            num_elements: 1,
+            start_index: 6,
+            nodes_per_element: 9,
+        },
+    ],
+}

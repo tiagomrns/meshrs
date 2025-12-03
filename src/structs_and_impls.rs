@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-
+// use std::sync::OnceLock;
 use vtkio::model::CellType;  
 use crate::error::*;                     // Import mesh data structures and error types from error module
 
@@ -26,15 +26,17 @@ pub struct MonomialPolynomial {
     // Order: [1, x, y, z, x², xy, xz, y², yz, z², x³, x²y, x²z, xy², xyz, xz², y³, y²z, yz², z³, ...]
 }
 
+
 impl MonomialPolynomial {
     pub fn new(coefficients: Vec<f64>) -> Self {
-        Self { coefficients }
+        // Always create a valid polynomial, even if trimming fails
+        let trimmed = Self::trim_to_valid_length_fallback(&coefficients);
+        Self { coefficients: trimmed }
     }
 
     // Infer max_degree from coefficient vector length (always 3D)
     // Uses formula: length = (max_degree + 1) * (max_degree + 2) * (max_degree + 3) / 6
-    pub fn infer_max_degree(len: usize) -> Result<u32, &'static str> {
-        // For 3D: length = (max_degree + 1) * (max_degree + 2) * (max_degree + 3) / 6
+    pub fn infer_max_degree(len: usize) -> Result<u32, PolynomialError> {
         for max_degree in 0..=100 {
             let expected = ((max_degree + 1) * (max_degree + 2) * (max_degree + 3) / 6) as usize;
             if expected == len {
@@ -44,8 +46,7 @@ impl MonomialPolynomial {
                 break;
             }
         }
-        
-        Err("Coefficient vector length does not correspond to a valid 3D polynomial degree")
+        Err(PolynomialError::InvalidCoefficientLength(len))
     }
 
     // Calculate expected length for given max_degree (always 3D)
@@ -73,94 +74,346 @@ impl MonomialPolynomial {
         basis
     }
 
-    // Map exponent to index: (i+j+k)*(i+j+k+1)*(i+j+k+2)/6 + (j+k)*(j+k+1)/2 + k
     // This is the combinatorial formula for graded lexicographic ordering in 3D
     fn map_index(exponent: (u32, u32, u32)) -> usize {
         let (i, j, k) = exponent;
         let n = i + j + k;
-        ((n * (n + 1) * (n + 2)) / 6 + ((j + k) * (j + k + 1)) / 2 + k) as usize
-    }
-
-    // Add two polynomials
-    pub fn add(first: &[f64], second: &[f64]) -> Result<Vec<f64>, &'static str> {
-        let max_len = first.len().max(second.len());
-        let result = (0..max_len)
-            .map(|i| {
-                first.get(i).unwrap_or(&0.0) + second.get(i).unwrap_or(&0.0)
-            })
-            .collect();
         
-        Ok(result)
+        // Total monomials of degrees < n
+        let index_before_degree_n = if n > 0 {
+            (n as usize) * (n as usize + 1) * (n as usize + 2) / 6
+        } else {
+            0
+        };
+        
+        // Within degree n, your generation order is:
+        // x from n down to 0
+        // For each x, y from (n-x) down to 0
+        
+        // Count monomials with x > i
+        let mut count = 0;
+        for x in (i + 1)..=n {
+            // For this x, number of possible y values = n - x + 1
+            count += (n - x + 1) as usize;
+        }
+        
+        // For x = i, count monomials with y > j
+        count += (n - i - j) as usize;
+        
+        index_before_degree_n + count
     }
 
-    // Multiply polynomial by scalar
-    pub fn multiply_scalar(coeffs: &[f64], scalar: f64) -> Vec<f64> {
-        coeffs.iter()
-            .map(|c| c * scalar)
-            .collect()
+    // Find index of exponent tuple in basis
+    pub fn find_basis_index(basis: &[(u32, u32, u32)], exponent: (u32, u32, u32)) -> Result<usize, &'static str> {
+        let index = MonomialPolynomial::map_index(exponent);
+        if index < basis.len() && basis[index] == exponent {
+            Ok(index)
+        } else {
+            basis.iter()
+                .position(|&exp| exp == exponent)
+                .ok_or("Exponent not found in basis")
+        }
     }
 
-    // Multiply two polynomials using distributive property
-    pub fn multiply(first: &[f64], second: &[f64]) -> Result<Vec<f64>, &'static str> {
-        let max_deg_first = Self::infer_max_degree(first.len())
-            .map_err(|_| "First polynomial has invalid coefficient length")?;
-        let max_deg_second = Self::infer_max_degree(second.len())
-            .map_err(|_| "Second polynomial has invalid coefficient length")?;
+    // Fallback version that never fails - used in constructor
+    pub fn trim_to_valid_length_fallback(coeffs: &[f64]) -> Vec<f64> {
+        // Handle empty input immediately
+        if coeffs.is_empty() {
+            return vec![0.0];
+        }
+        
+        // Try the normal trimming first
+        match Self::trim_to_valid_length(coeffs) {
+            Ok(trimmed) => trimmed,
+            Err(_) => {
+                // If trimming fails, use a simple fallback
+                // Find the last non-zero coefficient and return up to that point
+                let mut last_non_zero = 0;
+                for (i, &coeff) in coeffs.iter().enumerate() {
+                    if coeff.abs() > 1e-12 {
+                        last_non_zero = i;
+                    }
+                }
+                
+                // Return a constant polynomial if everything is zero or we couldn't find anything
+                if last_non_zero == 0 {
+                    if coeffs[0].abs() < 1e-12 {
+                        vec![0.0]  // All zeros case
+                    } else {
+                        vec![coeffs[0]]  // Just constant term
+                    }
+                } else {
+                    coeffs[..=last_non_zero].to_vec()
+                }
+            }
+        }
+    }
 
-        // Generate basis for both polynomials
+    pub fn trim_to_valid_length(coeffs: &[f64]) -> Result<Vec<f64>, PolynomialError> {
+        if coeffs.is_empty() {
+            return Ok(vec![0.0]);
+        }
+        
+        match Self::infer_max_degree(coeffs.len()) {
+            Ok(max_degree) => {
+                let basis = Self::generate_basis(max_degree);
+                let mut actual_degree = 0;
+                
+                for (idx, &(i, j, k)) in basis.iter().enumerate() {
+                    if idx < coeffs.len() && coeffs[idx].abs() > 1e-12 {
+                        actual_degree = actual_degree.max(i + j + k);
+                    }
+                }
+                
+                let valid_length = Self::expected_length(actual_degree);
+                let mut result = vec![0.0; valid_length];
+                let copy_len = valid_length.min(coeffs.len());
+                result[..copy_len].copy_from_slice(&coeffs[..copy_len]);
+                Ok(result)
+            },
+            Err(_) => {
+                // Fallback: find last non-zero coefficient and create valid polynomial
+                let mut last_non_zero = 0;
+                for (i, &coeff) in coeffs.iter().enumerate() {
+                    if coeff.abs() > 1e-12 {
+                        last_non_zero = i;
+                    }
+                }
+                
+                // Find the smallest degree that can contain this many coefficients
+                let mut degree = 0;
+                while Self::expected_length(degree) <= last_non_zero + 1 {
+                    degree += 1;
+                    if degree > 20 {
+                        return Err(PolynomialError::InvalidCoefficientLength(coeffs.len()));
+                    }
+                }
+                
+                let valid_length = Self::expected_length(degree);
+                let mut result = vec![0.0; valid_length];
+                let copy_len = valid_length.min(coeffs.len());
+                result[..copy_len].copy_from_slice(&coeffs[..copy_len]);
+                Ok(result)
+            }
+        }
+    }
+
+    /// Optimized multiplication with intelligent constant/zero detection
+    pub fn multiply(first: &[f64], second: &[f64]) -> Result<Vec<f64>, PolynomialError> {
+        // Early zero detection - if either polynomial is zero, return zero
+        if Self::is_zero_polynomial(first) || Self::is_zero_polynomial(second) {
+            return Ok(vec![0.0]);
+        }
+
+        // Constant detection and optimization
+        if let Some(first_const) = Self::get_constant_value(first) {
+            if let Some(second_const) = Self::get_constant_value(second) {
+                // Both are constants - return their product as constant
+                return Ok(vec![first_const * second_const]);
+            } else {
+                // First is constant, second is not - use scalar multiplication
+                return Ok(Self::multiply_scalar(second, first_const));
+            }
+        } else if let Some(second_const) = Self::get_constant_value(second) {
+            // Second is constant, first is not - use scalar multiplication
+            return Ok(Self::multiply_scalar(first, second_const));
+        }
+
+        // Identity optimization
+        if first.len() == 1 && first[0] == 1.0 {
+            return Ok(second.to_vec());
+        }
+        if second.len() == 1 && second[0] == 1.0 {
+            return Ok(first.to_vec());
+        }
+
+        // Fall back to standard multiplication for non-constant polynomials
+        let max_deg_first = Self::infer_max_degree(first.len())?;
+        let max_deg_second = Self::infer_max_degree(second.len())?;
+
         let basis_first = Self::generate_basis(max_deg_first);
         let basis_second = Self::generate_basis(max_deg_second);
 
-        // The resulting max degree is the sum of the two max degrees
         let result_max_degree = max_deg_first + max_deg_second;
         let result_len = Self::expected_length(result_max_degree);
         
         let mut result = vec![0.0; result_len];
         
-        // Multiply each term from first with each term from second
         for (i, &(exp_i_x, exp_i_y, exp_i_z)) in basis_first.iter().enumerate() {
             for (j, &(exp_j_x, exp_j_y, exp_j_z)) in basis_second.iter().enumerate() {
                 let coeff_product = first[i] * second[j];
                 
                 if coeff_product.abs() < 1e-12 {
-                    continue; // Skip negligible terms for numerical stability
+                    continue;
                 }
                 
-                // Add exponents to get the resulting term
                 let result_exponent = (
                     exp_i_x + exp_j_x,
                     exp_i_y + exp_j_y,
                     exp_i_z + exp_j_z,
                 );
                 
-                // Find the index in the result basis
                 let result_index = Self::map_index(result_exponent);
-                result[result_index] += coeff_product;
+                if result_index < result_len {
+                    result[result_index] += coeff_product;
+                }
             }
         }
         
-        Ok(result)
+        Self::trim_to_valid_length(&result)
+    }
+
+    /// Optimized addition with intelligent constant/zero detection
+    pub fn add(first: &[f64], second: &[f64]) -> Result<Vec<f64>, PolynomialError> {
+        // Early zero detection
+        if Self::is_zero_polynomial(first) {
+            return Ok(second.to_vec());
+        }
+        if Self::is_zero_polynomial(second) {
+            return Ok(first.to_vec());
+        }
+
+        // Constant detection and optimization
+        if let Some(first_const) = Self::get_constant_value(first) {
+            if let Some(second_const) = Self::get_constant_value(second) {
+                // Both are constants - return their sum as constant
+                return Ok(vec![first_const + second_const]);
+            } else {
+                // First is constant, second is polynomial - add constant to polynomial
+                let mut result = second.to_vec();
+                if !result.is_empty() {
+                    result[0] += first_const;
+                }
+                return Self::trim_to_valid_length(&result);
+            }
+        } else if let Some(second_const) = Self::get_constant_value(second) {
+            // Second is constant, first is polynomial - add constant to polynomial
+            let mut result = first.to_vec();
+            if !result.is_empty() {
+                result[0] += second_const;
+            }
+            return Self::trim_to_valid_length(&result);
+        }
+
+        // Standard polynomial addition for non-constant polynomials
+        let max_len = first.len().max(second.len());
+        let result: Vec<f64> = (0..max_len)
+            .map(|i| {
+                first.get(i).unwrap_or(&0.0) + second.get(i).unwrap_or(&0.0)
+            })
+            .collect();
+        
+        Self::trim_to_valid_length(&result)
+    }
+
+    /// Multiply polynomial by scalar with optimization
+    pub fn multiply_scalar(coeffs: &[f64], scalar: f64) -> Vec<f64> {
+        // Early detection for zero scalar or zero polynomial
+        if scalar.abs() < 1e-12 || Self::is_zero_polynomial(coeffs) {
+            return vec![0.0];
+        }
+        
+        // Identity optimization
+        if scalar == 1.0 {
+            return coeffs.to_vec();
+        }
+
+        // For constant polynomial, just multiply the constant
+        if let Some(const_val) = Self::get_constant_value(coeffs) {
+            return vec![const_val * scalar];
+        }
+
+        // General case
+        coeffs.iter()
+            .map(|c| c * scalar)
+            .collect()
     }
 
     // Evaluate polynomial at a point (x, y, z)
-    pub fn evaluate(coeffs: &[f64], point: (f64, f64, f64)) -> Result<f64, &'static str> {
+    pub fn evaluate(coeffs: &[f64], point: (f64, f64, f64)) -> Result<f64, PolynomialError> {
         let max_degree = Self::infer_max_degree(coeffs.len())?;
         let (x, y, z) = point;
         let basis = Self::generate_basis(max_degree);
 
-        // Sum over all terms: coefficient * x^i * y^j * z^k
-        Ok(coeffs.iter()
-            .zip(&basis)
+        // Handle case where coeffs is shorter than basis
+        let evaluation_length = coeffs.len().min(basis.len());
+
+        Ok(coeffs[..evaluation_length].iter()
+            .zip(&basis[..evaluation_length])
             .map(|(coeff, &(i, j, k))| {
                 coeff * x.powi(i as i32) * y.powi(j as i32) * z.powi(k as i32)
             })
             .sum())
     }
 
+    // Safe evaluation that never fails
+    pub fn evaluate_safe(coeffs: &[f64], point: (f64, f64, f64)) -> f64 {
+        Self::evaluate(coeffs, point).unwrap_or(0.0)
+    }
+
+    // Safe multiplication that never fails
+    pub fn multiply_optimized(first: &[f64], second: &[f64]) -> Vec<f64> {
+        Self::multiply(first, second).unwrap_or_else(|_| {
+            // Fallback: return a constant zero polynomial
+            vec![0.0]
+        })
+    }
+
+    // Safe addition that never fails  
+    pub fn add_optimized(first: &[f64], second: &[f64]) -> Vec<f64> {
+        Self::add(first, second).unwrap_or_else(|_| {
+            // Fallback: return the longer polynomial
+            if first.len() >= second.len() {
+                first.to_vec()
+            } else {
+                second.to_vec()
+            }
+        })
+    }
+
+    // ========== OPTIMIZED OPERATIONS WITH CONSTANT/ZERO DETECTION ==========
+
+    /// Check if polynomial is effectively zero (all coefficients near zero)
+    pub fn is_zero_polynomial(poly: &[f64]) -> bool {
+        poly.iter().all(|&c| c.abs() < 1e-12)
+    }
+    
+    /// Check if polynomial is constant (only first coefficient non-zero)
+    pub fn is_constant_polynomial(poly: &[f64]) -> bool {
+        if poly.is_empty() { 
+            return true; 
+        }
+        
+        // For trimmed polynomials, constant means length == 1
+        if poly.len() == 1 {
+            return true;
+        }
+        
+        // For untrimmed polynomials, check if all coefficients beyond first are zero
+        poly.iter().enumerate().all(|(i, &c)| i == 0 || c.abs() < 1e-12)
+    }
+    
+    /// Get constant value from polynomial if it's constant
+    pub fn get_constant_value(poly: &[f64]) -> Option<f64> {
+        if Self::is_constant_polynomial(poly) && !poly.is_empty() {
+            Some(poly[0])
+        } else {
+            None
+        }
+    }
+
     /// Get 1D coefficients (only x powers): [a₀, a₁, a₂, ...] for a₀ + a₁x + a₂x² + ...
     /// Extracts coefficients where y and z exponents are zero
     pub fn get_coefficients_1d(coeffs: &[f64]) -> Result<Vec<f64>, &'static str> {
-        let degree = Self::infer_max_degree(coeffs.len())?;
+        // Handle empty input
+        if coeffs.is_empty() {
+            return Ok(vec![0.0]);
+        }
+        
+        let degree = match Self::infer_max_degree(coeffs.len()) {
+            Ok(d) => d,
+            Err(_) => return Ok(vec![0.0]), // Return zero polynomial on error
+        };
         let mut result = vec![0.0; (degree + 1) as usize];
         let basis = Self::generate_basis(degree);
         
@@ -175,7 +428,15 @@ impl MonomialPolynomial {
     /// Get 2D coefficients as matrix: result[i][j] = coefficient of x^i * y^j
     /// Extracts coefficients where z exponent is zero
     pub fn get_coefficients_2d(coeffs: &[f64]) -> Result<Vec<Vec<f64>>, &'static str> {
-        let degree = Self::infer_max_degree(coeffs.len())?;
+        // Handle empty input
+        if coeffs.is_empty() {
+            return Ok(vec![vec![0.0]]);
+        }
+        
+        let degree = match Self::infer_max_degree(coeffs.len()) {
+            Ok(d) => d,
+            Err(_) => return Ok(vec![vec![0.0]]), // Return zero polynomial on error
+        };
         let size = (degree + 1) as usize;
         let mut result = vec![vec![0.0; size]; size];
         let basis = Self::generate_basis(degree);
@@ -191,7 +452,15 @@ impl MonomialPolynomial {
     /// Get 3D coefficients as tensor: result[i][j][k] = coefficient of x^i * y^j * z^k
     /// Full 3D coefficient extraction
     pub fn get_coefficients_3d(coeffs: &[f64]) -> Result<Vec<Vec<Vec<f64>>>, &'static str> {
-        let degree = Self::infer_max_degree(coeffs.len())?;
+        // Handle empty input
+        if coeffs.is_empty() {
+            return Ok(vec![vec![vec![0.0]]]);
+        }
+        
+        let degree = match Self::infer_max_degree(coeffs.len()) {
+            Ok(d) => d,
+            Err(_) => return Ok(vec![vec![vec![0.0]]]), // Return zero polynomial on error
+        };
         let size = (degree + 1) as usize;
         let mut result = vec![vec![vec![0.0; size]; size]; size];
         let basis = Self::generate_basis(degree);
@@ -206,9 +475,14 @@ impl MonomialPolynomial {
 
     /// Calculate the total degree with tolerance for floating point comparison
     pub fn total_degree_polynomial(polynomial: &[f64]) -> u32 {
+        // Handle empty input
+        if polynomial.is_empty() {
+            return 0;
+        }
+        
         let max_degree = match Self::infer_max_degree(polynomial.len()) {
             Ok(deg) => deg,
-            Err(_) => return 0,
+            Err(_) => return 0, // Return 0 degree on error
         };
         
         let basis = Self::generate_basis(max_degree);
@@ -243,36 +517,6 @@ pub struct ShapeFunction {
     pub num_nodes: usize,
 }
 
-/// Jacobian matrix mapping from natural to physical coordinates
-/// J[i][j] = ∂x_i/∂ξ_j where x are physical coords, ξ are natural coords
-#[derive(Debug, Clone)]
-pub struct Jacobian {
-    pub matrix: Vec<Vec<Vec<f64>>>, // Jacobian matrix J[i][j] = dx_i/dxi_j
-    pub determinant: Vec<f64>, // Determinant as polynomial (for curved elements)
-}
-
-impl Jacobian {
-    /* 
-    pub fn evaluate_determinant_at_point(&self, point: (f64, f64, f64)) -> Result<f64, &'static str> {
-    MonomialPolynomial::evaluate(&self.determinant, point)
-    }
-    */
-    pub fn evaluate_matrix_at_point(&self, point: (f64, f64, f64)) -> Result<Vec<Vec<f64>>, &'static str> {
-        let rows = self.matrix.len();
-        let cols = if rows > 0 { self.matrix[0].len() } else { 0 };
-        let mut evaluated = vec![vec![0.0; cols]; rows];
-        
-        for i in 0..rows {
-            for j in 0..cols {
-                evaluated[i][j] = MonomialPolynomial::evaluate(&self.matrix[i][j], point)?;
-            }
-        }
-        
-        Ok(evaluated)
-    }
-    //evaluate adjacent matrix at a point
-}
-
 /// Element types available in VTK 
 #[derive(Debug, Clone)]
 pub enum ElementType {              // Enumeration of supported finite element types
@@ -287,8 +531,7 @@ pub enum ElementType {              // Enumeration of supported finite element t
     Tetra,                          // First order tetrahedral element   Comsol
     QuadraticTetra,                 // Second order tetrahedral element   Comsol
     Pyramid,                        // First order pyramid element   Comsol
-    //QuadraticPyramid,            // Second order pyramid element   13 nodes   Comsol  ???
-    // TriquadraticPyramid,            // Second order pyramid element   with padded nodes  19 nodes   Comsol
+    QuadraticPyramid,               // Second order pyramid element   13 nodes   Comsol (Middle node in Comsol is neglected)
     Wedge,                          // First order prism element   Comsol
     QuadraticWedge,                 // Second order prism element   Abaqus
     BiquadraticQuadraticWedge,      // Second order prism element   Comsol
@@ -324,8 +567,7 @@ impl ElementType {
             ElementType::Tetra => CellType::Tetra,  
             ElementType::QuadraticTetra => CellType::QuadraticTetra,  
             ElementType::Pyramid => CellType::Pyramid,
-            // ElementType::QuadraticPyramid => CellType::QuadraticPyramid,
-            // ElementType::TriquadraticPyramid => CellType::TriquadraticPyramid,   
+            ElementType::QuadraticPyramid => CellType::QuadraticPyramid,   
             ElementType::Wedge => CellType::Wedge,   
             ElementType::QuadraticWedge => CellType::QuadraticWedge,
             ElementType::BiquadraticQuadraticWedge => CellType::BiquadraticQuadraticWedge,  
@@ -351,56 +593,55 @@ impl ElementType {
 
             ElementType::Line => {
                 let num_nodes = 2;
-                // 1D: N1 = 1 - x, N2 = x
-                // Padding to 3D degree 1: [1, x, y, z]
+                // 1D: N0 = 1 - xi, N1 = xi
+                // Padding to 3D degree 1: [1, xi, eta, psi]
                 
                 let values = vec![
-                    vec![1.0, -1.0, 0.0, 0.0],  // N1 = 1 - x
-                    vec![0.0, 1.0, 0.0, 0.0],   // N2 = x
+                    vec![1.0, -1.0, 0.0, 0.0],  // N0 = 1 - xi
+                    vec![0.0, 1.0, 0.0, 0.0],   // N1 = xi
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-1.0, 0.0, 0.0, 0.0],  // dN1/dx = -1
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN1/dy = 0
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN1/dz = 0
+                        vec![-1.0, 0.0, 0.0, 0.0], vec![1.0, 0.0, 0.0, 0.0],   // dN0/dxi = -1 , dN1/dxi = 1
                     ],
                     vec![
-                        vec![1.0, 0.0, 0.0, 0.0],   // dN2/dx = 1
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN2/dy = 0
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN2/dz = 0
+                        vec![0.0, 0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0, 0.0],   // dN0/deta = 0 , dN1/deta = 0
                     ],
-                ];
+                    vec![
+                        vec![0.0, 0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0, 0.0],  // dN0/dpsi = 0 , dN1/dpsi = 0
+                    ],
+                ]; 
 
                 Some(ShapeFunction { values, derivatives, num_nodes })
             },
 
             ElementType::QuadraticEdge => {
                 let num_nodes = 3;
-                // 1D degree 2: N1 = 1 - 3x + 2x², N2 = -x + 2x², N3 = 4x - 4x²
-                // Padding to 3D degree 2: [1, x, y, z, x², xy, xz, y², yz, z²]
+                // 1D degree 2: N0 = 1 - 3xi + 2xi², N1 = -xi + 2xi², N2 = 4xi - 4xi²
+                // Padding to 3D degree 2: [1, xi, eta, psi, xi², xi*eta, xi*psi, eta², eta*psi, psi²]
                 
                 let values = vec![
-                    vec![1.0, -3.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // N1 = 1 - 3x + 2x²
-                    vec![0.0, -1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // N2 = -x + 2x²  
-                    vec![0.0, 4.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // N3 = 4x - 4x²
+                    vec![1.0, -3.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // N0 = 1 - 3xi + 2xi²
+                    vec![0.0, -1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // N1 = -xi + 2xi²  
+                    vec![0.0, 4.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // N2 = 4xi - 4xi²
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dx = -3 + 4x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/dy = 0
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/dz = 0
+                        vec![-3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN0/dxi = -3 + 4xi 
+                        vec![-1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dxi = -1 + 4xi
+                        vec![4.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/dxi = 4 - 8xi 
                     ],
                     vec![
-                        vec![-1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/dx = -1 + 4x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dy = 0
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dz = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN0/deta = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/deta = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/deta = 0
                     ],
                     vec![
-                        vec![4.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN3/dx = 4 - 8x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dy = 0
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dz = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN0/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dpsi = 0
                     ],
                 ];
 
@@ -409,30 +650,30 @@ impl ElementType {
 
             ElementType::Triangle => {
                 let num_nodes = 3;
-                // 2D degree 1: N1 = 1 - x - y, N2 = x, N3 = y
-                // Padding to 3D degree 1: [1, x, y, z]
+                // 2D degree 1: N0 = 1 - xi - eta, N1 = xi, N2 = eta
+                // Padding to 3D degree 1: [1, xi, eta, psi]
                 
                 let values = vec![
-                    vec![1.0, -1.0, -1.0, 0.0],  // N1 = 1 - x - y
-                    vec![0.0, 1.0, 0.0, 0.0],    // N2 = x
-                    vec![0.0, 0.0, 1.0, 0.0],    // N3 = y
+                    vec![1.0, -1.0, -1.0, 0.0],  // N0 = 1 - xi - eta
+                    vec![0.0, 1.0, 0.0, 0.0],    // N1 = xi
+                    vec![0.0, 0.0, 1.0, 0.0],    // N2 = eta
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-1.0, 0.0, 0.0, 0.0],  // dN1/dx = -1
-                        vec![-1.0, 0.0, 0.0, 0.0],  // dN1/dy = -1
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN1/dz = 0
+                        vec![-1.0, 0.0, 0.0, 0.0],  // dN0/dxi = -1
+                        vec![1.0, 0.0, 0.0, 0.0],   // dN1/dxi = 1
+                        vec![0.0, 0.0, 0.0, 0.0],   // dN2/dxi = 0
                     ],
                     vec![
-                        vec![1.0, 0.0, 0.0, 0.0],   // dN2/dx = 1
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN2/dy = 0
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN2/dz = 0
+                        vec![-1.0, 0.0, 0.0, 0.0],  // dN0/deta = -1
+                        vec![0.0, 0.0, 0.0, 0.0],   // dN1/deta = 0
+                        vec![1.0, 0.0, 0.0, 0.0],   // dN2/deta = 1
                     ],
                     vec![
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN3/dx = 0
-                        vec![1.0, 0.0, 0.0, 0.0],   // dN3/dy = 1
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN3/dz = 0
+                        vec![0.0, 0.0, 0.0, 0.0],   // dN0/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0],   // dN1/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0],   // dN2/dpsi = 0
                     ],
                 ];
 
@@ -441,47 +682,41 @@ impl ElementType {
 
             ElementType::QuadraticTriangle => {
                 let num_nodes = 6;
-                // 2D degree 2, padding to 3D degree 2: [1, x, y, z, x², xy, xz, y², yz, z²]
+                // 2D degree 2, padding to 3D degree 2: [1, xi, eta, psi, xi², xi*eta, xi*psi, eta², eta*psi, psi²]
                 
                 let values = vec![
-                    vec![1.0, -3.0, -3.0, 0.0, 2.0, 4.0, 0.0, 2.0, 0.0, 0.0],  // N1
-                    vec![0.0, -1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // N2
-                    vec![0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0],   // N3
-                    vec![0.0, 4.0, 0.0, 0.0, -4.0, -4.0, 0.0, 0.0, 0.0, 0.0],  // N4
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0],    // N5
-                    vec![0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, -4.0, 0.0, 0.0],  // N6
+                    vec![1.0, -3.0, -3.0, 0.0, 2.0, 4.0, 0.0, 2.0, 0.0, 0.0],  // N0
+                    vec![0.0, -1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // N1
+                    vec![0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0],   // N2
+                    vec![0.0, 4.0, 0.0, 0.0, -4.0, -4.0, 0.0, 0.0, 0.0, 0.0],  // N3
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0],    // N4
+                    vec![0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, -4.0, 0.0, 0.0],  // N5
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-3.0, 4.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dx
-                        vec![0.0, -3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/dz
+                        vec![-3.0, 4.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN0/dxi
+                        vec![-1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dxi
+                        vec![4.0, -8.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN3/dxi
+                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN4/dxi
+                        vec![0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN5/dxi
                     ],
                     vec![
-                        vec![-1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dz
+                        vec![-3.0, 4.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN0/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/deta
+                        vec![-1.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/deta
+                        vec![0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN3/deta
+                        vec![0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN4/deta
+                        vec![4.0, -4.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN5/deta
                     ],
                     vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dx
-                        vec![0.0, -1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN3/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dz
-                    ],
-                    vec![
-                        vec![4.0, -8.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN4/dx
-                        vec![0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN4/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN4/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dx
-                        vec![0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN6/dx
-                        vec![4.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN6/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN6/dz
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN0/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN4/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dpsi
                     ],
                 ];
 
@@ -491,98 +726,85 @@ impl ElementType {
             ElementType::Quad => {
                 let num_nodes = 4;
                 // 2D degree 1 with bilinear term, padding to 3D degree 2
-                // [1, x, y, z, x², xy, xz, y², yz, z²]
+                // [1, xi, eta, psi, xi², xi*eta, xi*psi, eta², eta*psi, psi²]
 
                 let values = vec![
-                    vec![1.0, -1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],  // N1 = (1-x)(1-y) = 1 - x - y + xy
-                    vec![0.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0],   // N2 = x(1-y) = x - xy
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],    // N3 = xy
-                    vec![0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0],   // N4 = (1-x)y = y - xy
+                    vec![1.0, -1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],  // N0 = (1-xi)(1-eta) = 1 - xi - eta + xi*eta
+                    vec![0.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0],   // N1 = xi(1-eta) = xi - xi*eta
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],    // N2 = xi*eta
+                    vec![0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0],   // N3 = (1-xi)eta = eta - xi*eta
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dx = -1 + y
-                        vec![-1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dy = -1 + x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/dz = 0
+                        vec![-1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN0/dxi = -1 + eta
+                        vec![1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dxi = 1 - eta
+                        vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dxi = eta
+                        vec![0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN3/dxi = -eta
                     ],
                     vec![
-                        vec![1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/dx = 1 - y
-                        vec![0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/dy = -x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dz = 0
+                        vec![-1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN0/deta = -1 + xi
+                        vec![0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/deta = -xi
+                        vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/deta = xi
+                        vec![1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN3/deta = 1 - xi
                     ],
                     vec![
-                        vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dx = y
-                        vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dy = x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dz = 0
-                    ],
-                    vec![
-                        vec![0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN4/dx = -y
-                        vec![1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN4/dy = 1 - x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN4/dz = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN0/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dpsi = 0
                     ],
                 ];
 
                 Some(ShapeFunction { values, derivatives, num_nodes })
             },
 
-
             ElementType::QuadraticQuad => {
                 let num_nodes = 8;
                 // 2D degree 2 serendipity element
-                // Basis: [1, x, y, z, x², xy, xz, y², yz, z²]
+                // Basis: [1, xi, eta, psi, xi², xi*eta, xi*psi, eta², eta*psi, psi²]
                 
                 let values = vec![
-                    vec![1.0, -1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],        // N0 = 1 - x - y + xy
-                    vec![0.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0],        // N1 = x - x² - xy  
-                    vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, -1.0, 0.0, 0.0],         // N2 = x² + xy - y²
-                    vec![0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, -1.0, 0.0, 0.0],        // N3 = y - xy - y²
-                    vec![0.0, 0.0, 0.0, 0.0, 4.0, -4.0, 0.0, 0.0, 0.0, 0.0],         // N4 = 4x² - 4xy
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, -4.0, 0.0, 0.0],         // N5 = 4xy - 4y²
-                    vec![0.0, 0.0, 0.0, 0.0, -4.0, 4.0, 0.0, 0.0, 0.0, 0.0],         // N6 = -4x² + 4xy
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 4.0, 0.0, 0.0],         // N7 = -4xy + 4y²
+                    vec![1.0, -1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],        // N0 = 1 - xi - eta + xi*eta
+                    vec![0.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0],        // N1 = xi - xi² - xi*eta  
+                    vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, -1.0, 0.0, 0.0],         // N2 = xi² + xi*eta - eta²
+                    vec![0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, -1.0, 0.0, 0.0],        // N3 = eta - xi*eta - eta²
+                    vec![0.0, 0.0, 0.0, 0.0, 4.0, -4.0, 0.0, 0.0, 0.0, 0.0],         // N4 = 4xi² - 4xi*eta
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, -4.0, 0.0, 0.0],         // N5 = 4xi*eta - 4eta²
+                    vec![0.0, 0.0, 0.0, 0.0, -4.0, 4.0, 0.0, 0.0, 0.0, 0.0],         // N6 = -4xi² + 4xi*eta
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 4.0, 0.0, 0.0],         // N7 = -4xi*eta + 4eta²
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN0/dx = -1 + y
-                        vec![-1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN0/dy = -1 + x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN0/dz = 0
+                        vec![-1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN0/dxi = -1 + eta
+                        vec![1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/dxi = 1 - 2xi - eta
+                        vec![0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN2/dxi = 2xi + eta
+                        vec![0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN3/dxi = -eta
+                        vec![0.0, 0.0, 0.0, 0.0, 8.0, -4.0, 0.0, 0.0, 0.0, 0.0],    // dN4/dxi = 8xi - 4eta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0],     // dN5/dxi = 4eta
+                        vec![0.0, 0.0, 0.0, 0.0, -8.0, 4.0, 0.0, 0.0, 0.0, 0.0],    // dN6/dxi = -8xi + 4eta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0],    // dN7/dxi = -4eta
                     ],
                     vec![
-                        vec![1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/dx = 1 - 2x - y
-                        vec![0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN1/dy = -x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN1/dz = 0
+                        vec![-1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN0/deta = -1 + xi
+                        vec![0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN1/deta = -xi
+                        vec![0.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN2/deta = xi - 2eta
+                        vec![1.0, -1.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/deta = 1 - xi - 2eta
+                        vec![0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN4/deta = -4xi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, -8.0, 0.0, 0.0],    // dN5/deta = 4xi - 8eta
+                        vec![0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN6/deta = 4xi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 8.0, 0.0, 0.0],    // dN7/deta = -4xi + 8eta
                     ],
                     vec![
-                        vec![0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN2/dx = 2x + y
-                        vec![0.0, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN2/dy = x - 2y
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN2/dz = 0
-                    ],
-                    vec![
-                        vec![0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN3/dx = -y
-                        vec![1.0, -1.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dy = 1 - x - 2y
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN3/dz = 0
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 8.0, -4.0, 0.0, 0.0, 0.0, 0.0],    // dN4/dx = 8x - 4y
-                        vec![0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN4/dy = -4x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN4/dz = 0
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0],     // dN5/dx = 4y
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, -8.0, 0.0, 0.0],    // dN5/dy = 4x - 8y
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN5/dz = 0
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, -8.0, 4.0, 0.0, 0.0, 0.0, 0.0],    // dN6/dx = -8x + 4y
-                        vec![0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN6/dy = 4x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN6/dz = 0
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0],    // dN7/dx = -4y
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 8.0, 0.0, 0.0],    // dN7/dy = -4x + 8y
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN7/dz = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN0/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN1/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN2/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN3/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN4/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN5/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN6/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN7/dpsi = 0
                     ],
                 ];
 
@@ -592,65 +814,53 @@ impl ElementType {
             ElementType::BiquadraticQuad => {
                 let num_nodes = 9;
                 // 2D biquadratic element with center node
-                // Basis: [1, x, y, z, x², xy, xz, y², yz, z²]
+                // Basis: [1, xi, eta, psi, xi², xi*eta, xi*psi, eta², eta*psi, psi²]
                 
                 let values = vec![
-                    vec![1.0, -1.5, -1.5, 0.0, 0.5, 2.25, 0.0, 0.5, 0.0, 0.0],      // N0 = 1 - 1.5x - 1.5y + 0.5x² + 2.25xy + 0.5y²
-                    vec![0.0, 2.0, 0.0, 0.0, -2.0, -2.0, 0.0, 0.0, 0.0, 0.0],       // N1 = 2x - 2x² - 2xy
-                    vec![0.0, -0.5, 0.0, 0.0, 0.5, 0.25, 0.0, 0.0, 0.0, 0.0],       // N2 = -0.5x + 0.5x² + 0.25xy
-                    vec![0.0, 0.0, 2.0, 0.0, 0.0, -2.0, 0.0, -2.0, 0.0, 0.0],       // N3 = 2y - 2xy - 2y²
-                    vec![0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0],         // N4 = 4x²
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0],         // N5 = 4xy
-                    vec![0.0, 0.0, -0.5, 0.0, 0.0, 0.25, 0.0, 0.5, 0.0, 0.0],       // N6 = -0.5y + 0.25xy + 0.5y²
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0],         // N7 = 4y²
-                    vec![0.0, 0.0, 0.0, 0.0, -4.0, -4.0, 0.0, -4.0, 0.0, 0.0],      // N8 = -4x² - 4xy - 4y²
+                    vec![1.0, -1.5, -1.5, 0.0, 0.5, 2.25, 0.0, 0.5, 0.0, 0.0],      // N0 = 1 - 1.5xi - 1.5eta + 0.5xi² + 2.25xi*eta + 0.5eta²
+                    vec![0.0, 2.0, 0.0, 0.0, -2.0, -2.0, 0.0, 0.0, 0.0, 0.0],       // N1 = 2xi - 2xi² - 2xi*eta
+                    vec![0.0, -0.5, 0.0, 0.0, 0.5, 0.25, 0.0, 0.0, 0.0, 0.0],       // N2 = -0.5xi + 0.5xi² + 0.25xi*eta
+                    vec![0.0, 0.0, 2.0, 0.0, 0.0, -2.0, 0.0, -2.0, 0.0, 0.0],       // N3 = 2eta - 2xi*eta - 2eta²
+                    vec![0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0],         // N4 = 4xi²
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0],         // N5 = 4xi*eta
+                    vec![0.0, 0.0, -0.5, 0.0, 0.0, 0.25, 0.0, 0.5, 0.0, 0.0],       // N6 = -0.5eta + 0.25xi*eta + 0.5eta²
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0],         // N7 = 4eta²
+                    vec![0.0, 0.0, 0.0, 0.0, -4.0, -4.0, 0.0, -4.0, 0.0, 0.0],      // N8 = -4xi² - 4xi*eta - 4eta²
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-1.5, 1.0, 2.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN0/dx = -1.5 + x + 2.25y
-                        vec![-1.5, 2.25, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN0/dy = -1.5 + 2.25x + y
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN0/dz = 0
+                        vec![-1.5, 1.0, 2.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN0/dxi = -1.5 + xi + 2.25eta
+                        vec![2.0, -4.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/dxi = 2 - 4xi - 2eta
+                        vec![-0.5, 1.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dxi = -0.5 + xi + 0.25eta
+                        vec![0.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN3/dxi = -2eta
+                        vec![0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN4/dxi = 8xi
+                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN5/dxi = 4eta
+                        vec![0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN6/dxi = 0.25eta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN7/dxi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, -8.0, -4.0, 0.0, 0.0, 0.0, 0.0],   // dN8/dxi = -8xi - 4eta
                     ],
                     vec![
-                        vec![2.0, -4.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/dx = 2 - 4x - 2y
-                        vec![0.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN1/dy = -2x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN1/dz = 0
+                        vec![-1.5, 2.25, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN0/deta = -1.5 + 2.25xi + eta
+                        vec![0.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN1/deta = -2xi
+                        vec![0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN2/deta = 0.25xi
+                        vec![2.0, -2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/deta = 2 - 2xi - 4eta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN4/deta = 0
+                        vec![0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN5/deta = 4xi
+                        vec![-0.5, 0.25, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN6/deta = -0.5 + 0.25xi + eta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0],     // dN7/deta = 8eta
+                        vec![0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, -8.0, 0.0, 0.0],   // dN8/deta = -4xi - 8eta
                     ],
                     vec![
-                        vec![-0.5, 1.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dx = -0.5 + x + 0.25y
-                        vec![0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN2/dy = 0.25x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN2/dz = 0
-                    ],
-                    vec![
-                        vec![0.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN3/dx = -2y
-                        vec![2.0, -2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dy = 2 - 2x - 4y
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN3/dz = 0
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN4/dx = 8x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN4/dy = 0
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN4/dz = 0
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN5/dx = 4y
-                        vec![0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN5/dy = 4x
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN5/dz = 0
-                    ],
-                    vec![
-                        vec![0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN6/dx = 0.25y
-                        vec![-0.5, 0.25, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN6/dy = -0.5 + 0.25x + y
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN6/dz = 0
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN7/dx = 0
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0],     // dN7/dy = 8y
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN7/dz = 0
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, -8.0, -4.0, 0.0, 0.0, 0.0, 0.0],   // dN8/dx = -8x - 4y
-                        vec![0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, -8.0, 0.0, 0.0],   // dN8/dy = -4x - 8y
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN8/dz = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN0/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN1/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN2/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN3/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN4/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN5/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN6/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN7/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // dN8/dpsi = 0
                     ],
                 ];
 
@@ -659,35 +869,33 @@ impl ElementType {
 
             ElementType::Tetra => {
                 let num_nodes = 4;
-                // 3D degree 1: [1, x, y, z]
+                // 3D degree 1: [1, xi, eta, psi]
 
                 let values = vec![
-                    vec![1.0, -1.0, -1.0, -1.0],  // N1 = 1 - x - y - z
-                    vec![0.0, 1.0, 0.0, 0.0],     // N2 = x
-                    vec![0.0, 0.0, 1.0, 0.0],     // N3 = y
-                    vec![0.0, 0.0, 0.0, 1.0],     // N4 = z
+                    vec![1.0, -1.0, -1.0, -1.0],  // N0 = 1 - xi - eta - psi
+                    vec![0.0, 1.0, 0.0, 0.0],     // N1 = xi
+                    vec![0.0, 0.0, 1.0, 0.0],     // N2 = eta
+                    vec![0.0, 0.0, 0.0, 1.0],     // N3 = psi
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-1.0, 0.0, 0.0, 0.0],  // dN1/dx = -1
-                        vec![-1.0, 0.0, 0.0, 0.0],  // dN1/dy = -1
-                        vec![-1.0, 0.0, 0.0, 0.0],  // dN1/dz = -1
+                        vec![-1.0, 0.0, 0.0, 0.0],  // dN0/dxi = -1
+                        vec![1.0, 0.0, 0.0, 0.0],   // dN1/dxi = 1
+                        vec![0.0, 0.0, 0.0, 0.0],   // dN2/dxi = 0
+                        vec![0.0, 0.0, 0.0, 0.0],   // dN3/dxi = 0
                     ],
                     vec![
-                        vec![1.0, 0.0, 0.0, 0.0],   // dN2/dx = 1
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN2/dy = 0
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN2/dz = 0
+                        vec![-1.0, 0.0, 0.0, 0.0],  // dN0/deta = -1
+                        vec![0.0, 0.0, 0.0, 0.0],   // dN1/deta = 0
+                        vec![1.0, 0.0, 0.0, 0.0],   // dN2/deta = 1
+                        vec![0.0, 0.0, 0.0, 0.0],   // dN3/deta = 0
                     ],
                     vec![
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN3/dx = 0
-                        vec![1.0, 0.0, 0.0, 0.0],   // dN3/dy = 1
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN3/dz = 0
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN4/dx = 0
-                        vec![0.0, 0.0, 0.0, 0.0],   // dN4/dy = 0
-                        vec![1.0, 0.0, 0.0, 0.0],   // dN4/dz = 1
+                        vec![-1.0, 0.0, 0.0, 0.0],  // dN0/dpsi = -1
+                        vec![0.0, 0.0, 0.0, 0.0],   // dN1/dpsi = 0
+                        vec![0.0, 0.0, 0.0, 0.0],   // dN2/dpsi = 0
+                        vec![1.0, 0.0, 0.0, 0.0],   // dN3/dpsi = 1
                     ],
                 ];
 
@@ -696,71 +904,57 @@ impl ElementType {
 
             ElementType::QuadraticTetra => {
                 let num_nodes = 10;
-                // 3D degree 2: [1, x, y, z, x², xy, xz, y², yz, z²]
+                // 3D degree 2: [1, xi, eta, psi, xi², xi*eta, xi*psi, eta², eta*psi, psi²]
 
                 let values = vec![
-                    vec![1.0, -3.0, -3.0, -3.0, 2.0, 4.0, 4.0, 2.0, 4.0, 2.0],  // N1
-                    vec![0.0, -1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // N2
-                    vec![0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0],    // N3
-                    vec![0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0],    // N4
-                    vec![0.0, 4.0, 0.0, 0.0, -4.0, -4.0, -4.0, 0.0, 0.0, 0.0],  // N5
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0],     // N6
-                    vec![0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, -4.0, -4.0, 0.0],  // N7
-                    vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, 0.0, -4.0],   // N8
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0],     // N9
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0],     // N10
+                    vec![1.0, -3.0, -3.0, -3.0, 2.0, 4.0, 4.0, 2.0, 4.0, 2.0],  // N0
+                    vec![0.0, -1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // N1
+                    vec![0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0],    // N2
+                    vec![0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0],    // N3
+                    vec![0.0, 4.0, 0.0, 0.0, -4.0, -4.0, -4.0, 0.0, 0.0, 0.0],  // N4
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0],     // N5
+                    vec![0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, -4.0, -4.0, 0.0],  // N6
+                    vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, 0.0, -4.0],   // N7
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0],     // N8
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0],     // N9
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-3.0, 4.0, 4.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dx
-                        vec![0.0, -3.0, 4.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dy
-                        vec![0.0, 0.0, -3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dz
+                        vec![-3.0, 4.0, 4.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN0/dxi
+                        vec![-1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dxi
+                        vec![4.0, -8.0, -4.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN4/dxi
+                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dxi
+                        vec![0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN6/dxi
+                        vec![0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN7/dxi
+                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN8/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN9/dxi
                     ],
                     vec![
-                        vec![-1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dz
+                        vec![0.0, -3.0, 4.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN0/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/deta
+                        vec![0.0, -1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/deta
+                        vec![0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN4/deta
+                        vec![0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/deta
+                        vec![4.0, 0.0, -8.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN6/deta
+                        vec![0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN7/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN8/deta
+                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN9/deta
                     ],
                     vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dx
-                        vec![0.0, -1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN3/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN4/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN4/dy
-                        vec![0.0, 0.0, -1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN4/dz
-                    ],
-                    vec![
-                        vec![4.0, -8.0, -4.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN5/dx
-                        vec![0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dy
-                        vec![0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN6/dx
-                        vec![0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN6/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN6/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN7/dx
-                        vec![4.0, 0.0, -8.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN7/dy
-                        vec![0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN7/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN8/dx
-                        vec![0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN8/dy
-                        vec![4.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN8/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN9/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN9/dy
-                        vec![0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN9/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN10/dx
-                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN10/dy
-                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN10/dz
+                        vec![0.0, 0.0, -3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN0/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dpsi
+                        vec![0.0, 0.0, -1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN3/dpsi
+                        vec![0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN4/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dpsi
+                        vec![0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN6/dpsi
+                        vec![4.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN7/dpsi
+                        vec![0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN8/dpsi
+                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN9/dpsi
                     ],
                 ];
 
@@ -769,42 +963,37 @@ impl ElementType {
 
             ElementType::Pyramid => {
                 let num_nodes = 5;
-                // 3D degree 1 with trilinear term, padding to 3D degree 2
-                // [1, x, y, z, x², xy, xz, y², yz, z²]
+                // [1, xi, eta, psi, xi², xi*eta, xi*psi, eta², eta*psi, psi², xi³, xi²eta, xi²psi, xi*eta², xi*eta*psi, xi*psi², eta³, eta²psi, eta*psi², psi³]
 
                 let values = vec![
-                    vec![1.0, -1.0, -1.0, -1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0],  // N1 = (1-x)(1-y)(1-z)
-                    vec![0.0, 1.0, 0.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0],   // N2 = x(1-y)(1-z)
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],     // N3 = xy(1-z)
-                    vec![0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0],   // N4 = (1-x)y(1-z)
-                    vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // N5 = z
+                    vec![1.0, -1.0, -1.0, -1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // N0 = (1-xi)(1-eta)(1-psi)
+                    vec![0.0, 1.0, 0.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // N1 = xi(1-eta)(1-psi)
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // N2 = xi*eta(1-psi)
+                    vec![0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // N3 = (1-xi)eta(1-psi)
+                    vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],     // N4 = psi
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dx = -(1-y)(1-z) = -1 + y + z - yz
-                        vec![0.0, -1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dy = -(1-x)(1-z) = -1 + x + z - xz
-                        vec![0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dz = -(1-x)(1-y) = -1 + x + y - xy
+                        vec![-1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0],   // dN0/dxi = -(1-eta)(1-psi) = -1 + eta + psi - eta*psi
+                        vec![1.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],   // dN1/dxi = (1-eta)(1-psi) = 1 - eta - psi + eta*psi
+                        vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0],    // dN2/dxi = eta(1-psi) = eta - eta*psi
+                        vec![0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],    // dN3/dxi = -eta(1-psi) = -eta + eta*psi
+                        vec![0.0],                                                  // dN4/dxi = 0
                     ],
                     vec![
-                        vec![1.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN2/dx = (1-y)(1-z) = 1 - y - z + yz
-                        vec![0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/dy = -x(1-z) = -x + xz
-                        vec![0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/dz = -x(1-y) = -x + xy
+                        vec![-1.0, 1.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0],   // dN0/deta = -(1-xi)(1-psi) = -1 + xi + psi - xi*psi
+                        vec![0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],    // dN1/deta = -xi(1-psi) = -xi + xi*psi
+                        vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0],    // dN2/deta = xi(1-psi) = xi - xi*psi
+                        vec![1.0, -1.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],   // dN3/deta = (1-xi)(1-psi) = 1 - xi - psi + xi*psi
+                        vec![0.0],                                                  // dN4/deta = 0
                     ],
                     vec![
-                        vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dx = y(1-z) = y - yz
-                        vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dy = x(1-z) = x - xz
-                        vec![0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN3/dz = -xy
-                    ],
-                    vec![
-                        vec![0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN4/dx = -y(1-z) = -y + yz
-                        vec![1.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN4/dy = (1-x)(1-z) = 1 - x - z + xz
-                        vec![0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN4/dz = -(1-x)y = -y + xy
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dx = 0
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dy = 0
-                        vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dz = 1
+                        vec![-1.0, 1.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0],   // dN0/dpsi = -(1-xi)(1-eta) = -1 + xi + eta - xi*eta
+                        vec![0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],    // dN1/dpsi = -xi(1-eta) = -xi + xi*eta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0],    // dN2/dpsi = -xi*eta
+                        vec![0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],    // dN3/dpsi = -(1-xi)eta = -eta + xi*eta
+                        vec![1.0],                                                  // dN4/dpsi = 1
                     ],
                 ];
 
@@ -813,48 +1002,41 @@ impl ElementType {
 
             ElementType::Wedge => {
                 let num_nodes = 6;
-                // 3D degree 1 with bilinear terms, padding to 3D degree 2
-                // [1, x, y, z, x², xy, xz, y², yz, z²]
+                // [1, xi, eta, psi, xi², xi*eta, xi*psi, eta², eta*psi, psi²]
                 
                 let values = vec![
-                    vec![1.0, -1.0, -1.0, -1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0],  // N1 = (1-x-y)(1-z)
-                    vec![0.0, 1.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0],   // N2 = x(1-z)
-                    vec![0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0],   // N3 = y(1-z)
-                    vec![0.0, -1.0, -1.0, 1.0, 0.0, 1.0, -1.0, 0.0, -1.0, 0.0], // N4 = (1-x-y)z
-                    vec![0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],     // N5 = xz
-                    vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],     // N6 = yz
+                    vec![1.0, -1.0, -1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0],  // N0 = (1-xi-eta)(1-psi)
+                    vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0],   // N1 = xi(1-psi)
+                    vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0],   // N2 = eta(1-psi)
+                    vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, -1.0, 0.0], // N3 = (1-xi-eta)psi
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],     // N4 = xi*psi
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],     // N5 = eta*psi
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dx = -(1-z) = -1 + z
-                        vec![0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dy = -(1-z) = -1 + z
-                        vec![0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dz = -(1-x-y) = -1 + x + y
+                        vec![-1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN0/dxi = -(1-psi) = -1 + psi
+                        vec![1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dxi = 1 - psi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dxi = 0
+                        vec![0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN3/dxi = -psi
+                        vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN4/dxi = psi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dxi = 0
                     ],
                     vec![
-                        vec![1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/dx = 1 - z
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN2/dy = 0
-                        vec![0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/dz = -x
+                        vec![-1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN0/deta = -(1-psi) = -1 + psi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN1/deta = 0
+                        vec![1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/deta = 1 - psi
+                        vec![0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN3/deta = -psi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN4/deta = 0
+                        vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/deta = psi
                     ],
                     vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN3/dx = 0
-                        vec![1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN3/dy = 1 - z
-                        vec![0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN3/dz = -y
-                    ],
-                    vec![
-                        vec![-1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN4/dx = -z
-                        vec![0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN4/dy = -z
-                        vec![0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN4/dz = 1 - x - y
-                    ],
-                    vec![
-                        vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dx = z
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dy = 0
-                        vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dz = x
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN6/dx = 0
-                        vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN6/dy = z
-                        vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN6/dz = y
+                        vec![-1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN0/dpsi = -(1-xi-eta) = -1 + xi + eta
+                        vec![0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN1/dpsi = -xi
+                        vec![0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN2/dpsi = -eta
+                        vec![1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN3/dpsi = 1 - xi - eta
+                        vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN4/dpsi = xi
+                        vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],   // dN5/dpsi = eta
                     ],
                 ];
 
@@ -885,79 +1067,55 @@ impl ElementType {
 
                 let derivatives: Vec<Vec<Vec<f64>>> = vec![
                     vec![
-                        vec![-3.0, 4.0, 4.0, 5.0, 0.0, 0.0,-4.0, 0.0,-4.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN0/dx
-                        vec![-3.0, 4.0, 4.0, 5.0, 0.0, 0.0, 0.0, 0.0,-4.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN0/dy
-                        vec![-3.0, 5.0, 5.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0,-4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN0/dz
+                        vec![-3.0, 4.0, 4.0, 5.0, 0.0, 0.0,-4.0, 0.0,-4.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN0/dxi
+                        vec![-1.0, 4.0, 0.0, 0.0, 4.0, 0.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0,-6.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0], // dN1/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN2/dxi
+                        vec![0.0, 0.0, 0.0,-1.0, 0.0, 0.0,-2.0, 0.0,-2.0, 4.0, 0.0, 0.0, 6.0, 0.0, 2.0,-6.0, 0.0, 2.0,-6.0, 0.0], // dN3/dxi
+                        vec![1.0, 4.0, 0.0, 0.0, 4.0, 0.0, 2.0, 0.0, 0.0,-6.0, 0.0, 0.0, 6.0, 0.0, 0.0,-6.0, 0.0, 0.0, 0.0], // dN4/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN5/dxi
+                        vec![2.0,-8.0, 0.0, 4.0,-8.0, 0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 12.0, 0.0, 0.0,-12.0, 0.0, 0.0, 0.0], // dN6/dxi
+                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN7/dxi
+                        vec![-2.0, 0.0,-4.0, 0.0, 0.0,-8.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dxi
+                        vec![2.0,-8.0, 0.0,-4.0,-8.0, 0.0,-4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 12.0, 0.0, 0.0, 12.0, 0.0, 0.0, 0.0], // dN9/dxi
+                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dxi
+                        vec![-2.0, 0.0,-4.0, 0.0, 0.0,-8.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/dxi
+                        vec![0.0, 0.0, 0.0,-4.0, 0.0, 0.0,-8.0, 0.0,-8.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 8.0, 8.0, 0.0], // dN12/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0,-8.0, 0.0, 0.0, 0.0], // dN13/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,-8.0, 0.0], // dN14/dxi
                     ],
                     vec![
-                        vec![-1.0, 4.0, 0.0, 0.0, 4.0, 0.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0,-6.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0], // dN1/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN1/dy
-                        vec![0.0,-2.0, 0.0, 0.0, 0.0, 0.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN1/dz
+                        vec![-3.0, 4.0, 4.0, 5.0, 0.0, 0.0, 0.0, 0.0,-4.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN0/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN1/deta
+                        vec![-1.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 4.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,-6.0, 6.0, 0.0], // dN2/deta
+                        vec![0.0, 0.0, 0.0,-1.0, 0.0, 0.0, 0.0, 0.0,-2.0, 4.0, 0.0, 0.0, 2.0, 0.0, 2.0,-2.0, 0.0, 6.0,-6.0, 0.0], // dN3/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN4/deta
+                        vec![1.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 4.0, 2.0,-6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.0,-6.0, 0.0], // dN5/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN6/deta
+                        vec![0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN7/deta
+                        vec![2.0,-4.0, 0.0, 0.0, 0.0,-8.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN9/deta
+                        vec![0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/deta
+                        vec![-2.0, 0.0,-4.0, 0.0, 0.0,-8.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/deta
+                        vec![0.0, 0.0, 0.0,-4.0, 0.0, 0.0, 0.0, 0.0,-8.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 8.0, 0.0], // dN12/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN13/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,-8.0, 0.0], // dN14/deta
                     ],
                     vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN2/dx
-                        vec![-1.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 4.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,-6.0, 6.0, 0.0], // dN2/dy
-                        vec![0.0, 0.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0], // dN2/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0,-1.0, 0.0, 0.0,-2.0, 0.0,-2.0, 4.0, 0.0, 0.0, 6.0, 0.0, 2.0,-6.0, 0.0, 2.0,-6.0, 0.0], // dN3/dx
-                        vec![0.0, 0.0, 0.0,-1.0, 0.0, 0.0, 0.0, 0.0,-2.0, 4.0, 0.0, 0.0, 2.0, 0.0, 2.0,-2.0, 0.0, 6.0,-6.0, 0.0], // dN3/dy
-                        vec![1.0, 0.0, 0.0, 4.0, 0.0, 0.0, 2.0, 0.0, 2.0,-6.0, 0.0, 0.0,-2.0, 0.0,-2.0, 6.0, 0.0,-6.0, 6.0, 0.0], // dN3/dz
-                    ],
-                    vec![
-                        vec![1.0, 4.0, 0.0, 0.0, 4.0, 0.0, 2.0, 0.0, 0.0,-6.0, 0.0, 0.0, 6.0, 0.0, 0.0,-6.0, 0.0, 0.0, 0.0], // dN4/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN4/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0,-2.0, 0.0, 0.0, 0.0], // dN4/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN5/dx
-                        vec![1.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 4.0, 2.0,-6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.0,-6.0, 0.0], // dN5/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,-2.0, 0.0], // dN5/dz
-                    ],
-                    vec![
-                        vec![2.0,-8.0, 0.0, 4.0,-8.0, 0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 12.0, 0.0, 0.0,-12.0, 0.0, 0.0, 0.0], // dN6/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN6/dy
-                        vec![0.0, 0.0, 0.0,-4.0, 0.0, 0.0,-4.0, 0.0, 0.0,-4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0], // dN6/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN7/dx
-                        vec![0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN7/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN7/dz
-                    ],
-                    vec![
-                        vec![-2.0, 0.0,-4.0, 0.0, 0.0,-8.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dx
-                        vec![2.0,-4.0, 0.0, 0.0, 0.0,-8.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dz
-                    ],
-                    vec![
-                        vec![2.0,-8.0, 0.0,-4.0,-8.0, 0.0,-4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 12.0, 0.0, 0.0, 12.0, 0.0, 0.0, 0.0], // dN9/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN9/dy
-                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0,-4.0, 0.0, 0.0, 0.0, 0.0, 0.0,-8.0, 0.0, 0.0, 0.0], // dN9/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dx
-                        vec![0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dz
-                    ],
-                    vec![
-                        vec![-2.0, 0.0,-4.0, 0.0, 0.0,-8.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/dx
-                        vec![-2.0, 0.0,-4.0, 0.0, 0.0,-8.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0,-4.0, 0.0, 0.0,-8.0, 0.0,-8.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 8.0, 8.0, 0.0], // dN12/dx
-                        vec![0.0, 0.0, 0.0,-4.0, 0.0, 0.0, 0.0, 0.0,-8.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 8.0, 0.0], // dN12/dy
-                        vec![2.0, 0.0, 0.0, 4.0, 0.0, 0.0, 8.0, 0.0, 8.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0,-8.0, 0.0,-8.0,-8.0, 0.0], // dN12/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0,-8.0, 0.0, 0.0, 0.0], // dN13/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN13/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0,-4.0, 0.0, 0.0, 0.0], // dN13/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,-8.0, 0.0], // dN14/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,-8.0, 0.0], // dN14/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,-4.0, 0.0], // dN14/dz
+                        vec![-3.0, 5.0, 5.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0,-4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN0/dpsi
+                        vec![0.0,-2.0, 0.0, 0.0, 0.0, 0.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN1/dpsi
+                        vec![0.0, 0.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0], // dN2/dpsi
+                        vec![1.0, 0.0, 0.0, 4.0, 0.0, 0.0, 2.0, 0.0, 2.0,-6.0, 0.0, 0.0,-2.0, 0.0,-2.0, 6.0, 0.0,-6.0, 6.0, 0.0], // dN3/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0,-2.0, 0.0, 0.0, 0.0], // dN4/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0,-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,-2.0, 0.0], // dN5/dpsi
+                        vec![0.0, 0.0, 0.0,-4.0, 0.0, 0.0,-4.0, 0.0, 0.0,-4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0], // dN6/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN7/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dpsi
+                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0,-4.0, 0.0, 0.0, 0.0, 0.0, 0.0,-8.0, 0.0, 0.0, 0.0], // dN9/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/dpsi
+                        vec![2.0, 0.0, 0.0, 4.0, 0.0, 0.0, 8.0, 0.0, 8.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0,-8.0, 0.0,-8.0,-8.0, 0.0], // dN12/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0,-4.0, 0.0, 0.0, 0.0], // dN13/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0,-8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,-4.0, 0.0], // dN14/dpsi
                     ],
                 ];
 
@@ -968,118 +1126,88 @@ impl ElementType {
             ElementType::BiquadraticQuadraticWedge => {
                 let num_nodes = 18;
 
-                // Polynomial basis: [1, x, y, z, x², xy, xz, y², yz, z²]
+                // Polynomial basis: [1, xi, eta, psi, xi², xi*eta, xi*psi, eta², eta*psi, psi²]
                 let values = vec![
-                    vec![0.487654320988, -1.0, -1.0, -0.611111111111, 0.444444444444, 0.888888888889, 0.666666666667, 0.444444444444, 0.666666666667, 0.111111111111],
-                    vec![-0.0679012345679, 0.111111111111, -5.27713734955e-16, 0.0555555555556, 0.444444444444, 1.15719499557e-15, -0.666666666667, 4.38088614426e-16, -4.01691975728e-16, 0.111111111111],
-                    vec![-0.0679012345679, -4.4408920985e-16, 0.111111111111, 0.0555555555556, 4.94473784955e-16, 9.51211520478e-16, 4.61619375175e-16, 0.444444444444, -0.666666666667, 0.111111111111],
-                    vec![-0.0123456790123, -0.333333333333, -0.333333333333, 0.388888888889, 0.444444444444, 0.888888888889, -0.666666666667, 0.444444444444, -0.666666666667, 0.111111111111],
-                    vec![0.0987654320988, -0.555555555556, 1.16029566851e-15, -0.277777777778, 0.444444444444, -2.50469749212e-15, 0.666666666667, -7.71778206233e-16, 5.43726392727e-16, 0.111111111111],
-                    vec![0.0987654320988, 1.12410081243e-15, -0.555555555556, -0.277777777778, -7.08887847936e-16, -2.1437535206e-15, -3.89301814306e-16, 0.444444444444, 0.666666666667, 0.111111111111],
-                    vec![0.327160493827, 0.888888888889, -0.333333333333, -1.05555555556, -0.888888888889, -0.888888888889, -4.46313478191e-16, -1.13353847745e-15, 0.666666666667, 0.555555555556],
-                    vec![-0.00617283950617, 0.333333333333, 0.333333333333, -0.388888888889, 6.65968160308e-16, 0.888888888889, -0.666666666667, 4.06435840368e-16, -0.666666666667, 0.555555555556],
-                    vec![0.327160493827, -0.333333333333, 0.888888888889, -1.05555555556, -2.12841598697e-15, -0.888888888889, 0.666666666667, -0.888888888889, 7.16424909104e-16, 0.555555555556],
-                    vec![-0.172839506173, 0.888888888889, 0.333333333333, -0.0555555555556, -0.888888888889, -0.888888888889, 6.49577903159e-16, 1.33180141384e-15, -0.666666666667, 0.555555555556],
-                    vec![0.16049382716, -0.333333333333, -0.333333333333, -0.722222222222, -2.22508824011e-15, 0.888888888889, 0.666666666667, -1.7197428204e-15, 0.666666666667, 0.555555555556],
-                    vec![-0.172839506173, 0.333333333333, 0.888888888889, -0.0555555555556, 1.70374972981e-15, -0.888888888889, -0.666666666667, -0.888888888889, 2.11480270434e-16, 0.555555555556],
-                    vec![0.524691358025, -1.66666666667, -1.66666666667, 0.222222222222, 1.11111111111, 2.22222222222, -7.39552089594e-16, 1.11111111111, -8.50574392057e-16, -0.222222222222],
-                    vec![-0.0308641975309, -0.555555555556, 1.09004825172e-16, 0.222222222222, 1.11111111111, 5.64281736051e-16, -5.561676196e-17, 3.92197763271e-16, -2.08272427846e-16, -0.222222222222],
-                    vec![-0.0308641975309, 8.881784197e-16, -0.555555555556, 0.222222222222, 6.7733316273e-17, -1.87266424387e-16, -9.10477155061e-16, 1.11111111111, -4.31693475692e-16, -0.222222222222],
-                    vec![-0.154320987654, 2.22222222222, -4.98050535729e-15, 1.11111111111, -2.22222222222, -2.22222222222, -7.37135775276e-16, 2.99361821225e-15, -9.0366922897e-16, -1.11111111111],
-                    vec![-0.154320987654, 0.0, -8.52024511066e-16, 1.11111111111, 8.77960459904e-16, 2.22222222222, -9.54249470128e-16, 6.81908874798e-16, -1.20404965067e-15, -1.11111111111],
-                    vec![-0.154320987654, -3.60822483003e-15, 2.22222222222, 1.11111111111, 2.14156515294e-15, -2.22222222222, 4.46046845223e-16, -2.22222222222, -9.83365298982e-16, -1.11111111111],
+                    vec![0.487654320988, -1.0, -1.0, -0.611111111111, 0.444444444444, 0.888888888889, 0.666666666667, 0.444444444444, 0.666666666667, 0.111111111111],  // N0
+                    vec![-0.0679012345679, 0.111111111111, 0.0, 0.0555555555556, 0.444444444444, 0.0, -0.666666666667, 0.0, 0.0, 0.111111111111],   // N1
+                    vec![-0.0679012345679, 0.0, 0.111111111111, 0.0555555555556, 0.0, 0.0, 0.0, 0.444444444444, -0.666666666667, 0.111111111111],   // N2
+                    vec![-0.0123456790123, -0.333333333333, -0.333333333333, 0.388888888889, 0.444444444444, 0.888888888889, -0.666666666667, 0.444444444444, -0.666666666667, 0.111111111111], // N3
+                    vec![0.0987654320988, -0.555555555556, 0.0, -0.277777777778, 0.444444444444, 0.0, 0.666666666667, 0.0, 0.0, 0.111111111111],    // N4
+                    vec![0.0987654320988, 0.0, -0.555555555556, -0.277777777778, 0.0, 0.0, 0.0, 0.444444444444, 0.666666666667, 0.111111111111],    // N5
+                    vec![0.327160493827, 0.888888888889, -0.333333333333, -1.05555555556, -0.888888888889, -0.888888888889, 0.0, 0.0, 0.666666666667, 0.555555555556],  // N6
+                    vec![-0.00617283950617, 0.333333333333, 0.333333333333, -0.388888888889, 0.0, 0.888888888889, -0.666666666667, 0.0, -0.666666666667, 0.555555555556],   // N7
+                    vec![0.327160493827, -0.333333333333, 0.888888888889, -1.05555555556, 0.0, -0.888888888889, 0.666666666667, -0.888888888889, 0.0, 0.555555555556],  // N8
+                    vec![-0.172839506173, 0.888888888889, 0.333333333333, -0.0555555555556, -0.888888888889, -0.888888888889, 0.0, 0.0, -0.666666666667, 0.555555555556],   // N9
+                    vec![0.16049382716, -0.333333333333, -0.333333333333, -0.722222222222, 0.0, 0.888888888889, 0.666666666667, 0.0, 0.666666666667, 0.555555555556],   // N10
+                    vec![-0.172839506173, 0.333333333333, 0.888888888889, -0.0555555555556, 0.0, -0.888888888889, -0.666666666667, -0.888888888889, 0.0, 0.555555555556],   // N11
+                    vec![0.524691358025, -1.66666666667, -1.66666666667, 0.222222222222, 1.11111111111, 2.22222222222, 0.0, 1.11111111111, 0.0, -0.222222222222],  // N12
+                    vec![-0.0308641975309, -0.555555555556, 0.0, 0.222222222222, 1.11111111111, 0.0, 0.0, 0.0, 0.0, -0.222222222222],  // N13
+                    vec![-0.0308641975309, 0.0, -0.555555555556, 0.222222222222, 0.0, 0.0, 0.0, 1.11111111111, 0.0, -0.222222222222], // N14
+                    vec![-0.154320987654, 2.22222222222, 0.0, 1.11111111111, -2.22222222222, -2.22222222222, 0.0, 0.0, 0.0, -1.11111111111], // N15
+                    vec![-0.154320987654, 0.0, 0.0, 1.11111111111, 0.0, 2.22222222222, 0.0, 0.0, 0.0, -1.11111111111], // N16
+                    vec![-0.154320987654, 0.0, 2.22222222222, 1.11111111111, 0.0, -2.22222222222, 0.0, -2.22222222222, 0.0, -1.11111111111], // N17
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-1.0, 0.888888888889, 0.888888888889, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-1.0, 0.888888888889, 0.888888888889, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.611111111111, 0.666666666667, 0.666666666667, 0.222222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        vec![-1.0, 0.888888888889, 0.888888888889, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN0/dxi
+                        vec![0.111111111111, 0.888888888889, 0.0, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN1/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN2/dxi
+                        vec![-0.333333333333, 0.888888888889, 0.888888888889, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN3/dxi
+                        vec![-0.555555555556, 0.888888888889, 0.0, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN4/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN5/dxi
+                        vec![0.888888888889, -1.77777777778, -0.888888888889, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN6/dxi
+                        vec![0.333333333333, 0.0, 0.888888888889, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN7/dxi
+                        vec![-0.333333333333, 0.0, -0.888888888889, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dxi
+                        vec![0.888888888889, -1.77777777778, -0.888888888889, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN9/dxi
+                        vec![-0.333333333333, 0.0, 0.888888888889, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dxi
+                        vec![0.333333333333, 0.0, -0.888888888889, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/dxi
+                        vec![-1.66666666667, 2.22222222222, 2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN12/dxi
+                        vec![-0.555555555556, 2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN13/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN14/dxi
+                        vec![2.22222222222, -4.44444444444, -2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN15/dxi
+                        vec![0.0, 0.0, 2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN16/dxi
+                        vec![0.0, 0.0, -2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN17/dxi
                     ],
                     vec![
-                        vec![0.111111111111, 0.888888888889, 1.15719499557e-15, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-5.27713734955e-16, 1.15719499557e-15, 8.76177228852e-16, -4.01691975728e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0555555555556, -0.666666666667, -4.01691975728e-16, 0.222222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        vec![-1.0, 0.888888888889, 0.888888888889, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN0/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN1/deta
+                        vec![0.111111111111, 0.0, 0.888888888889, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN2/deta
+                        vec![-0.333333333333, 0.888888888889, 0.888888888889, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN3/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN4/deta
+                        vec![-0.555555555556, 0.0, 0.888888888889, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN5/deta
+                        vec![-0.333333333333, -0.888888888889, 0.0, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN6/deta
+                        vec![0.333333333333, 0.888888888889, 0.0, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN7/deta
+                        vec![0.888888888889, -0.888888888889, -1.77777777778, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/deta
+                        vec![0.333333333333, -0.888888888889, 0.0, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN9/deta
+                        vec![-0.333333333333, 0.888888888889, 0.0, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/deta
+                        vec![0.888888888889, -0.888888888889, -1.77777777778, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/deta
+                        vec![-1.66666666667, 2.22222222222, 2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN12/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN13/deta
+                        vec![-0.555555555556, 0.0, 2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN14/deta
+                        vec![0.0, -2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN15/deta
+                        vec![0.0, 2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN16/deta
+                        vec![2.22222222222, -2.22222222222, -4.44444444444, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN17/deta
                     ],
                     vec![
-                        vec![-4.4408920985e-16, 9.88947569911e-16, 9.51211520478e-16, 4.61619375175e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.111111111111, 9.51211520478e-16, 0.888888888889, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0555555555556, 4.61619375175e-16, -0.666666666667, 0.222222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![-0.333333333333, 0.888888888889, 0.888888888889, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.333333333333, 0.888888888889, 0.888888888889, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.388888888889, -0.666666666667, -0.666666666667, 0.222222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![-0.555555555556, 0.888888888889, -2.50469749212e-15, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![1.16029566851e-15, -2.50469749212e-15, -1.54355641247e-15, 5.43726392727e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.277777777778, 0.666666666667, 5.43726392727e-16, 0.222222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![1.12410081243e-15, -1.41777569587e-15, -2.1437535206e-15, -3.89301814306e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.555555555556, -2.1437535206e-15, 0.888888888889, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.277777777778, -3.89301814306e-16, 0.666666666667, 0.222222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.888888888889, -1.77777777778, -0.888888888889, -4.46313478191e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.333333333333, -0.888888888889, -2.2670769549e-15, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-1.05555555556, -4.46313478191e-16, 0.666666666667, 1.11111111111, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.333333333333, 1.33193632062e-15, 0.888888888889, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.333333333333, 0.888888888889, 8.12871680736e-16, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.388888888889, -0.666666666667, -0.666666666667, 1.11111111111, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![-0.333333333333, -4.25683197395e-15, -0.888888888889, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.888888888889, -0.888888888889, -1.77777777778, 7.16424909104e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-1.05555555556, 0.666666666667, 7.16424909104e-16, 1.11111111111, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.888888888889, -1.77777777778, -0.888888888889, 6.49577903159e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.333333333333, -0.888888888889, 2.66360282769e-15, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.0555555555556, 6.49577903159e-16, -0.666666666667, 1.11111111111, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![-0.333333333333, -4.45017648023e-15, 0.888888888889, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.333333333333, 0.888888888889, -3.43948564079e-15, 0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.722222222222, 0.666666666667, 0.666666666667, 1.11111111111, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.333333333333, 3.40749945962e-15, -0.888888888889, -0.666666666667, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.888888888889, -0.888888888889, -1.77777777778, 2.11480270434e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.0555555555556, -0.666666666667, 2.11480270434e-16, 1.11111111111, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![-1.66666666667, 2.22222222222, 2.22222222222, -7.39552089594e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-1.66666666667, 2.22222222222, 2.22222222222, -8.50574392057e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.222222222222, -7.39552089594e-16, -8.50574392057e-16, -0.444444444444, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![-0.555555555556, 2.22222222222, 5.64281736051e-16, -5.561676196e-17, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![1.09004825172e-16, 5.64281736051e-16, 7.84395526542e-16, -2.08272427846e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.222222222222, -5.561676196e-17, -2.08272427846e-16, -0.444444444444, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![8.881784197e-16, 1.35466632546e-16, -1.87266424387e-16, -9.10477155061e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.555555555556, -1.87266424387e-16, 2.22222222222, -4.31693475692e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.222222222222, -9.10477155061e-16, -4.31693475692e-16, -0.444444444444, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![2.22222222222, -4.44444444444, -2.22222222222, -7.37135775276e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-4.98050535729e-15, -2.22222222222, 5.9872364245e-15, -9.0366922897e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![1.11111111111, -7.37135775276e-16, -9.0366922897e-16, -2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 1.75592091981e-15, 2.22222222222, -9.54249470128e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-8.52024511066e-16, 2.22222222222, 1.3638177496e-15, -1.20404965067e-15, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![1.11111111111, -9.54249470128e-16, -1.20404965067e-15, -2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![-3.60822483003e-15, 4.28313030588e-15, -2.22222222222, 4.46046845223e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![2.22222222222, -2.22222222222, -4.44444444444, -9.83365298982e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![1.11111111111, 4.46046845223e-16, -9.83365298982e-16, -2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        vec![-0.611111111111, 0.666666666667, 0.666666666667, 0.222222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN0/dpsi
+                        vec![0.0555555555556, -0.666666666667, 0.0, 0.222222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN1/dpsi
+                        vec![0.0555555555556, 0.0, -0.666666666667, 0.222222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN2/dpsi
+                        vec![0.388888888889, -0.666666666667, -0.666666666667, 0.222222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN3/dpsi
+                        vec![-0.277777777778, 0.666666666667, 0.0, 0.222222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN4/dpsi
+                        vec![-0.277777777778, 0.0, 0.666666666667, 0.222222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN5/dpsi
+                        vec![-1.05555555556, 0.0, 0.666666666667, 1.11111111111, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN6/dpsi
+                        vec![-0.388888888889, -0.666666666667, -0.666666666667, 1.11111111111, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN7/dpsi
+                        vec![-1.05555555556, 0.666666666667, 0.0, 1.11111111111, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dpsi
+                        vec![-0.0555555555556, 0.0, -0.666666666667, 1.11111111111, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN9/dpsi
+                        vec![-0.722222222222, 0.666666666667, 0.666666666667, 1.11111111111, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dpsi
+                        vec![-0.0555555555556, -0.666666666667, 0.0, 1.11111111111, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/dpsi
+                        vec![0.222222222222, 0.0, 0.0, -0.444444444444, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN12/dpsi
+                        vec![0.222222222222, 0.0, 0.0, -0.444444444444, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN13/dpsi
+                        vec![0.222222222222, 0.0, 0.0, -0.444444444444, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN14/dpsi
+                        vec![1.11111111111, 0.0, 0.0, -2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN15/dpsi
+                        vec![1.11111111111, 0.0, 0.0, -2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN16/dpsi
+                        vec![1.11111111111, 0.0, 0.0, -2.22222222222, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN17/dpsi
                     ],
                 ];
 
@@ -1089,58 +1217,48 @@ impl ElementType {
             ElementType::Hexahedron => {
                 let num_nodes = 8;
 
-                // Polynomial basis: [1, x, y, z, x², xy, xz, y², yz, z²]
+                // Polynomial basis: [1, xi, eta, psi, xi², xi*eta, xi*psi, eta², eta*psi, psi²]
                 let values= vec![
-                    vec![ 1.0, -1.0, -1.0, -1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0],  // N0 = (1-x)(1-y)(1-z)
-                    vec![ 0.0,  1.0,  0.0, -1.0, 0.0, 0.0, -1.0, 0.0,  0.0, 0.0], // N1 = x(1-y)(1-z)
-                    vec![ 0.0,  0.0,  1.0, -1.0, 0.0, 0.0,  0.0, 0.0, -1.0, 0.0], // N2 = xy(1-z)
-                    vec![ 0.0, -1.0,  1.0, -1.0, 0.0, 1.0,  1.0, 0.0, -1.0, 0.0], // N3 = (1-x)y(1-z)
-                    vec![ 0.0, -1.0, -1.0,  1.0, 0.0, 1.0, -1.0, 1.0, -1.0, 0.0], // N4 = (1-x)(1-y)z
-                    vec![ 0.0,  1.0,  0.0,  1.0, 0.0, 0.0,  1.0, 0.0,  0.0, 0.0], // N5 = x(1-y)z
-                    vec![ 0.0,  0.0,  1.0,  1.0, 0.0, 0.0,  0.0, 0.0,  1.0, 0.0], // N6 = xyz
-                    vec![ 0.0, -1.0,  1.0,  1.0, 0.0, 1.0, -1.0, 0.0,  1.0, 0.0], // N7 = (1-x)yz
+                    vec![ 1.0, -1.0, -1.0, -1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0],  // N0 = (1-xi)(1-eta)(1-psi)
+                    vec![ 0.0,  1.0,  0.0, -1.0, 0.0, 0.0, -1.0, 0.0,  0.0, 0.0], // N1 = xi(1-eta)(1-psi)
+                    vec![ 0.0,  0.0,  1.0, -1.0, 0.0, 0.0,  0.0, 0.0, -1.0, 0.0], // N2 = xi*eta(1-psi)
+                    vec![ 0.0, -1.0,  1.0, -1.0, 0.0, 1.0,  1.0, 0.0, -1.0, 0.0], // N3 = (1-xi)eta(1-psi)
+                    vec![ 0.0, -1.0, -1.0,  1.0, 0.0, 1.0, -1.0, 1.0, -1.0, 0.0], // N4 = (1-xi)(1-eta)psi
+                    vec![ 0.0,  1.0,  0.0,  1.0, 0.0, 0.0,  1.0, 0.0,  0.0, 0.0], // N5 = xi(1-eta)psi
+                    vec![ 0.0,  0.0,  1.0,  1.0, 0.0, 0.0,  0.0, 0.0,  1.0, 0.0], // N6 = xi*eta*psi
+                    vec![ 0.0, -1.0,  1.0,  1.0, 0.0, 1.0, -1.0, 0.0,  1.0, 0.0], // N7 = (1-xi)eta*psi
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-1.0,  0.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN0/dx = -(1-y)(1-z)
-                        vec![ 0.0, -1.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN0/dy = -(1-x)(1-z)
-                        vec![ 0.0,  0.0, -1.0,  1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN0/dz = -(1-x)(1-y)
+                        vec![-1.0,  0.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN0/dxi = -(1-eta)(1-psi)
+                        vec![ 1.0,  0.0,  0.0, -1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN1/dxi = (1-eta)(1-psi)
+                        vec![ 0.0,  0.0,  0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN2/dxi = eta(1-psi)
+                        vec![-1.0,  0.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN3/dxi = -eta(1-psi)
+                        vec![-1.0,  0.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN4/dxi = -(1-eta)psi
+                        vec![ 1.0,  0.0,  0.0,  1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN5/dxi = (1-eta)psi
+                        vec![ 0.0,  0.0,  0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN6/dxi = eta*psi
+                        vec![-1.0,  0.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN7/dxi = -eta*psi
                     ],
                     vec![
-                        vec![ 1.0,  0.0,  0.0, -1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN1/dx = (1-y)(1-z)
-                        vec![ 0.0,  0.0,  0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN1/dy = -x(1-z)
-                        vec![ 0.0,  0.0,  0.0, -1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN1/dz = -x(1-y)
+                        vec![ 0.0, -1.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN0/deta = -(1-xi)(1-psi)
+                        vec![ 0.0,  0.0,  0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN1/deta = -xi(1-psi)
+                        vec![ 1.0,  0.0,  0.0, -1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN2/deta = xi(1-psi)
+                        vec![ 1.0,  0.0,  0.0, -1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN3/deta = (1-xi)(1-psi)
+                        vec![ 0.0, -1.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN4/deta = -(1-xi)psi
+                        vec![ 0.0,  0.0,  0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN5/deta = -xi*psi
+                        vec![ 1.0,  0.0,  0.0,  1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN6/deta = xi*psi
+                        vec![ 1.0,  0.0,  0.0,  1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN7/deta = (1-xi)psi
                     ],
                     vec![
-                        vec![ 0.0,  0.0,  0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN2/dx = y(1-z)
-                        vec![ 1.0,  0.0,  0.0, -1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN2/dy = x(1-z)
-                        vec![ 0.0,  0.0,  0.0, -1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN2/dz = -xy
-                    ],
-                    vec![
-                        vec![-1.0,  0.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN3/dx = -y(1-z)
-                        vec![ 1.0,  0.0,  0.0, -1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN3/dy = (1-x)(1-z)
-                        vec![ 0.0,  0.0,  0.0, -1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN3/dz = -(1-x)y
-                    ],
-                    vec![
-                        vec![-1.0,  0.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN4/dx = -(1-y)z
-                        vec![ 0.0, -1.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN4/dy = -(1-x)z
-                        vec![ 1.0,  0.0,  0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN4/dz = (1-x)(1-y)
-                    ],
-                    vec![
-                        vec![ 1.0,  0.0,  0.0,  1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN5/dx = (1-y)z
-                        vec![ 0.0,  0.0,  0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN5/dy = -xz
-                        vec![ 0.0,  0.0,  0.0,  1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN5/dz = x(1-y)
-                    ],
-                    vec![
-                        vec![ 0.0,  0.0,  0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN6/dx = yz
-                        vec![ 1.0,  0.0,  0.0,  1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN6/dy = xz
-                        vec![ 0.0,  0.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN6/dz = xy
-                    ],
-                    vec![
-                        vec![-1.0,  0.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN7/dx = -yz
-                        vec![ 1.0,  0.0,  0.0,  1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN7/dy = (1-x)z
-                        vec![ 0.0,  0.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN7/dz = (1-x)y
+                        vec![ 0.0,  0.0, -1.0,  1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN0/dpsi = -(1-xi)(1-eta)
+                        vec![ 0.0,  0.0,  0.0, -1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN1/dpsi = -xi(1-eta)
+                        vec![ 0.0,  0.0,  0.0, -1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN2/dpsi = -xi*eta
+                        vec![ 0.0,  0.0,  0.0, -1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN3/dpsi = -(1-xi)eta
+                        vec![ 1.0,  0.0,  0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN4/dpsi = (1-xi)(1-eta)
+                        vec![ 0.0,  0.0,  0.0,  1.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN5/dpsi = xi(1-eta)
+                        vec![ 0.0,  0.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN6/dpsi = xi*eta
+                        vec![ 0.0,  0.0,  1.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0, 0.0], // dN7/dpsi = (1-xi)eta
                     ],
                 ];
 
@@ -1176,104 +1294,70 @@ impl ElementType {
 
                 let derivatives = vec![
                     vec![
-                        vec![-3.0, 4.0, 5.0, 5.0, 0.0, -4.0, -4.0, -2.0, -7.0, -2.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 2.0, 2.0, 0.0], // dN0/dx
-                        vec![-3.0, 5.0, 4.0, 5.0, -2.0, -4.0, -7.0, 0.0, -4.0, -2.0, 0.0, 0.0, 2.0, 0.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0], // dN0/dy
-                        vec![-3.0, 5.0, 5.0, 4.0, -2.0, -7.0, -4.0, -2.0, -4.0, 0.0, 0.0, 2.0, 0.0, 2.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN0/dz
+                        vec![-3.0, 4.0, 5.0, 5.0, 0.0, -4.0, -4.0, -2.0, -7.0, -2.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 2.0, 2.0, 0.0], // dN0/dxi
+                        vec![-1.0, 4.0, -1.0, -1.0, 0.0, -4.0, -4.0, 2.0, 3.0, 2.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, -2.0, -2.0, 0.0], // dN1/dxi
+                        vec![0.0, 0.0, -3.0, 0.0, 0.0, 4.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, -2.0, 2.0, 0.0], // dN2/dxi
+                        vec![0.0, 0.0, -1.0, 0.0, 0.0, 4.0, 0.0, -2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 2.0, -2.0, 0.0], // dN3/dxi
+                        vec![0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 4.0, 0.0, 3.0, -2.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, -2.0, 2.0, 0.0], // dN4/dxi
+                        vec![0.0, 0.0, 0.0, -3.0, 0.0, 0.0, 4.0, 0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 2.0, -2.0, 0.0], // dN5/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 2.0, 2.0, 0.0], // dN6/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, -2.0, -2.0, 0.0], // dN7/dxi
+                        vec![4.0, -8.0, -4.0, -4.0, 0.0, 8.0, 8.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dxi
+                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, -4.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0], // dN9/dxi
+                        vec![0.0, 0.0, 4.0, 0.0, 0.0, -8.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dxi
+                        vec![0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 4.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0], // dN11/dxi
+                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, -8.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN12/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0], // dN13/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN14/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0], // dN15/dxi
+                        vec![0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 4.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0], // dN16/dxi
+                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, -4.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0], // dN17/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0], // dN18/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0], // dN19/dxi
                     ],
                     vec![
-                        vec![-1.0, 4.0, -1.0, -1.0, 0.0, -4.0, -4.0, 2.0, 3.0, 2.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, -2.0, -2.0, 0.0], // dN1/dx
-                        vec![0.0, -1.0, 0.0, 0.0, -2.0, 4.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, -4.0, -2.0, 0.0, 0.0, 0.0, 0.0], // dN1/dy
-                        vec![0.0, -1.0, 0.0, 0.0, -2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, -2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN1/dz
+                        vec![-3.0, 5.0, 4.0, 5.0, -2.0, -4.0, -7.0, 0.0, -4.0, -2.0, 0.0, 0.0, 2.0, 0.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0], // dN0/deta
+                        vec![0.0, -1.0, 0.0, 0.0, -2.0, 4.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, -4.0, -2.0, 0.0, 0.0, 0.0, 0.0], // dN1/deta
+                        vec![0.0, -3.0, 0.0, 0.0, 2.0, 4.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -2.0, 0.0, -4.0, 2.0, 0.0, 0.0, 0.0, 0.0], // dN2/deta
+                        vec![-1.0, -1.0, 4.0, -1.0, 2.0, -4.0, 3.0, 0.0, -4.0, 2.0, 0.0, 0.0, -2.0, 0.0, 4.0, -2.0, 0.0, 0.0, 0.0, 0.0], // dN3/deta
+                        vec![0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 3.0, 0.0, 4.0, -2.0, 0.0, 0.0, -2.0, 0.0, -4.0, 2.0, 0.0, 0.0, 0.0, 0.0], // dN4/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -2.0, 0.0, 4.0, -2.0, 0.0, 0.0, 0.0, 0.0], // dN5/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0], // dN6/deta
+                        vec![0.0, 0.0, 0.0, -3.0, 0.0, 0.0, 1.0, 0.0, 4.0, 2.0, 0.0, 0.0, 2.0, 0.0, -4.0, -2.0, 0.0, 0.0, 0.0, 0.0], // dN7/deta
+                        vec![0.0, -4.0, 0.0, 0.0, 4.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/deta
+                        vec![0.0, 4.0, 0.0, 0.0, 0.0, -8.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN9/deta
+                        vec![0.0, 4.0, 0.0, 0.0, -4.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/deta
+                        vec![4.0, -4.0, -8.0, -4.0, 0.0, 8.0, 4.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN12/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN13/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN14/deta
+                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN15/deta
+                        vec![0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0], // dN16/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0], // dN17/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0], // dN18/deta
+                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0], // dN19/deta
                     ],
                     vec![
-                        vec![0.0, 0.0, -3.0, 0.0, 0.0, 4.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, -2.0, 2.0, 0.0], // dN2/dx
-                        vec![0.0, -3.0, 0.0, 0.0, 2.0, 4.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -2.0, 0.0, -4.0, 2.0, 0.0, 0.0, 0.0, 0.0], // dN2/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -2.0, 0.0, -2.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN2/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, -1.0, 0.0, 0.0, 4.0, 0.0, -2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 2.0, -2.0, 0.0], // dN3/dx
-                        vec![-1.0, -1.0, 4.0, -1.0, 2.0, -4.0, 3.0, 0.0, -4.0, 2.0, 0.0, 0.0, -2.0, 0.0, 4.0, -2.0, 0.0, 0.0, 0.0, 0.0], // dN3/dy
-                        vec![0.0, 0.0, -1.0, 0.0, 0.0, 3.0, 0.0, -2.0, 4.0, 0.0, 0.0, -2.0, 0.0, 2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN3/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 4.0, 0.0, 3.0, -2.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, -2.0, 2.0, 0.0], // dN4/dx
-                        vec![0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 3.0, 0.0, 4.0, -2.0, 0.0, 0.0, -2.0, 0.0, -4.0, 2.0, 0.0, 0.0, 0.0, 0.0], // dN4/dy
-                        vec![-1.0, -1.0, -1.0, 4.0, 2.0, 3.0, -4.0, 2.0, -4.0, 0.0, 0.0, -2.0, 0.0, -2.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN4/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, -3.0, 0.0, 0.0, 4.0, 0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 2.0, -2.0, 0.0], // dN5/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -2.0, 0.0, 4.0, -2.0, 0.0, 0.0, 0.0, 0.0], // dN5/dy
-                        vec![0.0, -3.0, 0.0, 0.0, 2.0, 1.0, 4.0, 0.0, 0.0, 0.0, 0.0, -2.0, 0.0, 2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN5/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 2.0, 2.0, 0.0], // dN6/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0], // dN6/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 2.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN6/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, -2.0, -2.0, 0.0], // dN7/dx
-                        vec![0.0, 0.0, 0.0, -3.0, 0.0, 0.0, 1.0, 0.0, 4.0, 2.0, 0.0, 0.0, 2.0, 0.0, -4.0, -2.0, 0.0, 0.0, 0.0, 0.0], // dN7/dy
-                        vec![0.0, 0.0, -3.0, 0.0, 0.0, 1.0, 0.0, 2.0, 4.0, 0.0, 0.0, 2.0, 0.0, -2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN7/dz
-                    ],
-                    vec![
-                        vec![4.0, -8.0, -4.0, -4.0, 0.0, 8.0, 8.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dx
-                        vec![0.0, -4.0, 0.0, 0.0, 4.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dy
-                        vec![0.0, -4.0, 0.0, 0.0, 4.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, -4.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0], // dN9/dx
-                        vec![0.0, 4.0, 0.0, 0.0, 0.0, -8.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN9/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN9/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 4.0, 0.0, 0.0, -8.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dx
-                        vec![0.0, 4.0, 0.0, 0.0, -4.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 4.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0], // dN11/dx
-                        vec![4.0, -4.0, -8.0, -4.0, 0.0, 8.0, 4.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/dy
-                        vec![0.0, 0.0, -4.0, 0.0, 0.0, 4.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, -8.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN12/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN12/dy
-                        vec![0.0, 4.0, 0.0, 0.0, -4.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN12/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0], // dN13/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN13/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN13/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN14/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN14/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN14/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0], // dN15/dx
-                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN15/dy
-                        vec![0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN15/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 4.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0], // dN16/dx
-                        vec![0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0], // dN16/dy
-                        vec![4.0, -4.0, -4.0, -8.0, 0.0, 4.0, 8.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN16/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, -4.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0], // dN17/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0], // dN17/dy
-                        vec![0.0, 4.0, 0.0, 0.0, 0.0, -4.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN17/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0], // dN18/dx
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0], // dN18/dy
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN18/dz
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0], // dN19/dx
-                        vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0], // dN19/dy
-                        vec![0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN19/dz
+                        vec![-3.0, 5.0, 5.0, 4.0, -2.0, -7.0, -4.0, -2.0, -4.0, 0.0, 0.0, 2.0, 0.0, 2.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN0/dpsi
+                        vec![0.0, -1.0, 0.0, 0.0, -2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, -2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN1/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -2.0, 0.0, -2.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN2/dpsi
+                        vec![0.0, 0.0, -1.0, 0.0, 0.0, 3.0, 0.0, -2.0, 4.0, 0.0, 0.0, -2.0, 0.0, 2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN3/dpsi
+                        vec![-1.0, -1.0, -1.0, 4.0, 2.0, 3.0, -4.0, 2.0, -4.0, 0.0, 0.0, -2.0, 0.0, -2.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN4/dpsi
+                        vec![0.0, -3.0, 0.0, 0.0, 2.0, 1.0, 4.0, 0.0, 0.0, 0.0, 0.0, -2.0, 0.0, 2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN5/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 2.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN6/dpsi
+                        vec![0.0, 0.0, -3.0, 0.0, 0.0, 1.0, 0.0, 2.0, 4.0, 0.0, 0.0, 2.0, 0.0, -2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN7/dpsi
+                        vec![0.0, -4.0, 0.0, 0.0, 4.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN9/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dpsi
+                        vec![0.0, 0.0, -4.0, 0.0, 0.0, 4.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/dpsi
+                        vec![0.0, 4.0, 0.0, 0.0, -4.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN12/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN13/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN14/dpsi
+                        vec![0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN15/dpsi
+                        vec![4.0, -4.0, -4.0, -8.0, 0.0, 4.0, 8.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN16/dpsi
+                        vec![0.0, 4.0, 0.0, 0.0, 0.0, -4.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN17/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN18/dpsi
+                        vec![0.0, 0.0, 4.0, 0.0, 0.0, -4.0, 0.0, 0.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN19/dpsi
                     ],
                 ];
 
@@ -1285,152 +1369,113 @@ impl ElementType {
                 let num_nodes = 24;
 
                 let values = vec![
-                    vec![0.0625, -0.125, 0.0625, -0.125, 0.25, -0.125, 0.0625, -0.125, 0.0625, -0.125, 0.25, -0.125, 0.25, -0.5, 0.25, -0.125, 0.25, -0.125, 0.0625, -0.125, 0.0625, 0.25, -0.5, 0.25, 0.0625, -0.125, 0.0625],
-                    vec![-0.0625, 0.125, -0.0625, -0.125, 0.25, -0.125, -0.0625, 0.125, -0.0625, 0.125, -0.25, 0.125, 0.25, -0.5, 0.25, -0.125, 0.25, -0.125, -0.0625, 0.125, -0.0625, -0.25, 0.5, -0.25, 0.0625, -0.125, 0.0625],
-                    vec![0.0625, -0.125, 0.0625, 0.125, -0.25, 0.125, -0.0625, 0.125, -0.0625, -0.125, 0.25, -0.125, 0.25, -0.5, 0.25, 0.125, -0.25, 0.125, -0.0625, 0.125, -0.0625, 0.25, -0.5, 0.25, 0.0625, -0.125, 0.0625],
-                    vec![-0.0625, 0.125, -0.0625, 0.125, -0.25, 0.125, 0.0625, -0.125, 0.0625, 0.125, -0.25, 0.125, 0.25, -0.5, 0.25, 0.125, -0.25, 0.125, 0.0625, -0.125, 0.0625, -0.25, 0.5, -0.25, 0.0625, -0.125, 0.0625],
-                    vec![-0.0625, -0.125, -0.0625, -0.125, -0.25, -0.125, -0.0625, -0.125, -0.0625, -0.125, -0.25, -0.125, -0.25, -0.5, -0.25, -0.125, -0.25, -0.125, -0.0625, -0.125, -0.0625, -0.25, -0.5, -0.25, -0.0625, -0.125, -0.0625],
-                    vec![0.0625, 0.125, 0.0625, -0.125, -0.25, -0.125, -0.0625, -0.125, -0.0625, 0.125, 0.25, 0.125, -0.25, -0.5, -0.25, -0.125, -0.25, -0.125, -0.0625, -0.125, -0.0625, 0.25, 0.5, 0.25, -0.0625, -0.125, -0.0625],
-                    vec![-0.0625, -0.125, -0.0625, 0.125, 0.25, 0.125, -0.0625, -0.125, -0.0625, -0.125, -0.25, -0.125, -0.25, -0.5, -0.25, 0.125, 0.25, 0.125, -0.0625, -0.125, -0.0625, -0.25, -0.5, -0.25, -0.0625, -0.125, -0.0625],
-                    vec![0.0625, 0.125, 0.0625, 0.125, 0.25, 0.125, 0.0625, 0.125, 0.0625, 0.125, 0.25, 0.125, -0.25, -0.5, -0.25, 0.125, 0.25, 0.125, 0.0625, 0.125, 0.0625, 0.25, 0.5, 0.25, -0.0625, -0.125, -0.0625],
-                    vec![-0.25, 0.5, -0.25, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, -0.5, 1.0, -0.5, -0.25, 0.5, -0.25, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25],
-                    vec![0.0, 0.0, 0.0, -0.25, 0.5, -0.25, -0.25, 0.5, -0.25, -0.5, 1.0, -0.5, 0.5, -1.0, 0.5, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.25, -0.5, 0.25],
-                    vec![-0.25, 0.5, -0.25, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, -0.5, 1.0, -0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, -0.25, 0.5, -0.25, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25],
-                    vec![0.0, 0.0, 0.0, -0.25, 0.5, -0.25, -0.25, 0.5, -0.25, 0.5, -1.0, 0.5, -0.5, 1.0, -0.5, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.25, -0.5, 0.25],
-                    vec![0.25, 0.5, 0.25, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.5, 1.0, 0.5, 0.25, 0.5, 0.25, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25],
-                    vec![0.0, 0.0, 0.0, 0.25, 0.5, 0.25, 0.25, 0.5, 0.25, -0.5, -1.0, -0.5, -0.5, -1.0, -0.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.25, -0.5, -0.25],
-                    vec![0.25, 0.5, 0.25, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.25, 0.5, 0.25, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25],
-                    vec![0.0, 0.0, 0.0, 0.25, 0.5, 0.25, 0.25, 0.5, 0.25, 0.5, 1.0, 0.5, 0.5, 1.0, 0.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.25, -0.5, -0.25],
-                    vec![0.0625, 0.0, -0.0625, 0.0, 0.0, 0.0, -0.0625, 0.0, 0.0625, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0625, 0.0, -0.0625, 0.0, 0.0, 0.0, -0.0625, 0.0, 0.0625],
-                    vec![-0.0625, 0.0, 0.0625, 0.0, 0.0, 0.0, 0.0625, 0.0, -0.0625, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, -0.0625, 0.0, 0.0625, 0.0, 0.0, 0.0, 0.0625, 0.0, -0.0625],
-                    vec![0.0625, 0.0, -0.0625, 0.0, 0.0, 0.0, -0.0625, 0.0, 0.0625, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, -0.0625, 0.0, 0.0625, 0.0, 0.0, 0.0, 0.0625, 0.0, -0.0625],
-                    vec![-0.0625, 0.0, 0.0625, 0.0, 0.0, 0.0, 0.0625, 0.0, -0.0625, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0625, 0.0, -0.0625, 0.0, 0.0, 0.0, -0.0625, 0.0, 0.0625],
-                    vec![0.0, 0.0, 0.0, 0.125, 0.0, -0.125, -0.125, 0.0, 0.125, -0.25, 0.0, 0.25, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.125, 0.0, -0.125],
-                    vec![0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.125, 0.0, -0.125, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, -0.125, 0.0, 0.125],
-                    vec![0.0, -0.5, 0.0, 0.0, 1.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    vec![0.0, 0.5, 0.0, 0.0, -1.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    vec![0.0625, -0.125, 0.0625, -0.125, 0.25, -0.125, 0.0625, -0.125, 0.0625, -0.125, 0.25, -0.125, 0.25, -0.5, 0.25, -0.125, 0.25, -0.125, 0.0625, -0.125, 0.0625, 0.25, -0.5, 0.25, 0.0625, -0.125, 0.0625], // N0
+                    vec![-0.0625, 0.125, -0.0625, -0.125, 0.25, -0.125, -0.0625, 0.125, -0.0625, 0.125, -0.25, 0.125, 0.25, -0.5, 0.25, -0.125, 0.25, -0.125, -0.0625, 0.125, -0.0625, -0.25, 0.5, -0.25, 0.0625, -0.125, 0.0625], // N1
+                    vec![0.0625, -0.125, 0.0625, 0.125, -0.25, 0.125, -0.0625, 0.125, -0.0625, -0.125, 0.25, -0.125, 0.25, -0.5, 0.25, 0.125, -0.25, 0.125, -0.0625, 0.125, -0.0625, 0.25, -0.5, 0.25, 0.0625, -0.125, 0.0625], // N2
+                    vec![-0.0625, 0.125, -0.0625, 0.125, -0.25, 0.125, 0.0625, -0.125, 0.0625, 0.125, -0.25, 0.125, 0.25, -0.5, 0.25, 0.125, -0.25, 0.125, 0.0625, -0.125, 0.0625, -0.25, 0.5, -0.25, 0.0625, -0.125, 0.0625], // N3
+                    vec![-0.0625, -0.125, -0.0625, -0.125, -0.25, -0.125, -0.0625, -0.125, -0.0625, -0.125, -0.25, -0.125, -0.25, -0.5, -0.25, -0.125, -0.25, -0.125, -0.0625, -0.125, -0.0625, -0.25, -0.5, -0.25, -0.0625, -0.125, -0.0625], // N4
+                    vec![0.0625, 0.125, 0.0625, -0.125, -0.25, -0.125, -0.0625, -0.125, -0.0625, 0.125, 0.25, 0.125, -0.25, -0.5, -0.25, -0.125, -0.25, -0.125, -0.0625, -0.125, -0.0625, 0.25, 0.5, 0.25, -0.0625, -0.125, -0.0625], // N5
+                    vec![-0.0625, -0.125, -0.0625, 0.125, 0.25, 0.125, -0.0625, -0.125, -0.0625, -0.125, -0.25, -0.125, -0.25, -0.5, -0.25, 0.125, 0.25, 0.125, -0.0625, -0.125, -0.0625, -0.25, -0.5, -0.25, -0.0625, -0.125, -0.0625], // N6
+                    vec![0.0625, 0.125, 0.0625, 0.125, 0.25, 0.125, 0.0625, 0.125, 0.0625, 0.125, 0.25, 0.125, -0.25, -0.5, -0.25, 0.125, 0.25, 0.125, 0.0625, 0.125, 0.0625, 0.25, 0.5, 0.25, -0.0625, -0.125, -0.0625], // N7
+                    vec![-0.25, 0.5, -0.25, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, -0.5, 1.0, -0.5, -0.25, 0.5, -0.25, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25], // N8
+                    vec![0.0, 0.0, 0.0, -0.25, 0.5, -0.25, -0.25, 0.5, -0.25, -0.5, 1.0, -0.5, 0.5, -1.0, 0.5, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.25, -0.5, 0.25], // N9
+                    vec![-0.25, 0.5, -0.25, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, -0.5, 1.0, -0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, -0.25, 0.5, -0.25, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25], // N10
+                    vec![0.0, 0.0, 0.0, -0.25, 0.5, -0.25, -0.25, 0.5, -0.25, 0.5, -1.0, 0.5, -0.5, 1.0, -0.5, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.25, -0.5, 0.25], // N11
+                    vec![0.25, 0.5, 0.25, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.5, 1.0, 0.5, 0.25, 0.5, 0.25, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25], // N12
+                    vec![0.0, 0.0, 0.0, 0.25, 0.5, 0.25, 0.25, 0.5, 0.25, -0.5, -1.0, -0.5, -0.5, -1.0, -0.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.25, -0.5, -0.25], // N13
+                    vec![0.25, 0.5, 0.25, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.25, 0.5, 0.25, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25], // N14
+                    vec![0.0, 0.0, 0.0, 0.25, 0.5, 0.25, 0.25, 0.5, 0.25, 0.5, 1.0, 0.5, 0.5, 1.0, 0.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.25, -0.5, -0.25], // N15
+                    vec![0.0625, 0.0, -0.0625, 0.0, 0.0, 0.0, -0.0625, 0.0, 0.0625, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0625, 0.0, -0.0625, 0.0, 0.0, 0.0, -0.0625, 0.0, 0.0625], // N16
+                    vec![-0.0625, 0.0, 0.0625, 0.0, 0.0, 0.0, 0.0625, 0.0, -0.0625, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, -0.0625, 0.0, 0.0625, 0.0, 0.0, 0.0, 0.0625, 0.0, -0.0625], // N17
+                    vec![0.0625, 0.0, -0.0625, 0.0, 0.0, 0.0, -0.0625, 0.0, 0.0625, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, -0.0625, 0.0, 0.0625, 0.0, 0.0, 0.0, 0.0625, 0.0, -0.0625], // N18
+                    vec![-0.0625, 0.0, 0.0625, 0.0, 0.0, 0.0, 0.0625, 0.0, -0.0625, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0625, 0.0, -0.0625, 0.0, 0.0, 0.0, -0.0625, 0.0, 0.0625], // N19
+                    vec![0.0, 0.0, 0.0, 0.125, 0.0, -0.125, -0.125, 0.0, 0.125, -0.25, 0.0, 0.25, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.125, 0.0, -0.125],  // N20
+                    vec![0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.125, 0.0, -0.125, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, -0.125, 0.0, 0.125],  // N21
+                    vec![0.0, -0.5, 0.0, 0.0, 1.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // N22
+                    vec![0.0, 0.5, 0.0, 0.0, -1.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // N23
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-0.125, 0.25, -0.125, 0.25, -0.5, 0.25, -0.125, 0.25, -0.125, 0.125, -0.25, 0.125, 0.5, -1.0, 0.5, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.125, 0.25, -0.125, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, -0.25, 0.5, -0.25, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0],
-                        vec![-0.125, 0.125, 0.0, 0.25, -0.25, 0.0, -0.125, 0.125, 0.0, 0.25, -0.25, 0.0, -0.5, 0.5, 0.0, 0.25, -0.25, 0.0, -0.125, 0.125, 0.0, -0.5, 0.5, 0.0, -0.125, 0.125, 0.0],
+                        vec![-0.125, 0.25, -0.125, 0.25, -0.5, 0.25, -0.125, 0.25, -0.125, 0.125, -0.25, 0.125, 0.5, -1.0, 0.5, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN0/dxi
+                        vec![0.125, -0.25, 0.125, 0.25, -0.5, 0.25, -0.125, 0.25, -0.125, -0.125, 0.25, -0.125, -0.5, 1.0, -0.5, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN1/dxi
+                        vec![-0.125, 0.25, -0.125, 0.25, -0.5, 0.25, 0.125, -0.25, 0.125, -0.125, 0.25, -0.125, 0.5, -1.0, 0.5, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN2/dxi
+                        vec![0.125, -0.25, 0.125, 0.25, -0.5, 0.25, 0.125, -0.25, 0.125, 0.125, -0.25, 0.125, -0.5, 1.0, -0.5, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN3/dxi
+                        vec![-0.125, -0.25, -0.125, -0.25, -0.5, -0.25, -0.125, -0.25, -0.125, -0.125, -0.25, -0.125, -0.5, -1.0, -0.5, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN4/dxi
+                        vec![0.125, 0.25, 0.125, -0.25, -0.5, -0.25, -0.125, -0.25, -0.125, -0.125, -0.25, -0.125, 0.5, 1.0, 0.5, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN5/dxi
+                        vec![-0.125, -0.25, -0.125, -0.25, -0.5, -0.25, 0.125, 0.25, 0.125, -0.125, -0.25, -0.125, -0.5, -1.0, -0.5, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN6/dxi
+                        vec![0.125, 0.25, 0.125, -0.25, -0.5, -0.25, 0.125, 0.25, 0.125, 0.125, 0.25, 0.125, 0.5, 1.0, 0.5, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN7/dxi
+                        vec![0.5, -1.0, 0.5, 0.0, 0.0, 0.0, -0.5, 1.0, -0.5, -0.5, 1.0, -0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dxi
+                        vec![-0.5, 1.0, -0.5, 0.5, -1.0, 0.5, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN9/dxi
+                        vec![-0.5, 1.0, -0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, -0.5, 1.0, -0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dxi
+                        vec![0.5, -1.0, 0.5, -0.5, 1.0, -0.5, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN11/dxi
+                        vec![-0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.5, 1.0, 0.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN12/dxi
+                        vec![-0.5, -1.0, -0.5, -0.5, -1.0, -0.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN13/dxi
+                        vec![0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN14/dxi
+                        vec![0.5, 1.0, 0.5, 0.5, 1.0, 0.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN15/dxi
+                        vec![-0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN16/dxi
+                        vec![0.125, 0.0, -0.125, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN17/dxi
+                        vec![0.125, 0.0, -0.125, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN18/dxi
+                        vec![-0.125, 0.0, 0.125, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN19/dxi
+                        vec![-0.25, 0.0, 0.25, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, -0.25, 0.0, 0.25, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN20/dxi
+                        vec![0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, -0.25, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN21/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN22/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN23/dxi
+
+                        
+                        
                     ],
                     vec![
-                        vec![0.125, -0.25, 0.125, 0.25, -0.5, 0.25, -0.125, 0.25, -0.125, -0.125, 0.25, -0.125, -0.5, 1.0, -0.5, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.125, 0.25, -0.125, -0.125, 0.25, -0.125, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, -0.25, 0.5, -0.25, 0.0, 0.0, 0.0, -0.25, 0.5, -0.25, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0],
-                        vec![0.125, -0.125, 0.0, 0.25, -0.25, 0.0, 0.125, -0.125, 0.0, -0.25, 0.25, 0.0, -0.5, 0.5, 0.0, 0.25, -0.25, 0.0, 0.125, -0.125, 0.0, 0.5, -0.5, 0.0, -0.125, 0.125, 0.0],
+                        vec![-0.125, 0.25, -0.125, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, -0.25, 0.5, -0.25, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0], // dN0/deta
+                        vec![-0.125, 0.25, -0.125, -0.125, 0.25, -0.125, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, -0.25, 0.5, -0.25, 0.0, 0.0, 0.0, -0.25, 0.5, -0.25, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0], // dN1/deta
+                        vec![0.125, -0.25, 0.125, -0.125, 0.25, -0.125, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.25, -0.5, 0.25, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0], // dN2/deta
+                        vec![0.125, -0.25, 0.125, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.25, -0.5, 0.25, 0.0, 0.0, 0.0, -0.25, 0.5, -0.25, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0], // dN3/deta
+                        vec![-0.125, -0.25, -0.125, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.25, -0.5, -0.25, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0], // dN4/deta
+                        vec![-0.125, -0.25, -0.125, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.25, -0.5, -0.25, 0.0, 0.0, 0.0, 0.25, 0.5, 0.25, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0], // dN5/deta
+                        vec![0.125, 0.25, 0.125, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, 0.25, 0.5, 0.25, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0], // dN6/deta
+                        vec![0.125, 0.25, 0.125, 0.125, 0.25, 0.125, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, 0.25, 0.5, 0.25, 0.0, 0.0, 0.0, 0.25, 0.5, 0.25, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0], // dN7/deta
+                        vec![0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 2.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0], // dN8/deta
+                        vec![-0.25, 0.5, -0.25, -0.5, 1.0, -0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 1.0, -2.0, 1.0, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0], // dN9/deta
+                        vec![0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, -2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0], // dN10/deta
+                        vec![-0.25, 0.5, -0.25, -0.5, 1.0, -0.5, 0.0, 0.0, 0.0, -0.5, 1.0, -0.5, 1.0, -2.0, 1.0, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0], // dN11/deta
+                        vec![0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0], // dN12/deta
+                        vec![0.25, 0.5, 0.25, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 1.0, 2.0, 1.0, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0], // dN13/deta
+                        vec![0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0], // dN14/deta
+                        vec![0.25, 0.5, 0.25, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, 0.5, 1.0, 0.5, 1.0, 2.0, 1.0, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0], // dN15/deta
+                        vec![0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0], // dN16/deta
+                        vec![0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0], // dN17/deta
+                        vec![0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.25, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0], // dN18/deta
+                        vec![0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.25, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0], // dN19/deta
+                        vec![0.125, 0.0, -0.125, -0.25, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, -0.5, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0],   // dN20/deta
+                        vec![-0.125, 0.0, 0.125, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, -0.5, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, -0.25, 0.0, 0.25, 0.0, 0.0, 0.0],  // dN21/deta
+                        vec![0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN22/deta
+                        vec![0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN23/deta
                     ],
                     vec![
-                        vec![-0.125, 0.25, -0.125, 0.25, -0.5, 0.25, 0.125, -0.25, 0.125, -0.125, 0.25, -0.125, 0.5, -1.0, 0.5, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.125, -0.25, 0.125, -0.125, 0.25, -0.125, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.25, -0.5, 0.25, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0],
-                        vec![-0.125, 0.125, 0.0, -0.25, 0.25, 0.0, 0.125, -0.125, 0.0, 0.25, -0.25, 0.0, -0.5, 0.5, 0.0, -0.25, 0.25, 0.0, 0.125, -0.125, 0.0, -0.5, 0.5, 0.0, -0.125, 0.125, 0.0],
-                    ],
-                    vec![
-                        vec![0.125, -0.25, 0.125, 0.25, -0.5, 0.25, 0.125, -0.25, 0.125, 0.125, -0.25, 0.125, -0.5, 1.0, -0.5, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.125, -0.25, 0.125, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.25, -0.5, 0.25, 0.0, 0.0, 0.0, -0.25, 0.5, -0.25, 0.125, -0.25, 0.125, 0.0, 0.0, 0.0],
-                        vec![0.125, -0.125, 0.0, -0.25, 0.25, 0.0, -0.125, 0.125, 0.0, -0.25, 0.25, 0.0, -0.5, 0.5, 0.0, -0.25, 0.25, 0.0, -0.125, 0.125, 0.0, 0.5, -0.5, 0.0, -0.125, 0.125, 0.0],
-                    ],
-                    vec![
-                        vec![-0.125, -0.25, -0.125, -0.25, -0.5, -0.25, -0.125, -0.25, -0.125, -0.125, -0.25, -0.125, -0.5, -1.0, -0.5, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.125, -0.25, -0.125, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.25, -0.5, -0.25, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0],
-                        vec![-0.125, -0.125, 0.0, -0.25, -0.25, 0.0, -0.125, -0.125, 0.0, -0.25, -0.25, 0.0, -0.5, -0.5, 0.0, -0.25, -0.25, 0.0, -0.125, -0.125, 0.0, -0.5, -0.5, 0.0, -0.125, -0.125, 0.0],
-                    ],
-                    vec![
-                        vec![0.125, 0.25, 0.125, -0.25, -0.5, -0.25, -0.125, -0.25, -0.125, -0.125, -0.25, -0.125, 0.5, 1.0, 0.5, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.125, -0.25, -0.125, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.25, -0.5, -0.25, 0.0, 0.0, 0.0, 0.25, 0.5, 0.25, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0],
-                        vec![0.125, 0.125, 0.0, -0.25, -0.25, 0.0, -0.125, -0.125, 0.0, 0.25, 0.25, 0.0, -0.5, -0.5, 0.0, -0.25, -0.25, 0.0, -0.125, -0.125, 0.0, 0.5, 0.5, 0.0, -0.125, -0.125, 0.0],
-                    ],
-                    vec![
-                        vec![-0.125, -0.25, -0.125, -0.25, -0.5, -0.25, 0.125, 0.25, 0.125, -0.125, -0.25, -0.125, -0.5, -1.0, -0.5, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.125, 0.25, 0.125, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, 0.25, 0.5, 0.25, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0],
-                        vec![-0.125, -0.125, 0.0, 0.25, 0.25, 0.0, -0.125, -0.125, 0.0, -0.25, -0.25, 0.0, -0.5, -0.5, 0.0, 0.25, 0.25, 0.0, -0.125, -0.125, 0.0, -0.5, -0.5, 0.0, -0.125, -0.125, 0.0],
-                    ],
-                    vec![
-                        vec![0.125, 0.25, 0.125, -0.25, -0.5, -0.25, 0.125, 0.25, 0.125, 0.125, 0.25, 0.125, 0.5, 1.0, 0.5, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.125, 0.25, 0.125, 0.125, 0.25, 0.125, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, 0.25, 0.5, 0.25, 0.0, 0.0, 0.0, 0.25, 0.5, 0.25, -0.125, -0.25, -0.125, 0.0, 0.0, 0.0],
-                        vec![0.125, 0.125, 0.0, 0.25, 0.25, 0.0, 0.125, 0.125, 0.0, 0.25, 0.25, 0.0, -0.5, -0.5, 0.0, 0.25, 0.25, 0.0, 0.125, 0.125, 0.0, 0.5, 0.5, 0.0, -0.125, -0.125, 0.0],
-                    ],
-                    vec![
-                        vec![0.5, -1.0, 0.5, 0.0, 0.0, 0.0, -0.5, 1.0, -0.5, -0.5, 1.0, -0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 2.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0],
-                        vec![0.5, -0.5, 0.0, 0.0, 0.0, 0.0, -0.5, 0.5, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, -1.0, 0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, -0.5, 0.5, 0.0],
-                    ],
-                    vec![
-                        vec![-0.5, 1.0, -0.5, 0.5, -1.0, 0.5, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.25, 0.5, -0.25, -0.5, 1.0, -0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 1.0, -2.0, 1.0, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.5, -0.5, 0.0, 0.5, -0.5, 0.0, 1.0, -1.0, 0.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, -0.5, 0.5, 0.0, -0.5, 0.5, 0.0],
-                    ],
-                    vec![
-                        vec![-0.5, 1.0, -0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, -0.5, 1.0, -0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, -2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0],
-                        vec![0.5, -0.5, 0.0, 0.0, 0.0, 0.0, -0.5, 0.5, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, -0.5, 0.5, 0.0],
-                    ],
-                    vec![
-                        vec![0.5, -1.0, 0.5, -0.5, 1.0, -0.5, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.25, 0.5, -0.25, -0.5, 1.0, -0.5, 0.0, 0.0, 0.0, -0.5, 1.0, -0.5, 1.0, -2.0, 1.0, 0.0, 0.0, 0.0, 0.25, -0.5, 0.25, 0.5, -1.0, 0.5, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.5, -0.5, 0.0, 0.5, -0.5, 0.0, -1.0, 1.0, 0.0, 1.0, -1.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, -0.5, 0.5, 0.0, -0.5, 0.5, 0.0],
-                    ],
-                    vec![
-                        vec![-0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.5, 1.0, 0.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0],
-                        vec![0.5, 0.5, 0.0, 0.0, 0.0, 0.0, -0.5, -0.5, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, -0.5, -0.5, 0.0],
-                    ],
-                    vec![
-                        vec![-0.5, -1.0, -0.5, -0.5, -1.0, -0.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.25, 0.5, 0.25, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 1.0, 2.0, 1.0, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.5, 0.5, 0.0, -1.0, -1.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, -0.5, -0.5, 0.0, -0.5, -0.5, 0.0],
-                    ],
-                    vec![
-                        vec![0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0],
-                        vec![0.5, 0.5, 0.0, 0.0, 0.0, 0.0, -0.5, -0.5, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, -0.5, -0.5, 0.0],
-                    ],
-                    vec![
-                        vec![0.5, 1.0, 0.5, 0.5, 1.0, 0.5, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, -0.5, -1.0, -0.5, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.25, 0.5, 0.25, 0.5, 1.0, 0.5, 0.0, 0.0, 0.0, 0.5, 1.0, 0.5, 1.0, 2.0, 1.0, 0.0, 0.0, 0.0, -0.25, -0.5, -0.25, -0.5, -1.0, -0.5, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.5, 0.5, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, -0.5, -0.5, 0.0, -0.5, -0.5, 0.0],
-                    ],
-                    vec![
-                        vec![-0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0],
-                        vec![0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.125, 0.0, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, -0.25, 0.0, 0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.125, 0.0],
-                    ],
-                    vec![
-                        vec![0.125, 0.0, -0.125, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, -0.125, 0.0, 0.0, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0, -0.25, 0.0, 0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, -0.125, 0.0],
-                    ],
-                    vec![
-                        vec![0.125, 0.0, -0.125, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.25, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0],
-                        vec![0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.125, 0.0, 0.0, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, -0.125, 0.0],
-                    ],
-                    vec![
-                        vec![-0.125, 0.0, 0.125, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.125, 0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.25, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, -0.125, 0.0, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.125, 0.0],
-                    ],
-                    vec![
-                        vec![-0.25, 0.0, 0.25, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, -0.25, 0.0, 0.25, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.125, 0.0, -0.125, -0.25, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, -0.5, 0.0, 0.0, 0.0, -0.125, 0.0, 0.125, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, -0.25, 0.0, 0.0, 0.25, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0, -0.25, 0.0],
-                    ],
-                    vec![
-                        vec![0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.25, 0.0, -0.25, -0.25, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.125, 0.0, 0.125, 0.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, -0.5, 0.0, 0.0, 0.0, 0.125, 0.0, -0.125, -0.25, 0.0, 0.25, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0, -0.25, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, -0.25, 0.0, 0.0, 0.25, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-0.5, 0.0, 0.0, 1.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.5, 0.0, 0.0, -1.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        vec![-0.125, 0.125, 0.0, 0.25, -0.25, 0.0, -0.125, 0.125, 0.0, 0.25, -0.25, 0.0, -0.5, 0.5, 0.0, 0.25, -0.25, 0.0, -0.125, 0.125, 0.0, -0.5, 0.5, 0.0, -0.125, 0.125, 0.0], // dN0/dpsi
+                        vec![0.125, -0.125, 0.0, 0.25, -0.25, 0.0, 0.125, -0.125, 0.0, -0.25, 0.25, 0.0, -0.5, 0.5, 0.0, 0.25, -0.25, 0.0, 0.125, -0.125, 0.0, 0.5, -0.5, 0.0, -0.125, 0.125, 0.0], // dN1/dpsi
+                        vec![-0.125, 0.125, 0.0, -0.25, 0.25, 0.0, 0.125, -0.125, 0.0, 0.25, -0.25, 0.0, -0.5, 0.5, 0.0, -0.25, 0.25, 0.0, 0.125, -0.125, 0.0, -0.5, 0.5, 0.0, -0.125, 0.125, 0.0], // dN2/dpsi
+                        vec![0.125, -0.125, 0.0, -0.25, 0.25, 0.0, -0.125, 0.125, 0.0, -0.25, 0.25, 0.0, -0.5, 0.5, 0.0, -0.25, 0.25, 0.0, -0.125, 0.125, 0.0, 0.5, -0.5, 0.0, -0.125, 0.125, 0.0], // dN3/dpsi
+                        vec![-0.125, -0.125, 0.0, -0.25, -0.25, 0.0, -0.125, -0.125, 0.0, -0.25, -0.25, 0.0, -0.5, -0.5, 0.0, -0.25, -0.25, 0.0, -0.125, -0.125, 0.0, -0.5, -0.5, 0.0, -0.125, -0.125, 0.0], // dN4/dpsi
+                        vec![0.125, 0.125, 0.0, -0.25, -0.25, 0.0, -0.125, -0.125, 0.0, 0.25, 0.25, 0.0, -0.5, -0.5, 0.0, -0.25, -0.25, 0.0, -0.125, -0.125, 0.0, 0.5, 0.5, 0.0, -0.125, -0.125, 0.0], // dN5/dpsi
+                        vec![-0.125, -0.125, 0.0, 0.25, 0.25, 0.0, -0.125, -0.125, 0.0, -0.25, -0.25, 0.0, -0.5, -0.5, 0.0, 0.25, 0.25, 0.0, -0.125, -0.125, 0.0, -0.5, -0.5, 0.0, -0.125, -0.125, 0.0], // dN6/dpsi
+                        vec![0.125, 0.125, 0.0, 0.25, 0.25, 0.0, 0.125, 0.125, 0.0, 0.25, 0.25, 0.0, -0.5, -0.5, 0.0, 0.25, 0.25, 0.0, 0.125, 0.125, 0.0, 0.5, 0.5, 0.0, -0.125, -0.125, 0.0], // dN7/dpsi
+                        vec![0.5, -0.5, 0.0, 0.0, 0.0, 0.0, -0.5, 0.5, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, -1.0, 0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, -0.5, 0.5, 0.0], // dN8/dpsi
+                        vec![0.0, 0.0, 0.0, 0.5, -0.5, 0.0, 0.5, -0.5, 0.0, 1.0, -1.0, 0.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, -0.5, 0.5, 0.0, -0.5, 0.5, 0.0], // dN9/dpsi
+                        vec![0.5, -0.5, 0.0, 0.0, 0.0, 0.0, -0.5, 0.5, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, -0.5, 0.5, 0.0], // dN10/dpsi
+                        vec![0.0, 0.0, 0.0, 0.5, -0.5, 0.0, 0.5, -0.5, 0.0, -1.0, 1.0, 0.0, 1.0, -1.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, -0.5, 0.5, 0.0, -0.5, 0.5, 0.0], // dN11/dpsi
+                        vec![0.5, 0.5, 0.0, 0.0, 0.0, 0.0, -0.5, -0.5, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, -0.5, -0.5, 0.0], // dN12/dpsi
+                        vec![0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.5, 0.5, 0.0, -1.0, -1.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, -0.5, -0.5, 0.0, -0.5, -0.5, 0.0], // dN13/dpsi
+                        vec![0.5, 0.5, 0.0, 0.0, 0.0, 0.0, -0.5, -0.5, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, -0.5, -0.5, 0.0],  // dN14/dpsi
+                        vec![0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.5, 0.5, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, -0.5, -0.5, 0.0, -0.5, -0.5, 0.0], // dN15/dpsi
+                        vec![0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.125, 0.0, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, -0.25, 0.0, 0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.125, 0.0], // dN16/dpsi
+                        vec![0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, -0.125, 0.0, 0.0, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0, -0.25, 0.0, 0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, -0.125, 0.0], // dN17/dpsi
+                        vec![0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.125, 0.0, 0.0, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, -0.125, 0.0], // dN18/dpsi
+                        vec![0.0, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0, -0.125, 0.0, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0, -0.125, 0.0, 0.0, 0.0, 0.0, 0.0, 0.125, 0.0], // dN19/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, -0.25, 0.0, 0.0, 0.25, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0, -0.25, 0.0], // dN20/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0, -0.25, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, -0.25, 0.0, 0.0, 0.25, 0.0], // dN21/dpsi
+                        vec![-0.5, 0.0, 0.0, 1.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN22/dpsi
+                        vec![0.5, 0.0, 0.0, -1.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN23/dpsi
                     ],
                 ];
 
@@ -1441,170 +1486,122 @@ impl ElementType {
                 let num_nodes = 27;
 
                 let values = vec![
-                    vec![1.0, -3.0, 2.0, -3.0, 9.0, -6.0, 2.0, -6.0, 4.0, -3.0, 9.0, -6.0, 9.0, -27.0, 18.0, -6.0, 18.0, -12.0, 2.0, -6.0, 4.0, -6.0, 18.0, -12.0, 4.0, -12.0, 8.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 3.0, -2.0, 3.0, -9.0, 6.0, -2.0, 6.0, -4.0, 2.0, -6.0, 4.0, -6.0, 18.0, -12.0, 4.0, -12.0, 8.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, -3.0, 2.0, -2.0, 6.0, -4.0, 0.0, 0.0, 0.0, -2.0, 6.0, -4.0, 4.0, -12.0, 8.0],
-                    vec![0.0, 0.0, 0.0, -1.0, 3.0, -2.0, 2.0, -6.0, 4.0, 0.0, 0.0, 0.0, 3.0, -9.0, 6.0, -6.0, 18.0, -12.0, 0.0, 0.0, 0.0, -2.0, 6.0, -4.0, 4.0, -12.0, 8.0],
-                    vec![0.0, -1.0, 2.0, 0.0, 3.0, -6.0, 0.0, -2.0, 4.0, 0.0, 3.0, -6.0, 0.0, -9.0, 18.0, 0.0, 6.0, -12.0, 0.0, -2.0, 4.0, 0.0, 6.0, -12.0, 0.0, -4.0, 8.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, -2.0, 0.0, -3.0, 6.0, 0.0, 2.0, -4.0, 0.0, -2.0, 4.0, 0.0, 6.0, -12.0, 0.0, -4.0, 8.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 2.0, 0.0, 2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 2.0, -4.0, 0.0, -4.0, 8.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 1.0, -2.0, 0.0, -2.0, 4.0, 0.0, 0.0, 0.0, 0.0, -3.0, 6.0, 0.0, 6.0, -12.0, 0.0, 0.0, 0.0, 0.0, 2.0, -4.0, 0.0, -4.0, 8.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -12.0, 8.0, -12.0, 36.0, -24.0, 8.0, -24.0, 16.0, -4.0, 12.0, -8.0, 12.0, -36.0, 24.0, -8.0, 24.0, -16.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 4.0, -12.0, 8.0, 0.0, 0.0, 0.0, 8.0, -24.0, 16.0, -8.0, 24.0, -16.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 4.0, -12.0, 8.0, -8.0, 24.0, -16.0],
-                    vec![0.0, 0.0, 0.0, 4.0, -12.0, 8.0, -4.0, 12.0, -8.0, 0.0, 0.0, 0.0, -12.0, 36.0, -24.0, 12.0, -36.0, 24.0, 0.0, 0.0, 0.0, 8.0, -24.0, 16.0, -8.0, 24.0, -16.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 8.0, 0.0, 12.0, -24.0, 0.0, -8.0, 16.0, 0.0, 4.0, -8.0, 0.0, -12.0, 24.0, 0.0, 8.0, -16.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -4.0, 8.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 8.0, -16.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, -4.0, 8.0, 0.0, 8.0, -16.0],
-                    vec![0.0, 0.0, 0.0, 0.0, -4.0, 8.0, 0.0, 4.0, -8.0, 0.0, 0.0, 0.0, 0.0, 12.0, -24.0, 0.0, -12.0, 24.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 8.0, -16.0],
-                    vec![0.0, 4.0, -4.0, 0.0, -12.0, 12.0, 0.0, 8.0, -8.0, 0.0, -12.0, 12.0, 0.0, 36.0, -36.0, 0.0, -24.0, 24.0, 0.0, 8.0, -8.0, 0.0, -24.0, 24.0, 0.0, 16.0, -16.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 4.0, 0.0, 12.0, -12.0, 0.0, -8.0, 8.0, 0.0, 8.0, -8.0, 0.0, -24.0, 24.0, 0.0, 16.0, -16.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -4.0, 0.0, -8.0, 8.0, 0.0, 0.0, 0.0, 0.0, -8.0, 8.0, 0.0, 16.0, -16.0],
-                    vec![0.0, 0.0, 0.0, 0.0, -4.0, 4.0, 0.0, 8.0, -8.0, 0.0, 0.0, 0.0, 0.0, 12.0, -12.0, 0.0, -24.0, 24.0, 0.0, 0.0, 0.0, 0.0, -8.0, 8.0, 0.0, 16.0, -16.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 16.0, -16.0, 0.0, -16.0, 16.0, 0.0, 0.0, 0.0, 0.0, -48.0, 48.0, 0.0, 48.0, -48.0, 0.0, 0.0, 0.0, 0.0, 32.0, -32.0, 0.0, -32.0, 32.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 16.0, -16.0, 0.0, 0.0, 0.0, 0.0, 32.0, -32.0, 0.0, -32.0, 32.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 16.0, -16.0, 0.0, -48.0, 48.0, 0.0, 32.0, -32.0, 0.0, -16.0, 16.0, 0.0, 48.0, -48.0, 0.0, -32.0, 32.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 16.0, -16.0, 0.0, -32.0, 32.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 16.0, -48.0, 32.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0, -16.0, 48.0, -32.0, 16.0, -48.0, 32.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 16.0, -32.0, 0.0, -16.0, 32.0],
-                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 64.0, -64.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0, 0.0, -64.0, 64.0, 0.0, 64.0, -64.0],
+                    vec![1.0, -3.0, 2.0, -3.0, 9.0, -6.0, 2.0, -6.0, 4.0, -3.0, 9.0, -6.0, 9.0, -27.0, 18.0, -6.0, 18.0, -12.0, 2.0, -6.0, 4.0, -6.0, 18.0, -12.0, 4.0, -12.0, 8.0], // N0
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 3.0, -2.0, 3.0, -9.0, 6.0, -2.0, 6.0, -4.0, 2.0, -6.0, 4.0, -6.0, 18.0, -12.0, 4.0, -12.0, 8.0], // N1
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, -3.0, 2.0, -2.0, 6.0, -4.0, 0.0, 0.0, 0.0, -2.0, 6.0, -4.0, 4.0, -12.0, 8.0], // N2
+                    vec![0.0, 0.0, 0.0, -1.0, 3.0, -2.0, 2.0, -6.0, 4.0, 0.0, 0.0, 0.0, 3.0, -9.0, 6.0, -6.0, 18.0, -12.0, 0.0, 0.0, 0.0, -2.0, 6.0, -4.0, 4.0, -12.0, 8.0], // N3
+                    vec![0.0, -1.0, 2.0, 0.0, 3.0, -6.0, 0.0, -2.0, 4.0, 0.0, 3.0, -6.0, 0.0, -9.0, 18.0, 0.0, 6.0, -12.0, 0.0, -2.0, 4.0, 0.0, 6.0, -12.0, 0.0, -4.0, 8.0], // N4
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, -2.0, 0.0, -3.0, 6.0, 0.0, 2.0, -4.0, 0.0, -2.0, 4.0, 0.0, 6.0, -12.0, 0.0, -4.0, 8.0], // N5
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 2.0, 0.0, 2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 2.0, -4.0, 0.0, -4.0, 8.0], // N6
+                    vec![0.0, 0.0, 0.0, 0.0, 1.0, -2.0, 0.0, -2.0, 4.0, 0.0, 0.0, 0.0, 0.0, -3.0, 6.0, 0.0, 6.0, -12.0, 0.0, 0.0, 0.0, 0.0, 2.0, -4.0, 0.0, -4.0, 8.0], // N7
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -12.0, 8.0, -12.0, 36.0, -24.0, 8.0, -24.0, 16.0, -4.0, 12.0, -8.0, 12.0, -36.0, 24.0, -8.0, 24.0, -16.0], // N8
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 4.0, -12.0, 8.0, 0.0, 0.0, 0.0, 8.0, -24.0, 16.0, -8.0, 24.0, -16.0], // N9
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 4.0, -12.0, 8.0, -8.0, 24.0, -16.0], // N10
+                    vec![0.0, 0.0, 0.0, 4.0, -12.0, 8.0, -4.0, 12.0, -8.0, 0.0, 0.0, 0.0, -12.0, 36.0, -24.0, 12.0, -36.0, 24.0, 0.0, 0.0, 0.0, 8.0, -24.0, 16.0, -8.0, 24.0, -16.0], // N11
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 8.0, 0.0, 12.0, -24.0, 0.0, -8.0, 16.0, 0.0, 4.0, -8.0, 0.0, -12.0, 24.0, 0.0, 8.0, -16.0], // N12
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -4.0, 8.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 8.0, -16.0], // N13
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, -4.0, 8.0, 0.0, 8.0, -16.0], // N14
+                    vec![0.0, 0.0, 0.0, 0.0, -4.0, 8.0, 0.0, 4.0, -8.0, 0.0, 0.0, 0.0, 0.0, 12.0, -24.0, 0.0, -12.0, 24.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 8.0, -16.0], // N15
+                    vec![0.0, 4.0, -4.0, 0.0, -12.0, 12.0, 0.0, 8.0, -8.0, 0.0, -12.0, 12.0, 0.0, 36.0, -36.0, 0.0, -24.0, 24.0, 0.0, 8.0, -8.0, 0.0, -24.0, 24.0, 0.0, 16.0, -16.0], // N16
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 4.0, 0.0, 12.0, -12.0, 0.0, -8.0, 8.0, 0.0, 8.0, -8.0, 0.0, -24.0, 24.0, 0.0, 16.0, -16.0], // N17
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -4.0, 0.0, -8.0, 8.0, 0.0, 0.0, 0.0, 0.0, -8.0, 8.0, 0.0, 16.0, -16.0], // N18
+                    vec![0.0, 0.0, 0.0, 0.0, -4.0, 4.0, 0.0, 8.0, -8.0, 0.0, 0.0, 0.0, 0.0, 12.0, -12.0, 0.0, -24.0, 24.0, 0.0, 0.0, 0.0, 0.0, -8.0, 8.0, 0.0, 16.0, -16.0], // N19
+                    vec![0.0, 0.0, 0.0, 0.0, 16.0, -16.0, 0.0, -16.0, 16.0, 0.0, 0.0, 0.0, 0.0, -48.0, 48.0, 0.0, 48.0, -48.0, 0.0, 0.0, 0.0, 0.0, 32.0, -32.0, 0.0, -32.0, 32.0], // N20
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 16.0, -16.0, 0.0, 0.0, 0.0, 0.0, 32.0, -32.0, 0.0, -32.0, 32.0], // N21
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 16.0, -16.0, 0.0, -48.0, 48.0, 0.0, 32.0, -32.0, 0.0, -16.0, 16.0, 0.0, 48.0, -48.0, 0.0, -32.0, 32.0], // N22
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 16.0, -16.0, 0.0, -32.0, 32.0], // N23
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 16.0, -48.0, 32.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0, -16.0, 48.0, -32.0, 16.0, -48.0, 32.0], // N24
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 16.0, -32.0, 0.0, -16.0, 32.0], // N25
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 64.0, -64.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0, 0.0, -64.0, 64.0, 0.0, 64.0, -64.0], // N26
                 ];
 
                 let derivatives = vec![
                     vec![
-                        vec![-3.0, 9.0, -6.0, 9.0, -27.0, 18.0, -6.0, 18.0, -12.0, 4.0, -12.0, 8.0, -12.0, 36.0, -24.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-3.0, 9.0, -6.0, 4.0, -12.0, 8.0, 0.0, 0.0, 0.0, 9.0, -27.0, 18.0, -12.0, 36.0, -24.0, 0.0, 0.0, 0.0, -6.0, 18.0, -12.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0],
-                        vec![-3.0, 4.0, 0.0, 9.0, -12.0, 0.0, -6.0, 8.0, 0.0, 9.0, -12.0, 0.0, -27.0, 36.0, 0.0, 18.0, -24.0, 0.0, -6.0, 8.0, 0.0, 18.0, -24.0, 0.0, -12.0, 16.0, 0.0],
+                        vec![-3.0, 9.0, -6.0, 9.0, -27.0, 18.0, -6.0, 18.0, -12.0, 4.0, -12.0, 8.0, -12.0, 36.0, -24.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN0/dxi
+                        vec![-1.0, 3.0, -2.0, 3.0, -9.0, 6.0, -2.0, 6.0, -4.0, 4.0, -12.0, 8.0, -12.0, 36.0, -24.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN1/dxi
+                        vec![0.0, 0.0, 0.0, 1.0, -3.0, 2.0, -2.0, 6.0, -4.0, 0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN2/dxi
+                        vec![0.0, 0.0, 0.0, 3.0, -9.0, 6.0, -6.0, 18.0, -12.0, 0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN3/dxi
+                        vec![0.0, 3.0, -6.0, 0.0, -9.0, 18.0, 0.0, 6.0, -12.0, 0.0, -4.0, 8.0, 0.0, 12.0, -24.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN4/dxi
+                        vec![0.0, 1.0, -2.0, 0.0, -3.0, 6.0, 0.0, 2.0, -4.0, 0.0, -4.0, 8.0, 0.0, 12.0, -24.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN5/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, -1.0, 2.0, 0.0, 2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN6/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, -3.0, 6.0, 0.0, 6.0, -12.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN7/dxi
+                        vec![4.0, -12.0, 8.0, -12.0, 36.0, -24.0, 8.0, -24.0, 16.0, -8.0, 24.0, -16.0, 24.0, -72.0, 48.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN8/dxi
+                        vec![0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 4.0, -12.0, 8.0, 0.0, 0.0, 0.0, 16.0, -48.0, 32.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN9/dxi
+                        vec![0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 8.0, -24.0, 16.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // dN10/dxi
+                        vec![0.0, 0.0, 0.0, -12.0, 36.0, -24.0, 12.0, -36.0, 24.0, 0.0, 0.0, 0.0, 16.0, -48.0, 32.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN11/dxi
+                        vec![0.0, -4.0, 8.0, 0.0, 12.0, -24.0, 0.0, -8.0, 16.0, 0.0, 8.0, -16.0, 0.0, -24.0, 48.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN12/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -4.0, 8.0, 0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN13/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN14/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 12.0, -24.0, 0.0, -12.0, 24.0, 0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN15/dxi
+                        vec![0.0, -12.0, 12.0, 0.0, 36.0, -36.0, 0.0, -24.0, 24.0, 0.0, 16.0, -16.0, 0.0, -48.0, 48.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN16/dxi
+                        vec![0.0, -4.0, 4.0, 0.0, 12.0, -12.0, 0.0, -8.0, 8.0, 0.0, 16.0, -16.0, 0.0, -48.0, 48.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN17/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 4.0, -4.0, 0.0, -8.0, 8.0, 0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN18/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 12.0, -12.0, 0.0, -24.0, 24.0, 0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN19/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, -48.0, 48.0, 0.0, 48.0, -48.0, 0.0, 0.0, 0.0, 0.0, 64.0, -64.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN20/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 16.0, -16.0, 0.0, 0.0, 0.0, 0.0, 64.0, -64.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN21/dxi
+                        vec![0.0, 16.0, -16.0, 0.0, -48.0, 48.0, 0.0, 32.0, -32.0, 0.0, -32.0, 32.0, 0.0, 96.0, -96.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN22/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 32.0, -32.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN23/dxi
+                        vec![0.0, 0.0, 0.0, 16.0, -48.0, 32.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0, -32.0, 96.0, -64.0, 32.0, -96.0, 64.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // dN24/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 32.0, -64.0, 0.0, -32.0, 64.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN25/dxi
+                        vec![0.0, 0.0, 0.0, 0.0, 64.0, -64.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0, 0.0, -128.0, 128.0, 0.0, 128.0, -128.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],    // dN26/dxi
                     ],
                     vec![
-                        vec![-1.0, 3.0, -2.0, 3.0, -9.0, 6.0, -2.0, 6.0, -4.0, 4.0, -12.0, 8.0, -12.0, 36.0, -24.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, -9.0, 6.0, -4.0, 12.0, -8.0, 0.0, 0.0, 0.0, -6.0, 18.0, -12.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, -4.0, 0.0, -9.0, 12.0, 0.0, 6.0, -8.0, 0.0, -6.0, 8.0, 0.0, 18.0, -24.0, 0.0, -12.0, 16.0, 0.0],
+                        vec![-3.0, 9.0, -6.0, 4.0, -12.0, 8.0, 0.0, 0.0, 0.0, 9.0, -27.0, 18.0, -12.0, 36.0, -24.0, 0.0, 0.0, 0.0, -6.0, 18.0, -12.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0], // dN0/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, -9.0, 6.0, -4.0, 12.0, -8.0, 0.0, 0.0, 0.0, -6.0, 18.0, -12.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0], // dN1/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, -3.0, 2.0, -4.0, 12.0, -8.0, 0.0, 0.0, 0.0, -2.0, 6.0, -4.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0], // dN2/deta
+                        vec![-1.0, 3.0, -2.0, 4.0, -12.0, 8.0, 0.0, 0.0, 0.0, 3.0, -9.0, 6.0, -12.0, 36.0, -24.0, 0.0, 0.0, 0.0, -2.0, 6.0, -4.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0], // dN3/deta
+                        vec![0.0, 3.0, -6.0, 0.0, -4.0, 8.0, 0.0, 0.0, 0.0, 0.0, -9.0, 18.0, 0.0, 12.0, -24.0, 0.0, 0.0, 0.0, 0.0, 6.0, -12.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0], // dN4/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -3.0, 6.0, 0.0, 4.0, -8.0, 0.0, 0.0, 0.0, 0.0, 6.0, -12.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0], // dN5/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 2.0, 0.0, 4.0, -8.0, 0.0, 0.0, 0.0, 0.0, 2.0, -4.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0], // dN6/deta
+                        vec![0.0, 1.0, -2.0, 0.0, -4.0, 8.0, 0.0, 0.0, 0.0, 0.0, -3.0, 6.0, 0.0, 12.0, -24.0, 0.0, 0.0, 0.0, 0.0, 2.0, -4.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0], // dN7/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -12.0, 36.0, -24.0, 16.0, -48.0, 32.0, 0.0, 0.0, 0.0, 12.0, -36.0, 24.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0], // dN8/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 8.0, -24.0, 16.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0], // dN9/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 16.0, -48.0, 32.0, 0.0, 0.0, 0.0, 4.0, -12.0, 8.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0], // dN10/deta
+                        vec![4.0, -12.0, 8.0, -8.0, 24.0, -16.0, 0.0, 0.0, 0.0, -12.0, 36.0, -24.0, 24.0, -72.0, 48.0, 0.0, 0.0, 0.0, 8.0, -24.0, 16.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0], // dN11/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, -24.0, 0.0, -16.0, 32.0, 0.0, 0.0, 0.0, 0.0, -12.0, 24.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0],    // dN12/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0],    // dN13/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -16.0, 32.0, 0.0, 0.0, 0.0, 0.0, -4.0, 8.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0],    // dN14/deta
+                        vec![0.0, -4.0, 8.0, 0.0, 8.0, -16.0, 0.0, 0.0, 0.0, 0.0, 12.0, -24.0, 0.0, -24.0, 48.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0],  // dN15/deta
+                        vec![0.0, -12.0, 12.0, 0.0, 16.0, -16.0, 0.0, 0.0, 0.0, 0.0, 36.0, -36.0, 0.0, -48.0, 48.0, 0.0, 0.0, 0.0, 0.0, -24.0, 24.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0],  // dN16/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, -12.0, 0.0, -16.0, 16.0, 0.0, 0.0, 0.0, 0.0, -24.0, 24.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0],    // dN17/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -4.0, 0.0, -16.0, 16.0, 0.0, 0.0, 0.0, 0.0, -8.0, 8.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0],    // dN18/deta
+                        vec![0.0, -4.0, 4.0, 0.0, 16.0, -16.0, 0.0, 0.0, 0.0, 0.0, 12.0, -12.0, 0.0, -48.0, 48.0, 0.0, 0.0, 0.0, 0.0, -8.0, 8.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0],  // dN19/deta
+                        vec![0.0, 16.0, -16.0, 0.0, -32.0, 32.0, 0.0, 0.0, 0.0, 0.0, -48.0, 48.0, 0.0, 96.0, -96.0, 0.0, 0.0, 0.0, 0.0, 32.0, -32.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0],  // dN20/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 32.0, -32.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0],    // dN21/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -48.0, 48.0, 0.0, 64.0, -64.0, 0.0, 0.0, 0.0, 0.0, 48.0, -48.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0],    // dN22/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 64.0, -64.0, 0.0, 0.0, 0.0, 0.0, 16.0, -16.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0],    // dN23/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 16.0, -48.0, 32.0, -32.0, 96.0, -64.0, 0.0, 0.0, 0.0, -16.0, 48.0, -32.0, 32.0, -96.0, 64.0, 0.0, 0.0, 0.0],  // dN24/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 32.0, -64.0, 0.0, 0.0, 0.0, 0.0, 16.0, -32.0, 0.0, -32.0, 64.0, 0.0, 0.0, 0.0],    // dN25/deta
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 64.0, -64.0, 0.0, -128.0, 128.0, 0.0, 0.0, 0.0, 0.0, -64.0, 64.0, 0.0, 128.0, -128.0, 0.0, 0.0, 0.0],    // dN26/deta
                     ],
                     vec![
-                        vec![0.0, 0.0, 0.0, 1.0, -3.0, 2.0, -2.0, 6.0, -4.0, 0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, -3.0, 2.0, -4.0, 12.0, -8.0, 0.0, 0.0, 0.0, -2.0, 6.0, -4.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -3.0, 4.0, 0.0, 6.0, -8.0, 0.0, 0.0, 0.0, 0.0, 6.0, -8.0, 0.0, -12.0, 16.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 3.0, -9.0, 6.0, -6.0, 18.0, -12.0, 0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![-1.0, 3.0, -2.0, 4.0, -12.0, 8.0, 0.0, 0.0, 0.0, 3.0, -9.0, 6.0, -12.0, 36.0, -24.0, 0.0, 0.0, 0.0, -2.0, 6.0, -4.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 3.0, -4.0, 0.0, -6.0, 8.0, 0.0, 0.0, 0.0, 0.0, -9.0, 12.0, 0.0, 18.0, -24.0, 0.0, 0.0, 0.0, 0.0, 6.0, -8.0, 0.0, -12.0, 16.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 3.0, -6.0, 0.0, -9.0, 18.0, 0.0, 6.0, -12.0, 0.0, -4.0, 8.0, 0.0, 12.0, -24.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 3.0, -6.0, 0.0, -4.0, 8.0, 0.0, 0.0, 0.0, 0.0, -9.0, 18.0, 0.0, 12.0, -24.0, 0.0, 0.0, 0.0, 0.0, 6.0, -12.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0],
-                        vec![-1.0, 4.0, 0.0, 3.0, -12.0, 0.0, -2.0, 8.0, 0.0, 3.0, -12.0, 0.0, -9.0, 36.0, 0.0, 6.0, -24.0, 0.0, -2.0, 8.0, 0.0, 6.0, -24.0, 0.0, -4.0, 16.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 1.0, -2.0, 0.0, -3.0, 6.0, 0.0, 2.0, -4.0, 0.0, -4.0, 8.0, 0.0, 12.0, -24.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -3.0, 6.0, 0.0, 4.0, -8.0, 0.0, 0.0, 0.0, 0.0, 6.0, -12.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, -4.0, 0.0, -3.0, 12.0, 0.0, 2.0, -8.0, 0.0, -2.0, 8.0, 0.0, 6.0, -24.0, 0.0, -4.0, 16.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, -1.0, 2.0, 0.0, 2.0, -4.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 2.0, 0.0, 4.0, -8.0, 0.0, 0.0, 0.0, 0.0, 2.0, -4.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 4.0, 0.0, 2.0, -8.0, 0.0, 0.0, 0.0, 0.0, 2.0, -8.0, 0.0, -4.0, 16.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, -3.0, 6.0, 0.0, 6.0, -12.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 1.0, -2.0, 0.0, -4.0, 8.0, 0.0, 0.0, 0.0, 0.0, -3.0, 6.0, 0.0, 12.0, -24.0, 0.0, 0.0, 0.0, 0.0, 2.0, -4.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 1.0, -4.0, 0.0, -2.0, 8.0, 0.0, 0.0, 0.0, 0.0, -3.0, 12.0, 0.0, 6.0, -24.0, 0.0, 0.0, 0.0, 0.0, 2.0, -8.0, 0.0, -4.0, 16.0, 0.0],
-                    ],
-                    vec![
-                        vec![4.0, -12.0, 8.0, -12.0, 36.0, -24.0, 8.0, -24.0, 16.0, -8.0, 24.0, -16.0, 24.0, -72.0, 48.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -12.0, 36.0, -24.0, 16.0, -48.0, 32.0, 0.0, 0.0, 0.0, 12.0, -36.0, 24.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -12.0, 16.0, 0.0, 36.0, -48.0, 0.0, -24.0, 32.0, 0.0, 12.0, -16.0, 0.0, -36.0, 48.0, 0.0, 24.0, -32.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 4.0, -12.0, 8.0, 0.0, 0.0, 0.0, 16.0, -48.0, 32.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 8.0, -24.0, 16.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, -16.0, 0.0, -12.0, 16.0, 0.0, 0.0, 0.0, 0.0, -24.0, 32.0, 0.0, 24.0, -32.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 8.0, -24.0, 16.0, 0.0, 0.0, 0.0, 8.0, -24.0, 16.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 12.0, -8.0, 16.0, -48.0, 32.0, 0.0, 0.0, 0.0, 4.0, -12.0, 8.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, -16.0, 0.0, -24.0, 32.0, 0.0, 0.0, 0.0, 0.0, -12.0, 16.0, 0.0, 24.0, -32.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, -12.0, 36.0, -24.0, 12.0, -36.0, 24.0, 0.0, 0.0, 0.0, 16.0, -48.0, 32.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![4.0, -12.0, 8.0, -8.0, 24.0, -16.0, 0.0, 0.0, 0.0, -12.0, 36.0, -24.0, 24.0, -72.0, 48.0, 0.0, 0.0, 0.0, 8.0, -24.0, 16.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, -12.0, 16.0, 0.0, 12.0, -16.0, 0.0, 0.0, 0.0, 0.0, 36.0, -48.0, 0.0, -36.0, 48.0, 0.0, 0.0, 0.0, 0.0, -24.0, 32.0, 0.0, 24.0, -32.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, -4.0, 8.0, 0.0, 12.0, -24.0, 0.0, -8.0, 16.0, 0.0, 8.0, -16.0, 0.0, -24.0, 48.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, -24.0, 0.0, -16.0, 32.0, 0.0, 0.0, 0.0, 0.0, -12.0, 24.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 16.0, 0.0, 12.0, -48.0, 0.0, -8.0, 32.0, 0.0, 4.0, -16.0, 0.0, -12.0, 48.0, 0.0, 8.0, -32.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -4.0, 8.0, 0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -16.0, 0.0, -4.0, 16.0, 0.0, 0.0, 0.0, 0.0, -8.0, 32.0, 0.0, 8.0, -32.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -16.0, 32.0, 0.0, 0.0, 0.0, 0.0, -4.0, 8.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -16.0, 0.0, -8.0, 32.0, 0.0, 0.0, 0.0, 0.0, -4.0, 16.0, 0.0, 8.0, -32.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 12.0, -24.0, 0.0, -12.0, 24.0, 0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, -4.0, 8.0, 0.0, 8.0, -16.0, 0.0, 0.0, 0.0, 0.0, 12.0, -24.0, 0.0, -24.0, 48.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, -4.0, 16.0, 0.0, 4.0, -16.0, 0.0, 0.0, 0.0, 0.0, 12.0, -48.0, 0.0, -12.0, 48.0, 0.0, 0.0, 0.0, 0.0, -8.0, 32.0, 0.0, 8.0, -32.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, -12.0, 12.0, 0.0, 36.0, -36.0, 0.0, -24.0, 24.0, 0.0, 16.0, -16.0, 0.0, -48.0, 48.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, -12.0, 12.0, 0.0, 16.0, -16.0, 0.0, 0.0, 0.0, 0.0, 36.0, -36.0, 0.0, -48.0, 48.0, 0.0, 0.0, 0.0, 0.0, -24.0, 24.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0],
-                        vec![4.0, -8.0, 0.0, -12.0, 24.0, 0.0, 8.0, -16.0, 0.0, -12.0, 24.0, 0.0, 36.0, -72.0, 0.0, -24.0, 48.0, 0.0, 8.0, -16.0, 0.0, -24.0, 48.0, 0.0, 16.0, -32.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, -4.0, 4.0, 0.0, 12.0, -12.0, 0.0, -8.0, 8.0, 0.0, 16.0, -16.0, 0.0, -48.0, 48.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, -12.0, 0.0, -16.0, 16.0, 0.0, 0.0, 0.0, 0.0, -24.0, 24.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 8.0, 0.0, 12.0, -24.0, 0.0, -8.0, 16.0, 0.0, 8.0, -16.0, 0.0, -24.0, 48.0, 0.0, 16.0, -32.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 4.0, -4.0, 0.0, -8.0, 8.0, 0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -4.0, 0.0, -16.0, 16.0, 0.0, 0.0, 0.0, 0.0, -8.0, 8.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 16.0, -32.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 12.0, -12.0, 0.0, -24.0, 24.0, 0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, -4.0, 4.0, 0.0, 16.0, -16.0, 0.0, 0.0, 0.0, 0.0, 12.0, -12.0, 0.0, -48.0, 48.0, 0.0, 0.0, 0.0, 0.0, -8.0, 8.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, -4.0, 8.0, 0.0, 8.0, -16.0, 0.0, 0.0, 0.0, 0.0, 12.0, -24.0, 0.0, -24.0, 48.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 16.0, -32.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, -48.0, 48.0, 0.0, 48.0, -48.0, 0.0, 0.0, 0.0, 0.0, 64.0, -64.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 16.0, -16.0, 0.0, -32.0, 32.0, 0.0, 0.0, 0.0, 0.0, -48.0, 48.0, 0.0, 96.0, -96.0, 0.0, 0.0, 0.0, 0.0, 32.0, -32.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 16.0, -32.0, 0.0, -16.0, 32.0, 0.0, 0.0, 0.0, 0.0, -48.0, 96.0, 0.0, 48.0, -96.0, 0.0, 0.0, 0.0, 0.0, 32.0, -64.0, 0.0, -32.0, 64.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 16.0, -16.0, 0.0, 0.0, 0.0, 0.0, 64.0, -64.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 32.0, -32.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 32.0, -64.0, 0.0, -32.0, 64.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 16.0, -16.0, 0.0, -48.0, 48.0, 0.0, 32.0, -32.0, 0.0, -32.0, 32.0, 0.0, 96.0, -96.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -48.0, 48.0, 0.0, 64.0, -64.0, 0.0, 0.0, 0.0, 0.0, 48.0, -48.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 16.0, -32.0, 0.0, -48.0, 96.0, 0.0, 32.0, -64.0, 0.0, -16.0, 32.0, 0.0, 48.0, -96.0, 0.0, -32.0, 64.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 32.0, -32.0, 0.0, 0.0, 0.0, 0.0, 32.0, -32.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 16.0, 0.0, 64.0, -64.0, 0.0, 0.0, 0.0, 0.0, 16.0, -16.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 32.0, -64.0, 0.0, 0.0, 0.0, 0.0, 16.0, -32.0, 0.0, -32.0, 64.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 16.0, -48.0, 32.0, -16.0, 48.0, -32.0, 0.0, 0.0, 0.0, -32.0, 96.0, -64.0, 32.0, -96.0, 64.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 16.0, -48.0, 32.0, -32.0, 96.0, -64.0, 0.0, 0.0, 0.0, -16.0, 48.0, -32.0, 32.0, -96.0, 64.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -48.0, 64.0, 0.0, 48.0, -64.0, 0.0, 0.0, 0.0, 0.0, 48.0, -64.0, 0.0, -48.0, 64.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 32.0, -64.0, 0.0, -32.0, 64.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 32.0, -64.0, 0.0, 0.0, 0.0, 0.0, 16.0, -32.0, 0.0, -32.0, 64.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 64.0, 0.0, 16.0, -64.0, 0.0, 0.0, 0.0, 0.0, 16.0, -64.0, 0.0, -16.0, 64.0, 0.0],
-                    ],
-                    vec![
-                        vec![0.0, 0.0, 0.0, 0.0, 64.0, -64.0, 0.0, -64.0, 64.0, 0.0, 0.0, 0.0, 0.0, -128.0, 128.0, 0.0, 128.0, -128.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 64.0, -64.0, 0.0, -128.0, 128.0, 0.0, 0.0, 0.0, 0.0, -64.0, 64.0, 0.0, 128.0, -128.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 64.0, -128.0, 0.0, -64.0, 128.0, 0.0, 0.0, 0.0, 0.0, -64.0, 128.0, 0.0, 64.0, -128.0, 0.0],
+                        vec![-3.0, 4.0, 0.0, 9.0, -12.0, 0.0, -6.0, 8.0, 0.0, 9.0, -12.0, 0.0, -27.0, 36.0, 0.0, 18.0, -24.0, 0.0, -6.0, 8.0, 0.0, 18.0, -24.0, 0.0, -12.0, 16.0, 0.0], // dN0/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, -4.0, 0.0, -9.0, 12.0, 0.0, 6.0, -8.0, 0.0, -6.0, 8.0, 0.0, 18.0, -24.0, 0.0, -12.0, 16.0, 0.0], // dN1/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -3.0, 4.0, 0.0, 6.0, -8.0, 0.0, 0.0, 0.0, 0.0, 6.0, -8.0, 0.0, -12.0, 16.0, 0.0], // dN2/dpsi
+                        vec![0.0, 0.0, 0.0, 3.0, -4.0, 0.0, -6.0, 8.0, 0.0, 0.0, 0.0, 0.0, -9.0, 12.0, 0.0, 18.0, -24.0, 0.0, 0.0, 0.0, 0.0, 6.0, -8.0, 0.0, -12.0, 16.0, 0.0], // dN3/dpsi
+                        vec![-1.0, 4.0, 0.0, 3.0, -12.0, 0.0, -2.0, 8.0, 0.0, 3.0, -12.0, 0.0, -9.0, 36.0, 0.0, 6.0, -24.0, 0.0, -2.0, 8.0, 0.0, 6.0, -24.0, 0.0, -4.0, 16.0, 0.0], // dN4/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, -4.0, 0.0, -3.0, 12.0, 0.0, 2.0, -8.0, 0.0, -2.0, 8.0, 0.0, 6.0, -24.0, 0.0, -4.0, 16.0, 0.0], // dN5/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 4.0, 0.0, 2.0, -8.0, 0.0, 0.0, 0.0, 0.0, 2.0, -8.0, 0.0, -4.0, 16.0, 0.0], // dN6/dpsi
+                        vec![0.0, 0.0, 0.0, 1.0, -4.0, 0.0, -2.0, 8.0, 0.0, 0.0, 0.0, 0.0, -3.0, 12.0, 0.0, 6.0, -24.0, 0.0, 0.0, 0.0, 0.0, 2.0, -8.0, 0.0, -4.0, 16.0, 0.0], // dN7/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -12.0, 16.0, 0.0, 36.0, -48.0, 0.0, -24.0, 32.0, 0.0, 12.0, -16.0, 0.0, -36.0, 48.0, 0.0, 24.0, -32.0, 0.0], // dN8/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, -16.0, 0.0, -12.0, 16.0, 0.0, 0.0, 0.0, 0.0, -24.0, 32.0, 0.0, 24.0, -32.0, 0.0], // dN9/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, -16.0, 0.0, -24.0, 32.0, 0.0, 0.0, 0.0, 0.0, -12.0, 16.0, 0.0, 24.0, -32.0, 0.0], // dN10/dpsi
+                        vec![0.0, 0.0, 0.0, -12.0, 16.0, 0.0, 12.0, -16.0, 0.0, 0.0, 0.0, 0.0, 36.0, -48.0, 0.0, -36.0, 48.0, 0.0, 0.0, 0.0, 0.0, -24.0, 32.0, 0.0, 24.0, -32.0, 0.0],  // dN11/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 16.0, 0.0, 12.0, -48.0, 0.0, -8.0, 32.0, 0.0, 4.0, -16.0, 0.0, -12.0, 48.0, 0.0, 8.0, -32.0, 0.0],  // dN12/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -16.0, 0.0, -4.0, 16.0, 0.0, 0.0, 0.0, 0.0, -8.0, 32.0, 0.0, 8.0, -32.0, 0.0],    // dN13/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -16.0, 0.0, -8.0, 32.0, 0.0, 0.0, 0.0, 0.0, -4.0, 16.0, 0.0, 8.0, -32.0, 0.0],    // dN14/dpsi
+                        vec![0.0, 0.0, 0.0, -4.0, 16.0, 0.0, 4.0, -16.0, 0.0, 0.0, 0.0, 0.0, 12.0, -48.0, 0.0, -12.0, 48.0, 0.0, 0.0, 0.0, 0.0, -8.0, 32.0, 0.0, 8.0, -32.0, 0.0],  // dN15/dpsi
+                        vec![4.0, -8.0, 0.0, -12.0, 24.0, 0.0, 8.0, -16.0, 0.0, -12.0, 24.0, 0.0, 36.0, -72.0, 0.0, -24.0, 48.0, 0.0, 8.0, -16.0, 0.0, -24.0, 48.0, 0.0, 16.0, -32.0, 0.0], // dN16/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 8.0, 0.0, 12.0, -24.0, 0.0, -8.0, 16.0, 0.0, 8.0, -16.0, 0.0, -24.0, 48.0, 0.0, 16.0, -32.0, 0.0],  // dN17/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, -8.0, 0.0, -8.0, 16.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 16.0, -32.0, 0.0],    // dN18/dpsi
+                        vec![0.0, 0.0, 0.0, -4.0, 8.0, 0.0, 8.0, -16.0, 0.0, 0.0, 0.0, 0.0, 12.0, -24.0, 0.0, -24.0, 48.0, 0.0, 0.0, 0.0, 0.0, -8.0, 16.0, 0.0, 16.0, -32.0, 0.0],  // dN19/dpsi
+                        vec![0.0, 0.0, 0.0, 16.0, -32.0, 0.0, -16.0, 32.0, 0.0, 0.0, 0.0, 0.0, -48.0, 96.0, 0.0, 48.0, -96.0, 0.0, 0.0, 0.0, 0.0, 32.0, -64.0, 0.0, -32.0, 64.0, 0.0],  // dN20/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 16.0, -32.0, 0.0, 0.0, 0.0, 0.0, 32.0, -64.0, 0.0, -32.0, 64.0, 0.0],    // dN21/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 16.0, -32.0, 0.0, -48.0, 96.0, 0.0, 32.0, -64.0, 0.0, -16.0, 32.0, 0.0, 48.0, -96.0, 0.0, -32.0, 64.0, 0.0],  // dN22/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 32.0, 0.0, 32.0, -64.0, 0.0, 0.0, 0.0, 0.0, 16.0, -32.0, 0.0, -32.0, 64.0, 0.0],    // dN23/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -48.0, 64.0, 0.0, 48.0, -64.0, 0.0, 0.0, 0.0, 0.0, 48.0, -64.0, 0.0, -48.0, 64.0, 0.0],    // dN24/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -16.0, 64.0, 0.0, 16.0, -64.0, 0.0, 0.0, 0.0, 0.0, 16.0, -64.0, 0.0, -16.0, 64.0, 0.0],    // dN25/dpsi
+                        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 64.0, -128.0, 0.0, -64.0, 128.0, 0.0, 0.0, 0.0, 0.0, -64.0, 128.0, 0.0, 64.0, -128.0, 0.0],    // dN26/dpsi
                     ],
                 ];
 
@@ -1649,6 +1646,7 @@ impl ElementType {
     }
 
 }
+
 
 #[derive(Debug)]                                    // Auto-implement Debug for printing
 pub struct MeshData {                               // Defines a structure to represent a mesh

@@ -1,0 +1,1256 @@
+MeshData {
+    dimension: 3,
+    num_nodes: 120,
+    min_node_index: 0,
+    nodes: [
+        Node {
+            id: 0,
+            coordinates: [
+                -2.25,
+                0.0,
+                2.25,
+            ],
+        },
+        Node {
+            id: 1,
+            coordinates: [
+                -1.25,
+                0.5,
+                1.75,
+            ],
+        },
+        Node {
+            id: 2,
+            coordinates: [
+                -0.25,
+                -0.5,
+                2.75,
+            ],
+        },
+        Node {
+            id: 3,
+            coordinates: [
+                0.25,
+                0.5,
+                1.75,
+            ],
+        },
+        Node {
+            id: 4,
+            coordinates: [
+                1.25,
+                -0.5,
+                2.75,
+            ],
+        },
+        Node {
+            id: 5,
+            coordinates: [
+                0.5,
+                0.0,
+                2.5,
+            ],
+        },
+        Node {
+            id: 6,
+            coordinates: [
+                1.75,
+                0.5,
+                1.75,
+            ],
+        },
+        Node {
+            id: 7,
+            coordinates: [
+                2.75,
+                -0.5,
+                1.75,
+            ],
+        },
+        Node {
+            id: 8,
+            coordinates: [
+                2.25,
+                0.0,
+                2.75,
+            ],
+        },
+        Node {
+            id: 9,
+            coordinates: [
+                -2.75,
+                0.0,
+                0.25,
+            ],
+        },
+        Node {
+            id: 10,
+            coordinates: [
+                -1.75,
+                0.0,
+                0.25,
+            ],
+        },
+        Node {
+            id: 11,
+            coordinates: [
+                -2.25,
+                0.0,
+                1.25,
+            ],
+        },
+        Node {
+            id: 12,
+            coordinates: [
+                -2.25,
+                0.0,
+                0.1,
+            ],
+        },
+        Node {
+            id: 13,
+            coordinates: [
+                -2.5,
+                0.0,
+                0.9,
+            ],
+        },
+        Node {
+            id: 14,
+            coordinates: [
+                -2.0,
+                0.0,
+                0.9,
+            ],
+        },
+        Node {
+            id: 15,
+            coordinates: [
+                -1.25,
+                0.0,
+                0.25,
+            ],
+        },
+        Node {
+            id: 16,
+            coordinates: [
+                -0.25,
+                0.0,
+                0.25,
+            ],
+        },
+        Node {
+            id: 17,
+            coordinates: [
+                -1.25,
+                0.0,
+                1.25,
+            ],
+        },
+        Node {
+            id: 18,
+            coordinates: [
+                -0.25,
+                0.0,
+                1.25,
+            ],
+        },
+        Node {
+            id: 19,
+            coordinates: [
+                0.25,
+                0.0,
+                0.25,
+            ],
+        },
+        Node {
+            id: 20,
+            coordinates: [
+                1.25,
+                0.0,
+                0.25,
+            ],
+        },
+        Node {
+            id: 21,
+            coordinates: [
+                0.25,
+                0.0,
+                1.25,
+            ],
+        },
+        Node {
+            id: 22,
+            coordinates: [
+                1.25,
+                0.0,
+                1.25,
+            ],
+        },
+        Node {
+            id: 23,
+            coordinates: [
+                0.75,
+                0.0,
+                0.1,
+            ],
+        },
+        Node {
+            id: 24,
+            coordinates: [
+                0.1,
+                0.0,
+                0.75,
+            ],
+        },
+        Node {
+            id: 25,
+            coordinates: [
+                0.75,
+                0.2,
+                0.75,
+            ],
+        },
+        Node {
+            id: 26,
+            coordinates: [
+                1.4,
+                0.0,
+                0.75,
+            ],
+        },
+        Node {
+            id: 27,
+            coordinates: [
+                0.75,
+                0.0,
+                1.4,
+            ],
+        },
+        Node {
+            id: 28,
+            coordinates: [
+                1.75,
+                0.0,
+                0.25,
+            ],
+        },
+        Node {
+            id: 29,
+            coordinates: [
+                2.75,
+                0.0,
+                0.25,
+            ],
+        },
+        Node {
+            id: 30,
+            coordinates: [
+                2.25,
+                0.0,
+                1.25,
+            ],
+        },
+        Node {
+            id: 31,
+            coordinates: [
+                2.25,
+                1.0,
+                0.75,
+            ],
+        },
+        Node {
+            id: 32,
+            coordinates: [
+                -2.75,
+                0.0,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 33,
+            coordinates: [
+                -1.75,
+                0.0,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 34,
+            coordinates: [
+                -2.25,
+                0.0,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 35,
+            coordinates: [
+                -2.25,
+                1.0,
+                -0.75,
+            ],
+        },
+        Node {
+            id: 36,
+            coordinates: [
+                -2.25,
+                0.0,
+                -1.4,
+            ],
+        },
+        Node {
+            id: 37,
+            coordinates: [
+                -2.65,
+                0.0,
+                -0.75,
+            ],
+        },
+        Node {
+            id: 38,
+            coordinates: [
+                -2.0,
+                0.0,
+                -0.6,
+            ],
+        },
+        Node {
+            id: 39,
+            coordinates: [
+                -2.5,
+                0.5,
+                -0.8,
+            ],
+        },
+        Node {
+            id: 40,
+            coordinates: [
+                -2.15,
+                0.5,
+                -1.0,
+            ],
+        },
+        Node {
+            id: 41,
+            coordinates: [
+                -2.35,
+                0.5,
+                -0.6,
+            ],
+        },
+        Node {
+            id: 42,
+            coordinates: [
+                -1.25,
+                0.0,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 43,
+            coordinates: [
+                -0.25,
+                0.0,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 44,
+            coordinates: [
+                -1.25,
+                0.0,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 45,
+            coordinates: [
+                -0.25,
+                0.0,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 46,
+            coordinates: [
+                -0.75,
+                1.0,
+                -0.75,
+            ],
+        },
+        Node {
+            id: 47,
+            coordinates: [
+                0.25,
+                0.0,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 48,
+            coordinates: [
+                1.25,
+                0.0,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 49,
+            coordinates: [
+                0.25,
+                0.0,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 50,
+            coordinates: [
+                1.25,
+                0.0,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 51,
+            coordinates: [
+                0.75,
+                1.0,
+                -0.75,
+            ],
+        },
+        Node {
+            id: 52,
+            coordinates: [
+                0.75,
+                0.0,
+                -1.4,
+            ],
+        },
+        Node {
+            id: 53,
+            coordinates: [
+                0.1,
+                0.0,
+                -0.75,
+            ],
+        },
+        Node {
+            id: 54,
+            coordinates: [
+                0.9,
+                -0.15,
+                -0.75,
+            ],
+        },
+        Node {
+            id: 55,
+            coordinates: [
+                1.4,
+                0.0,
+                -0.75,
+            ],
+        },
+        Node {
+            id: 56,
+            coordinates: [
+                0.75,
+                0.0,
+                -0.1,
+            ],
+        },
+        Node {
+            id: 57,
+            coordinates: [
+                0.5,
+                0.7,
+                -1.0,
+            ],
+        },
+        Node {
+            id: 58,
+            coordinates: [
+                1.0,
+                0.7,
+                -1.0,
+            ],
+        },
+        Node {
+            id: 59,
+            coordinates: [
+                0.5,
+                0.7,
+                -0.5,
+            ],
+        },
+        Node {
+            id: 60,
+            coordinates: [
+                1.0,
+                0.7,
+                -0.5,
+            ],
+        },
+        Node {
+            id: 61,
+            coordinates: [
+                2.25,
+                0.0,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 62,
+            coordinates: [
+                2.75,
+                0.0,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 63,
+            coordinates: [
+                1.75,
+                0.0,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 64,
+            coordinates: [
+                2.25,
+                1.0,
+                -1.25,
+            ],
+        },
+        Node {
+            id: 65,
+            coordinates: [
+                2.75,
+                1.0,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 66,
+            coordinates: [
+                1.75,
+                1.0,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 67,
+            coordinates: [
+                -2.25,
+                0.0,
+                -2.75,
+            ],
+        },
+        Node {
+            id: 68,
+            coordinates: [
+                -1.75,
+                0.0,
+                -1.75,
+            ],
+        },
+        Node {
+            id: 69,
+            coordinates: [
+                -2.75,
+                0.0,
+                -1.75,
+            ],
+        },
+        Node {
+            id: 70,
+            coordinates: [
+                -2.25,
+                1.0,
+                -2.75,
+            ],
+        },
+        Node {
+            id: 71,
+            coordinates: [
+                -1.75,
+                1.0,
+                -1.75,
+            ],
+        },
+        Node {
+            id: 72,
+            coordinates: [
+                -2.75,
+                1.0,
+                -1.75,
+            ],
+        },
+        Node {
+            id: 73,
+            coordinates: [
+                -2.0,
+                -0.15,
+                -2.4,
+            ],
+        },
+        Node {
+            id: 74,
+            coordinates: [
+                -2.5,
+                -0.15,
+                -2.4,
+            ],
+        },
+        Node {
+            id: 75,
+            coordinates: [
+                -2.25,
+                -0.15,
+                -1.6,
+            ],
+        },
+        Node {
+            id: 76,
+            coordinates: [
+                -2.1,
+                0.5,
+                -2.75,
+            ],
+        },
+        Node {
+            id: 77,
+            coordinates: [
+                -2.0,
+                0.5,
+                -2.1,
+            ],
+        },
+        Node {
+            id: 78,
+            coordinates: [
+                -1.75,
+                0.5,
+                -1.9,
+            ],
+        },
+        Node {
+            id: 79,
+            coordinates: [
+                -2.35,
+                0.5,
+                -2.25,
+            ],
+        },
+        Node {
+            id: 80,
+            coordinates: [
+                -2.25,
+                0.5,
+                -1.6,
+            ],
+        },
+        Node {
+            id: 81,
+            coordinates: [
+                -2.9,
+                0.5,
+                -1.75,
+            ],
+        },
+        Node {
+            id: 82,
+            coordinates: [
+                -2.0,
+                1.15,
+                -2.1,
+            ],
+        },
+        Node {
+            id: 83,
+            coordinates: [
+                -2.4,
+                1.15,
+                -2.25,
+            ],
+        },
+        Node {
+            id: 84,
+            coordinates: [
+                -2.25,
+                1.15,
+                -1.6,
+            ],
+        },
+        Node {
+            id: 85,
+            coordinates: [
+                -1.25,
+                0.0,
+                -2.75,
+            ],
+        },
+        Node {
+            id: 86,
+            coordinates: [
+                -0.25,
+                0.0,
+                -2.75,
+            ],
+        },
+        Node {
+            id: 87,
+            coordinates: [
+                -1.25,
+                0.0,
+                -1.75,
+            ],
+        },
+        Node {
+            id: 88,
+            coordinates: [
+                -0.25,
+                0.0,
+                -1.75,
+            ],
+        },
+        Node {
+            id: 89,
+            coordinates: [
+                -1.25,
+                1.0,
+                -2.75,
+            ],
+        },
+        Node {
+            id: 90,
+            coordinates: [
+                -0.25,
+                1.0,
+                -2.75,
+            ],
+        },
+        Node {
+            id: 91,
+            coordinates: [
+                -1.25,
+                1.0,
+                -1.75,
+            ],
+        },
+        Node {
+            id: 92,
+            coordinates: [
+                -0.25,
+                1.0,
+                -1.75,
+            ],
+        },
+        Node {
+            id: 93,
+            coordinates: [
+                0.25,
+                0.0,
+                -2.75,
+            ],
+        },
+        Node {
+            id: 94,
+            coordinates: [
+                1.25,
+                0.0,
+                -2.75,
+            ],
+        },
+        Node {
+            id: 95,
+            coordinates: [
+                0.25,
+                0.0,
+                -1.75,
+            ],
+        },
+        Node {
+            id: 96,
+            coordinates: [
+                1.25,
+                0.0,
+                -1.75,
+            ],
+        },
+        Node {
+            id: 97,
+            coordinates: [
+                0.25,
+                1.0,
+                -2.75,
+            ],
+        },
+        Node {
+            id: 98,
+            coordinates: [
+                1.25,
+                1.0,
+                -2.75,
+            ],
+        },
+        Node {
+            id: 99,
+            coordinates: [
+                0.25,
+                1.0,
+                -1.75,
+            ],
+        },
+        Node {
+            id: 100,
+            coordinates: [
+                1.25,
+                1.0,
+                -1.75,
+            ],
+        },
+        Node {
+            id: 101,
+            coordinates: [
+                0.75,
+                0.15,
+                -2.6,
+            ],
+        },
+        Node {
+            id: 102,
+            coordinates: [
+                0.25,
+                0.15,
+                -2.1,
+            ],
+        },
+        Node {
+            id: 103,
+            coordinates: [
+                0.9,
+                -0.15,
+                -2.25,
+            ],
+        },
+        Node {
+            id: 104,
+            coordinates: [
+                1.1,
+                0.15,
+                -2.25,
+            ],
+        },
+        Node {
+            id: 105,
+            coordinates: [
+                0.6,
+                0.15,
+                -1.6,
+            ],
+        },
+        Node {
+            id: 106,
+            coordinates: [
+                0.4,
+                0.5,
+                -2.75,
+            ],
+        },
+        Node {
+            id: 107,
+            coordinates: [
+                0.8,
+                0.5,
+                -2.75,
+            ],
+        },
+        Node {
+            id: 108,
+            coordinates: [
+                1.25,
+                0.5,
+                -2.65,
+            ],
+        },
+        Node {
+            id: 109,
+            coordinates: [
+                0.25,
+                0.5,
+                -2.4,
+            ],
+        },
+        Node {
+            id: 110,
+            coordinates: [
+                0.85,
+                0.5,
+                -2.2,
+            ],
+        },
+        Node {
+            id: 111,
+            coordinates: [
+                1.1,
+                0.5,
+                -2.35,
+            ],
+        },
+        Node {
+            id: 112,
+            coordinates: [
+                0.3,
+                0.5,
+                -1.7,
+            ],
+        },
+        Node {
+            id: 113,
+            coordinates: [
+                0.7,
+                0.5,
+                -1.8,
+            ],
+        },
+        Node {
+            id: 114,
+            coordinates: [
+                1.4,
+                0.5,
+                -1.7,
+            ],
+        },
+        Node {
+            id: 115,
+            coordinates: [
+                0.8,
+                0.85,
+                -2.8,
+            ],
+        },
+        Node {
+            id: 116,
+            coordinates: [
+                0.35,
+                0.85,
+                -2.1,
+            ],
+        },
+        Node {
+            id: 117,
+            coordinates: [
+                0.85,
+                1.15,
+                -2.35,
+            ],
+        },
+        Node {
+            id: 118,
+            coordinates: [
+                1.3,
+                0.85,
+                -2.3,
+            ],
+        },
+        Node {
+            id: 119,
+            coordinates: [
+                0.8,
+                0.85,
+                -1.65,
+            ],
+        },
+    ],
+    num_eltypes: 15,
+    elements: [
+        Element {
+            id: 0,
+            nodes: [
+                0,
+            ],
+        },
+        Element {
+            id: 1,
+            nodes: [
+                1,
+                2,
+            ],
+        },
+        Element {
+            id: 2,
+            nodes: [
+                3,
+                4,
+                5,
+            ],
+        },
+        Element {
+            id: 3,
+            nodes: [
+                6,
+                7,
+                8,
+            ],
+        },
+        Element {
+            id: 4,
+            nodes: [
+                9,
+                10,
+                11,
+                12,
+                14,
+                13,
+            ],
+        },
+        Element {
+            id: 5,
+            nodes: [
+                15,
+                16,
+                18,
+                17,
+            ],
+        },
+        Element {
+            id: 6,
+            nodes: [
+                19,
+                20,
+                22,
+                21,
+                23,
+                26,
+                27,
+                24,
+                25,
+            ],
+        },
+        Element {
+            id: 7,
+            nodes: [
+                28,
+                29,
+                30,
+                31,
+            ],
+        },
+        Element {
+            id: 8,
+            nodes: [
+                32,
+                33,
+                34,
+                35,
+                36,
+                38,
+                37,
+                39,
+                40,
+                41,
+            ],
+        },
+        Element {
+            id: 9,
+            nodes: [
+                42,
+                43,
+                45,
+                44,
+                46,
+            ],
+        },
+        Element {
+            id: 10,
+            nodes: [
+                47,
+                48,
+                50,
+                49,
+                51,
+                52,
+                55,
+                56,
+                53,
+                57,
+                58,
+                60,
+                59,
+            ],
+        },
+        Element {
+            id: 11,
+            nodes: [
+                61,
+                62,
+                63,
+                64,
+                65,
+                66,
+            ],
+        },
+        Element {
+            id: 12,
+            nodes: [
+                67,
+                68,
+                69,
+                70,
+                71,
+                72,
+                73,
+                75,
+                74,
+                82,
+                84,
+                83,
+                76,
+                78,
+                81,
+                77,
+                80,
+                79,
+            ],
+        },
+        Element {
+            id: 13,
+            nodes: [
+                85,
+                86,
+                88,
+                87,
+                89,
+                90,
+                92,
+                91,
+            ],
+        },
+        Element {
+            id: 14,
+            nodes: [
+                93,
+                94,
+                96,
+                95,
+                97,
+                98,
+                100,
+                99,
+                101,
+                104,
+                105,
+                102,
+                115,
+                118,
+                119,
+                116,
+                106,
+                108,
+                114,
+                112,
+                109,
+                111,
+                107,
+                113,
+                103,
+                117,
+                110,
+            ],
+        },
+    ],
+    element_type_info: [
+        ElementTypeInfo {
+            element_type: Vertex,
+            num_elements: 1,
+            start_index: 0,
+            nodes_per_element: 1,
+        },
+        ElementTypeInfo {
+            element_type: Line,
+            num_elements: 1,
+            start_index: 1,
+            nodes_per_element: 2,
+        },
+        ElementTypeInfo {
+            element_type: QuadraticEdge,
+            num_elements: 1,
+            start_index: 2,
+            nodes_per_element: 3,
+        },
+        ElementTypeInfo {
+            element_type: Triangle,
+            num_elements: 1,
+            start_index: 3,
+            nodes_per_element: 3,
+        },
+        ElementTypeInfo {
+            element_type: QuadraticTriangle,
+            num_elements: 1,
+            start_index: 4,
+            nodes_per_element: 6,
+        },
+        ElementTypeInfo {
+            element_type: Quad,
+            num_elements: 1,
+            start_index: 5,
+            nodes_per_element: 4,
+        },
+        ElementTypeInfo {
+            element_type: BiquadraticQuad,
+            num_elements: 1,
+            start_index: 6,
+            nodes_per_element: 9,
+        },
+        ElementTypeInfo {
+            element_type: Tetra,
+            num_elements: 1,
+            start_index: 7,
+            nodes_per_element: 4,
+        },
+        ElementTypeInfo {
+            element_type: QuadraticTetra,
+            num_elements: 1,
+            start_index: 8,
+            nodes_per_element: 10,
+        },
+        ElementTypeInfo {
+            element_type: Pyramid,
+            num_elements: 1,
+            start_index: 9,
+            nodes_per_element: 5,
+        },
+        ElementTypeInfo {
+            element_type: QuadraticPyramid,
+            num_elements: 1,
+            start_index: 10,
+            nodes_per_element: 14,
+        },
+        ElementTypeInfo {
+            element_type: Wedge,
+            num_elements: 1,
+            start_index: 11,
+            nodes_per_element: 6,
+        },
+        ElementTypeInfo {
+            element_type: BiquadraticQuadraticWedge,
+            num_elements: 1,
+            start_index: 12,
+            nodes_per_element: 18,
+        },
+        ElementTypeInfo {
+            element_type: Hexahedron,
+            num_elements: 1,
+            start_index: 13,
+            nodes_per_element: 8,
+        },
+        ElementTypeInfo {
+            element_type: TriquadraticHexahedron,
+            num_elements: 1,
+            start_index: 14,
+            nodes_per_element: 27,
+        },
+    ],
+}
