@@ -1,0 +1,295 @@
+# Created by COMSOL Multiphysics.
+
+# Major & minor version
+0 1 
+1 # number of tags
+# Tags
+5 mesh1 
+1 # number of types
+# Types
+3 obj 
+
+# --------- Object 0 ----------
+
+0 0 1 
+4 Mesh # class
+2 # version
+3 # sdim    
+120 # number of mesh vertices   
+0 # lowest mesh vertex index
+
+# Mesh vertex coordinates
+-2.25 0.0 2.25 
+-1.25 0.5 1.75
+-0.25 -0.5 2.75
+0.25 0.5 1.75
+1.25 -0.5 2.75
+0.50 0.0 2.50
+1.75 0.5 1.75
+2.75 -0.5 1.75
+2.25 0.0 2.75
+-2.75 0.0 0.25
+-1.75 0.0 0.25
+-2.25 0.0 1.25
+-2.25 0.0 0.10
+-2.50 0.0 0.90
+-2.00 0.0 0.90
+-1.25 0.0 0.25
+-0.25 0.0 0.25
+-1.25 0.0 1.25
+-0.25 0.0 1.25
+0.25 0.0 0.25
+1.25 0.0 0.25
+0.25 0.0 1.25
+1.25 0.0 1.25
+0.75 0.0 0.10
+0.10 0.0 0.75
+0.75 0.2 0.75
+1.40 0.0 0.75
+0.75 0.0 1.40
+1.75 0.0 0.25
+2.75 0.0 0.25
+2.25 0.0 1.25
+2.25 1.0 0.75
+-2.75 0.0 -1.25
+-1.75 0.0 -1.25
+-2.25 0.0 -0.25
+-2.25 1.0 -0.75
+-2.25 0.0 -1.40
+-2.65 0.0 -0.75
+-2.00 0.0 -0.60
+-2.50 0.5 -0.80
+-2.15 0.5 -1.00
+-2.35 0.5 -0.60
+-1.25 0.0 -1.25
+-0.25 0.0 -1.25
+-1.25 0.0 -0.25
+-0.25 0.0 -0.25
+-0.75 1.0 -0.75
+0.25 0.0 -1.25
+1.25 0.0 -1.25
+0.25 0.0 -0.25
+1.25 0.0 -0.25
+0.75 1.0 -0.75
+0.75 0.0 -1.40
+0.10 0.0 -0.75
+0.90 -0.15 -0.75
+1.40 0.0 -0.75
+0.75 0.0 -0.10
+0.50 0.7 -1.00
+1.00 0.7 -1.00
+0.50 0.7 -0.50
+1.00 0.7 -0.50
+2.25 0.0 -1.25
+2.75 0.0 -0.25
+1.75 0.0 -0.25
+2.25 1.0 -1.25
+2.75 1.0 -0.25
+1.75 1.0 -0.25
+-2.25 0.0 -2.75
+-1.75 0.0 -1.75
+-2.75 0.0 -1.75
+-2.25 1.0 -2.75
+-1.75 1.0 -1.75
+-2.75 1.0 -1.75
+-2.00 -0.15 -2.40
+-2.50 -0.15 -2.40
+-2.25 -0.15 -1.60
+-2.10 0.5 -2.75
+-2.00 0.5 -2.10
+-1.75 0.5 -1.90
+-2.35 0.5 -2.25
+-2.25 0.5 -1.60
+-2.90 0.5 -1.75
+-2.00 1.15 -2.10
+-2.40 1.15 -2.25
+-2.25 1.15 -1.60
+-1.25 0.0 -2.75
+-0.25 0.0 -2.75
+-1.25 0.0 -1.75
+-0.25 0.0 -1.75
+-1.25 1.0 -2.75
+-0.25 1.0 -2.75
+-1.25 1.0 -1.75
+-0.25 1.0 -1.75
+0.25 0.0 -2.75
+1.25 0.0 -2.75
+0.25 0.0 -1.75
+1.25 0.0 -1.75
+0.25 1.0 -2.75
+1.25 1.0 -2.75
+0.25 1.0 -1.75
+1.25 1.0 -1.75
+0.75 0.15 -2.60
+0.25 0.15 -2.10
+0.90 -0.15 -2.25
+1.10 0.15 -2.25
+0.60 0.15 -1.60
+0.40 0.5 -2.75
+0.80 0.5 -2.75
+1.25 0.5 -2.65
+0.25 0.5 -2.40
+0.85 0.5 -2.20
+1.10 0.5 -2.35
+0.30 0.5 -1.70
+0.70 0.5 -1.80
+1.40 0.5 -1.70
+0.80 0.85 -2.80
+0.35 0.85 -2.10
+0.85 1.15 -2.35
+1.30 0.85 -2.30
+0.80 0.85 -1.65
+
+15 # number of element types
+
+# Type #0
+
+3 vtx # type name
+
+
+1 # number of vertices per element
+1 # number of elements
+# Elements
+0  
+
+# Type #14
+
+6 hex2 # type name
+
+
+27 # number of vertices per element
+1 # number of elements
+# Elements
+93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119
+1 2 5
+
+# Type #2
+
+4 edg2 # type name
+
+
+3 # number of vertices per element
+1 # number of elements
+# Elements
+3 4 5
+
+# Type #3
+
+4 tri # type name
+
+
+3 # number of vertices per element
+1 # number of elements
+# Elements
+6 7 8
+
+# Type #4
+
+4 tri2 # type name
+
+
+6 # number of vertices per element
+1 # number of elements
+# Elements
+9 10 11 12 13 14
+
+# Type #5
+
+4 quad # type name
+
+
+4 # number of vertices per element
+1 # number of elements
+# Elements
+15 16 17 18
+
+# Type #6
+
+5 quad2 # type name
+
+
+9 # number of vertices per element
+1 # number of elements
+# Elements
+19 20 21 22 23 24 25 26 27
+ 
+# Type #7
+
+4 tet # type name
+
+
+4 # number of vertices per element
+1 # number of elements
+# Elements
+28 29 30 31
+
+# Type #8
+
+4 tet2 # type name
+
+
+10 # number of vertices per element
+1 # number of elements
+# Elements
+32 33 34 35 36 37 38 39 40 41
+
+# Type #9
+
+4 pyr # type name
+
+
+5 # number of vertices per element
+1 # number of elements
+# Elements
+42 43 44 45 46
+
+# Type #10
+
+4 pyr2 # type name
+
+
+14 # number of vertices per element
+1 # number of elements
+# Elements
+47 48 49 50 51 52 53 54 55 56 57 58 59 60
+
+# Type #11
+
+4 prism # type name
+
+
+6 # number of vertices per element
+1 # number of elements
+# Elements
+61 62 63 64 65 66
+
+# Type #12
+
+6 prism2 # type name
+
+
+18 # number of vertices per element
+1 # number of elements
+# Elements
+67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84
+
+# Type #13
+
+4 hex # type name
+
+
+8 # number of vertices per element
+1 # number of elements
+# Elements
+85 86 87 88 89 90 91 92
+
+# Type #14
+
+6 hex2 # type name
+
+
+27 # number of vertices per element
+1 # number of elements
+# Elements
+93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119
+

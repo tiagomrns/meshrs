@@ -315,16 +315,16 @@ impl VTUWriter {
         let mut cell_attributes = Vec::new();
 
         // Add Element Quality Data as Cell Attributes
-        let mut signed_volume_values = vec![0.0; mesh_data.elements.len()];
+        let mut volume_metric_values = vec![0.0; mesh_data.elements.len()];
         for quality in &element_quality.element_qualities {
-            if quality.element_id < signed_volume_values.len() {
-                signed_volume_values[quality.element_id] = quality.signed_volume_metric;
+            if quality.element_id < volume_metric_values.len() {
+                volume_metric_values[quality.element_id] = quality.volume_metric;
             }
         }
         
-        let signed_volume_attr = Attribute::scalars("Signed_Volume_Metric", 1)
-            .with_data(IOBuffer::F64(signed_volume_values));
-        cell_attributes.push(signed_volume_attr);
+        let volume_metric_attr = Attribute::scalars("Signed_Volume_Metric", 1)
+            .with_data(IOBuffer::F64(volume_metric_values));
+        cell_attributes.push(volume_metric_attr);
 
         // Add Shape Metric as Cell Attributes
         let mut shape_metric_values = vec![0.0; mesh_data.elements.len()];

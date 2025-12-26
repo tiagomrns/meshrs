@@ -108,7 +108,7 @@ impl GeometricAnalysis {
         )?;
 
         // Find min, max Jacobian determinant AND check for zeros
-        let (min_point, min_detj, max_detj, has_zero_detj) = Self::find_min_max_jacobian_determinant(
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = Self::find_min_max_jacobian_determinant(
             &jacobian_matrix,
             &evaluation_points,
             element_dim,
@@ -116,14 +116,14 @@ impl GeometricAnalysis {
         )?;
 
         // EARLY RETURN: If ANY point has zero Jacobian, return all metrics as 0
-        if has_zero_detj {
+        if has_nonpositive_detj {
             return Ok(ElementQuality {
                 element_id: element.id,
                 shape_metric: 0.0,
                 skewness_metric: 0.0,
                 length_ratio: 0.0,
                 orientation_metric: 0.0,
-                signed_volume_metric: 0.0,
+                volume_metric: 0.0,
                 jacobian_ratio: 0.0,
             });
         }
@@ -132,7 +132,7 @@ impl GeometricAnalysis {
         let jacobian_ratio = if (min_detj.abs() < 1e-12) || (max_detj.abs() < 1e-12) {
             0.0 // either min detJ or max detJ is zero means invalid element
         } else {
-            max_detj / min_detj
+            min_detj / max_detj
         };
 
         // Convert worst point to tuple format for evaluation (we'll use min point for detailed analysis)
@@ -154,17 +154,6 @@ impl GeometricAnalysis {
                 ))?;
             }
         }
-
-        // Calculate orientation sign only for non-square matrices (-1.0 or 1.0)
-        let orientation_sign = if mesh_dim != element_dim {
-            Self::calculate_element_orientation_sign(
-                &evaluated_jacobian,
-                element_dim,    
-                mesh_dim,       
-            )?
-        } else {
-            1.0 // Default to 1.0 for square matrices
-        };
 
         // Construct metric Jacobian matrix only for knupps metrics
         let metric_jacobian = if mesh_dim == element_dim {
@@ -202,7 +191,6 @@ impl GeometricAnalysis {
         let length_ratio = Self::calculate_length_ratio(&d_matrix, &inverse_d_matrix, element_dim);
         let orientation_metric = Self::calculate_orientation_metric(&r_matrix, element_dim);
         let volume_metric = min_detj;
-        let signed_volume_metric = orientation_sign * volume_metric;
         // more metrics can be added here if needed
 
         
@@ -212,7 +200,7 @@ impl GeometricAnalysis {
             skewness_metric,
             length_ratio,
             orientation_metric,
-            signed_volume_metric,   // Signed volume metric
+            volume_metric,          // Volume metric
             jacobian_ratio,         // max(detJ) / min(detJ)
         })
     }
@@ -246,7 +234,7 @@ impl GeometricAnalysis {
         let mut min_point = &evaluation_points[0];
         let mut min_det = f64::MAX;
         let mut max_det = f64::MIN;
-        let mut has_zero = false;
+        let mut has_nonpositive = false;
         
         for point in evaluation_points {
             // Convert point to tuple for evaluation
@@ -276,8 +264,8 @@ impl GeometricAnalysis {
             )?;
             
             // Check for zero determinant
-            if det_value.abs() < 1e-12 {
-                has_zero = true;
+            if det_value <= 1e-12 {
+                has_nonpositive = true;
                 min_point = point;
                 min_det = 0.0;
                 max_det = 0.0;
@@ -297,73 +285,7 @@ impl GeometricAnalysis {
             }
         }
 
-        Ok((min_point.clone(), min_det, max_det, has_zero))
-    }
-
-
-    /// Calculate orientation sign for non-square Jacobian matrices
-    /// Preserves directional information that would be lost by taking absolute values
-    fn calculate_element_orientation_sign(
-        jacobian: &Vec<Vec<f64>>,
-        element_dim: usize,  // FIXED: now rows
-        mesh_dim: usize,     // FIXED: now columns
-    ) -> Result<f64, ElementError> {
-        // This function is now only called for non-square matrices
-        match (element_dim, mesh_dim) {
-            // FIXED: 1D elements in 2D or 3D space: J is [1×2] or [1×3]
-            // Sign determined from largest tangent component
-            (1, 2) | (1, 3) => {
-                // Extract tangent vector from Jacobian row (J is [1×mesh_dim])
-                let mut tangent = vec![0.0; mesh_dim];
-                for i in 0..mesh_dim {
-                    tangent[i] = jacobian[0][i];  // FIXED: access row 0, column i
-                }
-                
-                // Find component with largest magnitude for robust sign determination
-                let mut max_abs = 0.0;
-                let mut sign_component = 0.0;
-                for &comp in &tangent {
-                    if comp.abs() > max_abs {
-                        max_abs = comp.abs();
-                        sign_component = comp;
-                    }
-                }
-                
-                // Return sign based on dominant component
-                Ok(if max_abs < 1e-12 { 1.0 } else if sign_component >= 0.0 { 1.0 } else { -1.0 })
-            },
-            
-            // FIXED: 2D elements in 3D space: J is [2×3]
-            // Sign determined from surface normal
-            (2, 3) => {
-                // Extract both tangent vectors from Jacobian rows
-                // J[0][*] is first tangent, J[1][*] is second tangent
-                let u = [jacobian[0][0], jacobian[0][1], jacobian[0][2]];  // FIXED: row 0
-                let v = [jacobian[1][0], jacobian[1][1], jacobian[1][2]];  // FIXED: row 1
-                
-                // Compute surface normal: n = u × v
-                let normal = [
-                    u[1] * v[2] - u[2] * v[1],
-                    u[2] * v[0] - u[0] * v[2],
-                    u[0] * v[1] - u[1] * v[0],
-                ];
-                
-                // Find component with largest magnitude for robust sign determination
-                let mut max_abs = 0.0;
-                let mut sign_component = 0.0;
-                for &comp in &normal {
-                    if comp.abs() > max_abs {
-                        max_abs = comp.abs();
-                        sign_component = comp;
-                    }
-                }
-                
-                Ok(if max_abs < 1e-12 { 1.0 } else if sign_component >= 0.0 { 1.0 } else { -1.0 })
-            },
-            
-            // Default case (shouldn't normally occur for non-square)
-            _ => Ok(1.0),
-        }
+        Ok((min_point.clone(), min_det, max_det, has_nonpositive))
     }
 
     /// Calculate shape metric
@@ -852,7 +774,7 @@ impl GeometricAnalysis {
     }
 }
 
-
+ 
 #[cfg(test)]
 mod geometric_quality_tests {
     use super::*;
@@ -899,7 +821,7 @@ mod geometric_quality_tests {
         ).unwrap();
 
         // Find min, max Jacobian determinant AND check for zeros
-        let (min_point, min_detj, max_detj, has_zero_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
             &jacobian_matrix,
             &evaluation_points,
             element_dim,
@@ -907,7 +829,7 @@ mod geometric_quality_tests {
         ).unwrap();
         assert!((min_detj - 1.0).abs() < 1e-10);
         assert!((max_detj - 1.0).abs() < 1e-10);
-        assert!(!has_zero_detj);
+        assert!(!has_nonpositive_detj);
 
         let eval_point_tuple = match min_point.len() {
             1 => (min_point[0], 0.0, 0.0),
@@ -968,13 +890,13 @@ mod geometric_quality_tests {
 
         println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
                  quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
-                 quality.orientation_metric, quality.signed_volume_metric, quality.jacobian_ratio);
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
 
         assert!((quality.shape_metric - 1.0).abs() < 1e-10);
         assert!((quality.skewness_metric - 1.0).abs() < 1e-10);
         assert!((quality.length_ratio - 1.0).abs() < 1e-10);
         assert!((quality.orientation_metric - 1.0).abs() < 1e-10);
-        assert!((quality.signed_volume_metric - 1.0).abs() < 1e-10);
+        assert!((quality.volume_metric - 1.0).abs() < 1e-10);
         assert!((quality.jacobian_ratio - 1.0).abs() < 1e-10);
     }
 
@@ -1020,7 +942,7 @@ mod geometric_quality_tests {
         ).unwrap();
 
         // Find min, max Jacobian determinant AND check for zeros
-        let (min_point, min_detj, max_detj, has_zero_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
             &jacobian_matrix,
             &evaluation_points,
             element_dim,
@@ -1028,7 +950,7 @@ mod geometric_quality_tests {
         ).unwrap();
         assert!((min_detj - 1.0).abs() < 1e-10);
         assert!((max_detj - 4.0).abs() < 1e-10);
-        assert!(!has_zero_detj);
+        assert!(!has_nonpositive_detj);
 
         let eval_point_tuple = match min_point.len() {
             1 => (min_point[0], 0.0, 0.0),
@@ -1089,13 +1011,13 @@ mod geometric_quality_tests {
 
         println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
                  quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
-                 quality.orientation_metric, quality.signed_volume_metric, quality.jacobian_ratio);
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
 
         assert!((quality.shape_metric - 0.3333333333333333).abs() < 1e-10);
         assert!((quality.skewness_metric - 0.4472135954999579).abs() < 1e-10);
         assert!((quality.length_ratio - 0.7453559924999299).abs() < 1e-10);
         assert!((quality.orientation_metric - 0.723606797749979).abs() < 1e-10);
-        assert!((quality.signed_volume_metric - 1.0).abs() < 1e-10);
+        assert!((quality.volume_metric - 1.0).abs() < 1e-10);
         assert!((quality.jacobian_ratio - 4.0).abs() < 1e-10);
     }
 
@@ -1141,7 +1063,7 @@ mod geometric_quality_tests {
         ).unwrap();
 
         // Find min, max Jacobian determinant AND check for zeros
-        let (min_point, min_detj, max_detj, has_zero_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
             &jacobian_matrix,
             &evaluation_points,
             element_dim,
@@ -1149,7 +1071,7 @@ mod geometric_quality_tests {
         ).unwrap();
         assert!((min_detj - 10.0).abs() < 1e-10);
         assert!((max_detj - 10.0).abs() < 1e-10);
-        assert!(!has_zero_detj);
+        assert!(!has_nonpositive_detj);
 
         let eval_point_tuple = match min_point.len() {
             1 => (min_point[0], 0.0, 0.0),
@@ -1210,13 +1132,13 @@ mod geometric_quality_tests {
 
         println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
                  quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
-                 quality.orientation_metric, quality.signed_volume_metric, quality.jacobian_ratio);
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
 
         assert!((quality.shape_metric - 0.198019801980198).abs() < 1e-10);
         assert!((quality.skewness_metric - 1.0).abs() < 1e-10);
         assert!((quality.length_ratio - 0.198019801980198).abs() < 1e-10);
         assert!((quality.orientation_metric - 1.0).abs() < 1e-10);
-        assert!((quality.signed_volume_metric - 10.0).abs() < 1e-10);
+        assert!((quality.volume_metric - 10.0).abs() < 1e-10);
         assert!((quality.jacobian_ratio - 1.0).abs() < 1e-10);
     }
 
@@ -1262,13 +1184,13 @@ mod geometric_quality_tests {
         ).unwrap();
 
         // Find min, max Jacobian determinant AND check for zeros
-        let (min_point, min_detj, max_detj, has_zero_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
             &jacobian_matrix,
             &evaluation_points,
             element_dim,
             mesh_dim,
         ).unwrap();
-        assert!(has_zero_detj);
+        assert!(has_nonpositive_detj);
 
         let quality = GeometricAnalysis::calculate_element_quality(
             &element,
@@ -1279,13 +1201,13 @@ mod geometric_quality_tests {
 
         println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
                  quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
-                 quality.orientation_metric, quality.signed_volume_metric, quality.jacobian_ratio);
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
 
         assert!((quality.shape_metric - 0.0).abs() < 1e-10);
         assert!((quality.skewness_metric - 0.0).abs() < 1e-10);
         assert!((quality.length_ratio - 0.0).abs() < 1e-10);
         assert!((quality.orientation_metric - 0.0).abs() < 1e-10);
-        assert!((quality.signed_volume_metric - 0.0).abs() < 1e-10);
+        assert!((quality.volume_metric - 0.0).abs() < 1e-10);
         assert!((quality.jacobian_ratio - 0.0).abs() < 1e-10);
     }
 
@@ -1334,7 +1256,7 @@ mod geometric_quality_tests {
         ).unwrap();
 
         // Find min, max Jacobian determinant AND check for zeros
-        let (min_point, min_detj, max_detj, has_zero_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
             &jacobian_matrix,
             &evaluation_points,
             element_dim,
@@ -1343,7 +1265,7 @@ mod geometric_quality_tests {
         println!("min_point: {:?}", min_point);
         assert!((min_detj - 1.0).abs() < 1e-10);
         assert!((max_detj - 1.0).abs() < 1e-10);
-        assert!(!has_zero_detj);
+        assert!(!has_nonpositive_detj);
 
         let eval_point_tuple = match min_point.len() {
             1 => (min_point[0], 0.0, 0.0),
@@ -1430,13 +1352,13 @@ mod geometric_quality_tests {
 
         println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
                  quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
-                 quality.orientation_metric, quality.signed_volume_metric, quality.jacobian_ratio);
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
 
         assert!((quality.shape_metric - 1.0).abs() < 1e-10);
         assert!((quality.skewness_metric - 1.0).abs() < 1e-10);
         assert!((quality.length_ratio - 1.0).abs() < 1e-10);
         assert!((quality.orientation_metric - 1.0).abs() < 1e-10);
-        assert!((quality.signed_volume_metric - 1.0).abs() < 1e-10);
+        assert!((quality.volume_metric - 1.0).abs() < 1e-10);
         assert!((quality.jacobian_ratio - 1.0).abs() < 1e-10);
     }
 
@@ -1484,7 +1406,7 @@ mod geometric_quality_tests {
         ).unwrap();
 
         // Find min, max Jacobian determinant AND check for zeros
-        let (min_point, min_detj, max_detj, has_zero_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
             &jacobian_matrix,
             &evaluation_points,
             element_dim,
@@ -1492,7 +1414,7 @@ mod geometric_quality_tests {
         ).unwrap();
         assert!((min_detj - 1.0).abs() < 1e-10);
         assert!((max_detj - 1.0).abs() < 1e-10);
-        assert!(!has_zero_detj);
+        assert!(!has_nonpositive_detj);
 
         let eval_point_tuple = match min_point.len() {
             1 => (min_point[0], 0.0, 0.0),
@@ -1579,13 +1501,13 @@ mod geometric_quality_tests {
 
         println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
                  quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
-                 quality.orientation_metric, quality.signed_volume_metric, quality.jacobian_ratio);
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
 
         assert!((quality.shape_metric - 0.25).abs() < 1e-10);
         assert!((quality.skewness_metric - 0.3779644730092272).abs() < 1e-10);
         assert!((quality.length_ratio - 0.5976143046671968).abs() < 1e-10);
         assert!((quality.orientation_metric - 0.658113883008419).abs() < 1e-10);
-        assert!((quality.signed_volume_metric - 1.0).abs() < 1e-10);
+        assert!((quality.volume_metric - 1.0).abs() < 1e-10);
         assert!((quality.jacobian_ratio - 1.0).abs() < 1e-10);
     }
 
@@ -1633,7 +1555,7 @@ mod geometric_quality_tests {
         ).unwrap();
 
         // Find min, max Jacobian determinant AND check for zeros
-        let (min_point, min_detj, max_detj, has_zero_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
             &jacobian_matrix,
             &evaluation_points,
             element_dim,
@@ -1641,7 +1563,7 @@ mod geometric_quality_tests {
         ).unwrap();
         assert!((min_detj - 10.0).abs() < 1e-10);
         assert!((max_detj - 10.0).abs() < 1e-10);
-        assert!(!has_zero_detj);
+        assert!(!has_nonpositive_detj);
 
         let eval_point_tuple = match min_point.len() {
             1 => (min_point[0], 0.0, 0.0),
@@ -1728,13 +1650,13 @@ mod geometric_quality_tests {
 
         println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
                  quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
-                 quality.orientation_metric, quality.signed_volume_metric, quality.jacobian_ratio);
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
 
         assert!((quality.shape_metric - 0.2095188685475281).abs() < 1e-10);
         assert!((quality.skewness_metric - 1.0).abs() < 1e-10);
         assert!((quality.length_ratio - 0.2095188685475281).abs() < 1e-10);
         assert!((quality.orientation_metric - 1.0).abs() < 1e-10);
-        assert!((quality.signed_volume_metric - 10.0).abs() < 1e-10);
+        assert!((quality.volume_metric - 10.0).abs() < 1e-10);
         assert!((quality.jacobian_ratio - 1.0).abs() < 1e-10);
     }
 
@@ -1782,14 +1704,14 @@ mod geometric_quality_tests {
         ).unwrap();
 
         // Find min, max Jacobian determinant AND check for zeros
-        let (min_point, min_detj, max_detj, has_zero_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
             &jacobian_matrix,
             &evaluation_points,
             element_dim,
             mesh_dim,
         ).unwrap();
         println!("min_point: {:?}", min_point);
-        assert!(has_zero_detj); 
+        assert!(has_nonpositive_detj); 
         
 
         let quality = GeometricAnalysis::calculate_element_quality(
@@ -1801,13 +1723,13 @@ mod geometric_quality_tests {
 
         println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
                  quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
-                 quality.orientation_metric, quality.signed_volume_metric, quality.jacobian_ratio);
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
 
         assert!((quality.shape_metric - 0.0).abs() < 1e-10);
         assert!((quality.skewness_metric - 0.0).abs() < 1e-10);
         assert!((quality.length_ratio - 0.0).abs() < 1e-10);
         assert!((quality.orientation_metric - 0.0).abs() < 1e-10);
-        assert!((quality.signed_volume_metric - 0.0).abs() < 1e-10);
+        assert!((quality.volume_metric - 0.0).abs() < 1e-10);
         assert!((quality.jacobian_ratio - 0.0).abs() < 1e-10);
     }
 
@@ -1855,7 +1777,7 @@ mod geometric_quality_tests {
         ).unwrap();
 
         // Find min, max Jacobian determinant AND check for zeros
-        let (min_point, min_detj, max_detj, has_zero_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
             &jacobian_matrix,
             &evaluation_points,
             element_dim,
@@ -1864,7 +1786,7 @@ mod geometric_quality_tests {
         println!("min_point: {:?}", min_point);
         assert!((min_detj - 1.0).abs() < 1e-10);
         assert!((max_detj - 1.0).abs() < 1e-10);
-        assert!(!has_zero_detj);
+        assert!(!has_nonpositive_detj);
 
         let eval_point_tuple = match min_point.len() {
             1 => (min_point[0], 0.0, 0.0),
@@ -1951,13 +1873,13 @@ mod geometric_quality_tests {
 
         println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
                  quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
-                 quality.orientation_metric, quality.signed_volume_metric, quality.jacobian_ratio);
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
 
         assert!((quality.shape_metric - 1.0).abs() < 1e-10);
         assert!((quality.skewness_metric - 1.0).abs() < 1e-10);
         assert!((quality.length_ratio - 1.0).abs() < 1e-10);
         assert!((quality.orientation_metric - 1.0).abs() < 1e-10);
-        assert!((quality.signed_volume_metric - 1.0).abs() < 1e-10);
+        assert!((quality.volume_metric - 1.0).abs() < 1e-10);
         assert!((quality.jacobian_ratio - 1.0).abs() < 1e-10);
     }
 
@@ -2005,7 +1927,7 @@ mod geometric_quality_tests {
         ).unwrap();
 
         // Find min, max Jacobian determinant AND check for zeros
-        let (min_point, min_detj, max_detj, has_zero_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
             &jacobian_matrix,
             &evaluation_points,
             element_dim,
@@ -2014,7 +1936,7 @@ mod geometric_quality_tests {
         println!("min_point: {:?}", min_point);
         assert!((min_detj - 0.6249108593711586).abs() < 1e-10);
         assert!((max_detj - 0.6249108593711586).abs() < 1e-10);
-        assert!(!has_zero_detj);
+        assert!(!has_nonpositive_detj);
 
         let eval_point_tuple = match min_point.len() {
             1 => (min_point[0], 0.0, 0.0),
@@ -2101,13 +2023,13 @@ mod geometric_quality_tests {
 
         println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
                  quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
-                 quality.orientation_metric, quality.signed_volume_metric, quality.jacobian_ratio);
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
 
         assert!((quality.shape_metric - 0.030912041388075).abs() < 1e-10);
         assert!((quality.skewness_metric - 0.03967821186015499).abs() < 1e-10);
         assert!((quality.length_ratio - 0.7790684090559279).abs() < 1e-10);
         assert!((quality.orientation_metric - 0.7303067659998747).abs() < 1e-10);
-        assert!((quality.signed_volume_metric - 0.62491085937115863181235072925423).abs() < 1e-10);
+        assert!((quality.volume_metric - 0.62491085937115863181235072925423).abs() < 1e-10);
         assert!((quality.jacobian_ratio - 1.0).abs() < 1e-10);
     }
     
@@ -2155,7 +2077,7 @@ mod geometric_quality_tests {
         ).unwrap();
 
         // Find min, max Jacobian determinant AND check for zeros
-        let (min_point, min_detj, max_detj, has_zero_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
             &jacobian_matrix,
             &evaluation_points,
             element_dim,
@@ -2164,7 +2086,7 @@ mod geometric_quality_tests {
         println!("min_point: {:?}", min_point);
         assert!((min_detj - 8.0441179762606664544480672659116).abs() < 1e-10);
         assert!((max_detj - 8.0571123621307404477762541186449).abs() < 1e-10);
-        assert!(!has_zero_detj);
+        assert!(!has_nonpositive_detj);
 
         let eval_point_tuple = match min_point.len() {
             1 => (min_point[0], 0.0, 0.0),
@@ -2251,27 +2173,27 @@ mod geometric_quality_tests {
 
         println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
                  quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
-                 quality.orientation_metric, quality.signed_volume_metric, quality.jacobian_ratio);
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
 
         assert!((quality.shape_metric - 0.01293213592149281).abs() < 1e-10);
         assert!((quality.skewness_metric - 0.3112317298425536).abs() < 1e-10);
         assert!((quality.length_ratio - 0.04155147011532192).abs() < 1e-10);
         assert!((quality.orientation_metric - 0.9999037381015994).abs() < 1e-10);
-        assert!((quality.signed_volume_metric - 8.0441179762606664544480672659116).abs() < 1e-10);
+        assert!((quality.volume_metric - 8.0441179762606664544480672659116).abs() < 1e-10);
         assert!((quality.jacobian_ratio - 1.001615389767830).abs() < 1e-10);
     }
 
     #[test]
-    // Test 12: 2D quadratic triangle element in 3D mesh - BAD Orientation 
-    fn test_2d_quadratic_triangle_in_3d_mesh_bad_orientation() { 
+    // Test 12: 2D quadratic triangle element in 3D mesh - Inverted element
+    fn test_2d_quadratic_triangle_in_3d_mesh_inverted() { 
         let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5] };
         let nodes = vec![
-            Node { id: 0, coordinates: vec![0.000, 0.000, 0.000] },
-            Node { id: 1, coordinates: vec![8.660, 0.000, -5.000] },  
-            Node { id: 2, coordinates: vec![0.433, 0.612, 0.354] },  
-            Node { id: 3, coordinates: vec![4.330, 0.000, -2.500] },
-            Node { id: 4, coordinates: vec![4.547, 0.306, -2.323] },
-            Node { id: 5, coordinates: vec![0.217, 0.306, 0.177] },
+            Node { id: 0, coordinates: vec![0.0, 0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0, 0.0] },  
+            Node { id: 2, coordinates: vec![0.5, 0.866, 0.5] },  
+            Node { id: 3, coordinates: vec![0.5, 0.9, 0.6] },
+            Node { id: 4, coordinates: vec![0.75, 0.433, 0.25] },
+            Node { id: 5, coordinates: vec![0.25, 0.433, 0.25] },
             
         ];
         let element_type = ElementType::QuadraticTriangle;
@@ -2305,16 +2227,16 @@ mod geometric_quality_tests {
         ).unwrap();
 
         // Find min, max Jacobian determinant AND check for zeros
-        let (min_point, min_detj, max_detj, has_zero_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
             &jacobian_matrix,
             &evaluation_points,
             element_dim,
             mesh_dim,
         ).unwrap();
         println!("min_point: {:?}", min_point);
-        assert!((min_detj - 8.0441179762606664544480672659116).abs() < 1e-10);
-        assert!((max_detj - 8.0571123621307404477762541186449).abs() < 1e-10);
-        assert!(!has_zero_detj);
+        assert!((min_detj - (-1.1999427319668218232930222070597)).abs() < 1e-10);
+        assert!((max_detj - 0.9999779997579946758535852467608).abs() < 1e-10);
+        assert!(!has_nonpositive_detj);
 
         let eval_point_tuple = match min_point.len() {
             1 => (min_point[0], 0.0, 0.0),
@@ -2335,9 +2257,9 @@ mod geometric_quality_tests {
             }
         }
 
-        assert!((evaluated_jacobian[0][0] - 8.66).abs() < 1e-10);  assert!((evaluated_jacobian[0][1] - 0.0).abs() < 1e-10);
-        assert!((evaluated_jacobian[0][2] - (-5.0)).abs() < 1e-10);  assert!((evaluated_jacobian[1][0] - 0.431).abs() < 1e-10);
-        assert!((evaluated_jacobian[1][1] - 0.612).abs() < 1e-10);  assert!((evaluated_jacobian[1][2] - 0.354).abs() < 1e-10);  
+        assert!((evaluated_jacobian[0][0] - 1.0).abs() < 1e-10);  assert!((evaluated_jacobian[0][1] - 3.6).abs() < 1e-10);
+        assert!((evaluated_jacobian[0][2] - 2.4).abs() < 1e-10);  assert!((evaluated_jacobian[1][0] - 0.5).abs() < 1e-10);
+        assert!((evaluated_jacobian[1][1] - 0.866).abs() < 1e-10);  assert!((evaluated_jacobian[1][2] - 0.5).abs() < 1e-10);  
         
         // Construct metric Jacobian matrix only for knupps metrics
         let metric_jacobian = if mesh_dim == element_dim {
@@ -2357,21 +2279,21 @@ mod geometric_quality_tests {
             square_matrix
         };
 
-        assert!((metric_jacobian[0][0] - 99.9956).abs() < 1e-10);  assert!((metric_jacobian[0][1] - 1.96246).abs() < 1e-10);
-        assert!((metric_jacobian[1][0] - 1.96246).abs() < 1e-10);  assert!((metric_jacobian[1][1] - 0.685621).abs() < 1e-10);
+        assert!((metric_jacobian[0][0] - 19.72).abs() < 1e-10);  assert!((metric_jacobian[0][1] - 4.8176).abs() < 1e-10);
+        assert!((metric_jacobian[1][0] - 4.8176).abs() < 1e-10);  assert!((metric_jacobian[1][1] - 1.249956).abs() < 1e-10);
 
         let (r_matrix, q_matrix, d_matrix) = 
             GeometricAnalysis::jacobian_factorization(&metric_jacobian, element_dim).unwrap();
 
-        assert!((r_matrix[0][0] - 0.9998074762031987).abs() < 1e-10);  assert!((r_matrix[0][1] - (-0.01962168515164397)).abs() < 1e-10);
-        assert!((r_matrix[1][0] - 0.01962168515164397).abs() < 1e-10);  assert!((r_matrix[1][1] - 0.9998074762031987).abs() < 1e-10);  
+        assert!((r_matrix[0][0] - 0.9714313180025171).abs() < 1e-10);  assert!((r_matrix[0][1] - (-0.237320868032907)).abs() < 1e-10);
+        assert!((r_matrix[1][0] - 0.237320868032907).abs() < 1e-10);  assert!((r_matrix[1][1] - 0.9714313180025171).abs() < 1e-10);  
 
-        assert!((q_matrix[0][0] - 1.0).abs() < 1e-10);  assert!((q_matrix[0][1] - 0.9503340519728901).abs() < 1e-10);
-        assert!((q_matrix[1][0] - 0.0).abs() < 1e-10);  assert!((q_matrix[1][1] - 0.3112317298425536).abs() < 1e-10);  
+        assert!((q_matrix[0][0] - 1.0).abs() < 1e-10);  assert!((q_matrix[0][1] - 0.9998984477831025).abs() < 1e-10);
+        assert!((q_matrix[1][0] - 0.0).abs() < 1e-10);  assert!((q_matrix[1][1] - 0.01187649133904469).abs() < 1e-10);  
           
 
         assert!((d_matrix[0][0] - 1.0).abs() < 1e-10);  assert!((d_matrix[0][1] - 0.0).abs() < 1e-10);
-        assert!((d_matrix[1][0] - 0.0).abs() < 1e-10);  assert!((d_matrix[1][1] - 0.02078471026206252).abs() < 1e-10);  
+        assert!((d_matrix[1][0] - 0.0).abs() < 1e-10);  assert!((d_matrix[1][1] - 0.2451787029320741).abs() < 1e-10);  
         
 
         // Calculate inverses of matrices
@@ -2382,14 +2304,14 @@ mod geometric_quality_tests {
         let inverse_d_matrix = GeometricAnalysis::inverse_matrix(&d_matrix, element_dim, element_dim)
             .map_err(|e| ElementError::GeometryError(format!("Failed to calculate inverse: {:?}", e))).unwrap();
         
-        assert!((inverse_metric_jacobian[0][0] - 0.0105956413226638).abs() < 1e-10);  assert!((inverse_metric_jacobian[0][1] - (-0.03032801251722862)).abs() < 1e-10);
-        assert!((inverse_metric_jacobian[1][0] - (-0.03032801251722862)).abs() < 1e-10);  assert!((inverse_metric_jacobian[1][1] - 1.545339934810282).abs() < 1e-10);  
+        assert!((inverse_metric_jacobian[0][0] - 0.8681078560720407).abs() < 1e-10);  assert!((inverse_metric_jacobian[0][1] - (-3.345874900726636)).abs() < 1e-10);
+        assert!((inverse_metric_jacobian[1][0] - (-3.345874900726636)).abs() < 1e-10);  assert!((inverse_metric_jacobian[1][1] - 13.69575162784981).abs() < 1e-10);  
 
-        assert!((inverse_q_matrix[0][0] - 1.0).abs() < 1e-10);  assert!((inverse_q_matrix[0][1] - (-3.053461330737861)).abs() < 1e-10);
-        assert!((inverse_q_matrix[1][0] - 0.0).abs() < 1e-10);  assert!((inverse_q_matrix[1][1] - 3.213040008825198).abs() < 1e-10);  
+        assert!((inverse_q_matrix[0][0] - 1.0).abs() < 1e-10);  assert!((inverse_q_matrix[0][1] - (-84.191401251300151)).abs() < 1e-10);
+        assert!((inverse_q_matrix[1][0] - 0.0).abs() < 1e-10);  assert!((inverse_q_matrix[1][1] - 84.19995194308263).abs() < 1e-10);  
         
         assert!((inverse_d_matrix[0][0] - 1.0).abs() < 1e-10);  assert!((inverse_d_matrix[0][1] - 0.0).abs() < 1e-10);
-        assert!((inverse_d_matrix[1][0] - 0.0).abs() < 1e-10);  assert!((inverse_d_matrix[1][1] - 48.11228962980826).abs() < 1e-10);  
+        assert!((inverse_d_matrix[1][0] - 0.0).abs() < 1e-10);  assert!((inverse_d_matrix[1][1] - 4.078657681279302).abs() < 1e-10);  
         
 
         let quality = GeometricAnalysis::calculate_element_quality(
@@ -2401,16 +2323,497 @@ mod geometric_quality_tests {
 
         println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
                  quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
-                 quality.orientation_metric, quality.signed_volume_metric, quality.jacobian_ratio);
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
 
-        assert!((quality.shape_metric - 0.01293213592149281).abs() < 1e-10);
-        assert!((quality.skewness_metric - 0.3112317298425536).abs() < 1e-10);
-        assert!((quality.length_ratio - 0.04155147011532192).abs() < 1e-10);
-        assert!((quality.orientation_metric - 0.9999037381015994).abs() < 1e-10);
-        assert!((quality.signed_volume_metric - 8.0441179762606664544480672659116).abs() < 1e-10);
-        assert!((quality.jacobian_ratio - 1.001615389767830).abs() < 1e-10);
+        assert!((quality.shape_metric - 0.006591881929479088).abs() < 1e-10);
+        assert!((quality.skewness_metric - 0.01187685977749219).abs() < 1e-10);
+        assert!((quality.length_ratio - 0.4625521926091058).abs() < 1e-10);
+        assert!((quality.orientation_metric - 0.9857156590012586).abs() < 1e-10);
+        assert!((quality.volume_metric - (-1.1999427319668218232930222070597)).abs() < 1e-10);
+        assert!((quality.jacobian_ratio - (-0.8334)).abs() < 1e-10);
+    }
+
+    #[test]
+    // Test 13: Perfect 1D linear line element in 3D mesh
+    fn test_1d_linear_line_in_3d_mesh_perfect_reference() { 
+        let element = Element { id: 0, nodes: vec![0, 1] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![1.0, 2.0, 3.0] },
+            Node { id: 1, coordinates: vec![2.0, 2.0, 3.0] },  
+
+        ];
+        let element_type = ElementType::Line;
+        let mesh_dim = 3;
+
+        // Get node coordinates for this element
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+        // Get multiple evaluation points
+        let evaluation_points = GeometricAnalysis::get_evaluation_points(&element_type);
+        // Get element dimensionality (1D, 2D, 3D)
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        // Get element order (linear, quadratic, etc.)
+        let element_order = ElementType::get_element_order(&element_type).unwrap();
+
+        // Retrieve shape functions and their derivatives for this element type
+        let shape_function = ElementType::get_shape_functions(&element_type)
+            .ok_or_else(|| {
+                ElementError::GeometryError("Failed to get shape functions".to_string())
+            }).unwrap();
+
+        let num_nodes = shape_function.num_nodes;
+
+        // Calculate Jacobian matrix and its determinant as polynomial
+        let jacobian_matrix = GaussianQuadrature::calculate_jacobian_monomial(
+            &element_nodes,
+            &shape_function.derivatives,
+            element_dim,
+            num_nodes,
+            mesh_dim,
+            element_order,
+        ).unwrap();
+
+        // Find min, max Jacobian determinant AND check for zeros
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+            &jacobian_matrix,
+            &evaluation_points,
+            element_dim,
+            mesh_dim,
+        ).unwrap();
+        println!("min_point: {:?}", min_point);
+        assert!((min_detj - 1.0).abs() < 1e-10);
+        assert!((max_detj - 1.0).abs() < 1e-10);
+        assert!(!has_nonpositive_detj);
+
+        let eval_point_tuple = match min_point.len() {
+            1 => (min_point[0], 0.0, 0.0),
+            2 => (min_point[0], min_point[1], 0.0),
+            3 => (min_point[0], min_point[1], min_point[2]),
+            _ => (0.0, 0.0, 0.0),
+        };
+
+        // Evaluate Jacobian matrix at the worst (minimum) point
+        let mut evaluated_jacobian = vec![vec![0.0; mesh_dim]; element_dim];  // [element_dim][mesh_dim]
+        for i in 0..element_dim {
+            for j in 0..mesh_dim {
+                evaluated_jacobian[i][j] = MonomialPolynomial::evaluate(
+                    &jacobian_matrix[i][j], eval_point_tuple
+                ).map_err(|e| ElementError::GeometryError(
+                    format!("Failed to evaluate Jacobian: {}", e)
+                )).unwrap();
+            }
+        }
+
+        assert!((evaluated_jacobian[0][0] - 1.0).abs() < 1e-10);  assert!((evaluated_jacobian[0][1] - 0.0).abs() < 1e-10);
+        assert!((evaluated_jacobian[0][2] - 0.0).abs() < 1e-10);  
+        
+        // Construct metric Jacobian matrix only for knupps metrics
+        let metric_jacobian = if mesh_dim == element_dim {
+            // For square matrices, use as-is: [element_dim × mesh_dim] = [n × n]
+            evaluated_jacobian.clone()
+        } else {
+            // For non-square matrices, compute J * J^T to get a square matrix [element_dim × element_dim]
+            let mut square_matrix = vec![vec![0.0; element_dim]; element_dim];
+            for i in 0..element_dim {
+                for j in 0..element_dim {
+                    for k in 0..mesh_dim {
+                        // (J * J^T)[i][j] = Σ_k J[i][k] * J[j][k]
+                        square_matrix[i][j] += evaluated_jacobian[i][k] * evaluated_jacobian[j][k];
+                    }
+                }
+            }
+            square_matrix
+        };
+
+        assert!((metric_jacobian[0][0] - 1.0).abs() < 1e-10); 
+
+        let (r_matrix, q_matrix, d_matrix) = 
+            GeometricAnalysis::jacobian_factorization(&metric_jacobian, element_dim).unwrap();
+
+        assert!((r_matrix[0][0] - 1.0).abs() < 1e-10);  
+
+        assert!((q_matrix[0][0] - 1.0).abs() < 1e-10);   
+          
+        assert!((d_matrix[0][0] - 1.0).abs() < 1e-10);    
+        
+
+        // Calculate inverses of matrices
+        let inverse_metric_jacobian = GeometricAnalysis::inverse_matrix(&metric_jacobian, element_dim, element_dim)
+            .map_err(|e| ElementError::GeometryError(format!("Failed to calculate inverse: {:?}", e))).unwrap();
+        let inverse_q_matrix = GeometricAnalysis::inverse_matrix(&q_matrix, element_dim, element_dim)
+            .map_err(|e| ElementError::GeometryError(format!("Failed to calculate inverse: {:?}", e))).unwrap();
+        let inverse_d_matrix = GeometricAnalysis::inverse_matrix(&d_matrix, element_dim, element_dim)
+            .map_err(|e| ElementError::GeometryError(format!("Failed to calculate inverse: {:?}", e))).unwrap();
+        
+        assert!((inverse_metric_jacobian[0][0] - 1.0).abs() < 1e-10);   
+
+        assert!((inverse_q_matrix[0][0] - 1.0).abs() < 1e-10);   
+        
+        assert!((inverse_d_matrix[0][0] - 1.0).abs() < 1e-10); 
+        
+
+        let quality = GeometricAnalysis::calculate_element_quality(
+            &element,
+            &element_type,
+            &nodes,
+            mesh_dim,
+        ).unwrap();
+
+        println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
+                 quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
+
+        assert!((quality.shape_metric - 1.0).abs() < 1e-10);
+        assert!((quality.skewness_metric - 1.0).abs() < 1e-10);
+        assert!((quality.length_ratio - 1.0).abs() < 1e-10);
+        assert!((quality.orientation_metric - 1.0).abs() < 1e-10);
+        assert!((quality.volume_metric - 1.0).abs() < 1e-10);
+        assert!((quality.jacobian_ratio - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    // Test 14: 1D linear line element in 3D mesh - Inverted element
+    fn test_1d_linear_line_in_3d_mesh_inverted() { 
+        let element = Element { id: 0, nodes: vec![0, 1] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![2.0, 2.0, 3.0] },
+            Node { id: 1, coordinates: vec![0.0, 2.0, 3.0] },  
+
+        ];
+        let element_type = ElementType::Line;
+        let mesh_dim = 3;
+
+        // Get node coordinates for this element
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+        // Get multiple evaluation points
+        let evaluation_points = GeometricAnalysis::get_evaluation_points(&element_type);
+        // Get element dimensionality (1D, 2D, 3D)
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        // Get element order (linear, quadratic, etc.)
+        let element_order = ElementType::get_element_order(&element_type).unwrap();
+
+        // Retrieve shape functions and their derivatives for this element type
+        let shape_function = ElementType::get_shape_functions(&element_type)
+            .ok_or_else(|| {
+                ElementError::GeometryError("Failed to get shape functions".to_string())
+            }).unwrap();
+
+        let num_nodes = shape_function.num_nodes;
+
+        // Calculate Jacobian matrix and its determinant as polynomial
+        let jacobian_matrix = GaussianQuadrature::calculate_jacobian_monomial(
+            &element_nodes,
+            &shape_function.derivatives,
+            element_dim,
+            num_nodes,
+            mesh_dim,
+            element_order,
+        ).unwrap();
+
+        // Find min, max Jacobian determinant AND check for zeros
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+            &jacobian_matrix,
+            &evaluation_points,
+            element_dim,
+            mesh_dim,
+        ).unwrap();
+        println!("min_point: {:?}", min_point);
+        assert!((min_detj - 2.0).abs() < 1e-10);
+        assert!((max_detj - 2.0).abs() < 1e-10);
+        assert!(!has_nonpositive_detj);
+
+        let eval_point_tuple = match min_point.len() {
+            1 => (min_point[0], 0.0, 0.0),
+            2 => (min_point[0], min_point[1], 0.0),
+            3 => (min_point[0], min_point[1], min_point[2]),
+            _ => (0.0, 0.0, 0.0),
+        };
+
+        // Evaluate Jacobian matrix at the worst (minimum) point
+        let mut evaluated_jacobian = vec![vec![0.0; mesh_dim]; element_dim];  // [element_dim][mesh_dim]
+        for i in 0..element_dim {
+            for j in 0..mesh_dim {
+                evaluated_jacobian[i][j] = MonomialPolynomial::evaluate(
+                    &jacobian_matrix[i][j], eval_point_tuple
+                ).map_err(|e| ElementError::GeometryError(
+                    format!("Failed to evaluate Jacobian: {}", e)
+                )).unwrap();
+            }
+        }
+
+        assert!((evaluated_jacobian[0][0] - (-2.0)).abs() < 1e-10);  assert!((evaluated_jacobian[0][1] - 0.0).abs() < 1e-10);
+        assert!((evaluated_jacobian[0][2] - 0.0).abs() < 1e-10);  
+        
+        // Construct metric Jacobian matrix only for knupps metrics
+        let metric_jacobian = if mesh_dim == element_dim {
+            // For square matrices, use as-is: [element_dim × mesh_dim] = [n × n]
+            evaluated_jacobian.clone()
+        } else {
+            // For non-square matrices, compute J * J^T to get a square matrix [element_dim × element_dim]
+            let mut square_matrix = vec![vec![0.0; element_dim]; element_dim];
+            for i in 0..element_dim {
+                for j in 0..element_dim {
+                    for k in 0..mesh_dim {
+                        // (J * J^T)[i][j] = Σ_k J[i][k] * J[j][k]
+                        square_matrix[i][j] += evaluated_jacobian[i][k] * evaluated_jacobian[j][k];
+                    }
+                }
+            }
+            square_matrix
+        };
+
+        assert!((metric_jacobian[0][0] - 4.0).abs() < 1e-10); 
+
+        let (r_matrix, q_matrix, d_matrix) = 
+            GeometricAnalysis::jacobian_factorization(&metric_jacobian, element_dim).unwrap();
+
+        assert!((r_matrix[0][0] - 1.0).abs() < 1e-10);  
+
+        assert!((q_matrix[0][0] - 1.0).abs() < 1e-10);   
+          
+        assert!((d_matrix[0][0] - 4.0).abs() < 1e-10);    
+        
+
+        // Calculate inverses of matrices
+        let inverse_metric_jacobian = GeometricAnalysis::inverse_matrix(&metric_jacobian, element_dim, element_dim)
+            .map_err(|e| ElementError::GeometryError(format!("Failed to calculate inverse: {:?}", e))).unwrap();
+        let inverse_q_matrix = GeometricAnalysis::inverse_matrix(&q_matrix, element_dim, element_dim)
+            .map_err(|e| ElementError::GeometryError(format!("Failed to calculate inverse: {:?}", e))).unwrap();
+        let inverse_d_matrix = GeometricAnalysis::inverse_matrix(&d_matrix, element_dim, element_dim)
+            .map_err(|e| ElementError::GeometryError(format!("Failed to calculate inverse: {:?}", e))).unwrap();
+        
+        assert!((inverse_metric_jacobian[0][0] - 0.25).abs() < 1e-10);   
+
+        assert!((inverse_q_matrix[0][0] - 1.0).abs() < 1e-10);   
+        
+        assert!((inverse_d_matrix[0][0] - 0.25).abs() < 1e-10); 
+        
+
+        let quality = GeometricAnalysis::calculate_element_quality(
+            &element,
+            &element_type,
+            &nodes,
+            mesh_dim,
+        ).unwrap();
+
+        println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
+                 quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
+
+        assert!((quality.shape_metric - 1.0).abs() < 1e-10);
+        assert!((quality.skewness_metric - 1.0).abs() < 1e-10);
+        assert!((quality.length_ratio - 1.0).abs() < 1e-10);
+        assert!((quality.orientation_metric - 1.0).abs() < 1e-10);
+        assert!((quality.volume_metric - (-2.0)).abs() < 1e-10);
+        assert!((quality.jacobian_ratio - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    // Test 15: Perfect 1D quadratic edge element in 1D mesh
+    fn test_1d_quadratic_edge_in_1d_mesh_perfect_reference() { 
+        let element = Element { id: 0, nodes: vec![0, 1, 2] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0] },
+            Node { id: 1, coordinates: vec![1.0] },  
+            Node { id: 2, coordinates: vec![0.5] },  
+            
+        ];
+        let element_type = ElementType::QuadraticEdge;
+        let mesh_dim = 1;
+
+        // Get node coordinates for this element
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+        // Get multiple evaluation points
+        let evaluation_points = GeometricAnalysis::get_evaluation_points(&element_type);
+        // Get element dimensionality (1D, 2D, 3D)
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        // Get element order (linear, quadratic, etc.)
+        let element_order = ElementType::get_element_order(&element_type).unwrap();
+
+        // Retrieve shape functions and their derivatives for this element type
+        let shape_function = ElementType::get_shape_functions(&element_type)
+            .ok_or_else(|| {
+                ElementError::GeometryError("Failed to get shape functions".to_string())
+            }).unwrap();
+
+        let num_nodes = shape_function.num_nodes;
+
+        // Calculate Jacobian matrix and its determinant as polynomial
+        let jacobian_matrix = GaussianQuadrature::calculate_jacobian_monomial(
+            &element_nodes,
+            &shape_function.derivatives,
+            element_dim,
+            num_nodes,
+            mesh_dim,
+            element_order,
+        ).unwrap();
+
+        // Find min, max Jacobian determinant AND check for zeros
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+            &jacobian_matrix,
+            &evaluation_points,
+            element_dim,
+            mesh_dim,
+        ).unwrap();
+        assert!((min_detj - 1.0).abs() < 1e-10);
+        assert!((max_detj - 1.0).abs() < 1e-10);
+        assert!(!has_nonpositive_detj);
+
+        let eval_point_tuple = match min_point.len() {
+            1 => (min_point[0], 0.0, 0.0),
+            2 => (min_point[0], min_point[1], 0.0),
+            3 => (min_point[0], min_point[1], min_point[2]),
+            _ => (0.0, 0.0, 0.0),
+        };
+
+        // Evaluate Jacobian matrix at the worst (minimum) point
+        let mut evaluated_jacobian = vec![vec![0.0; mesh_dim]; element_dim];  // [element_dim][mesh_dim]
+        for i in 0..element_dim {
+            for j in 0..mesh_dim {
+                evaluated_jacobian[i][j] = MonomialPolynomial::evaluate(
+                    &jacobian_matrix[i][j], eval_point_tuple
+                ).map_err(|e| ElementError::GeometryError(
+                    format!("Failed to evaluate Jacobian: {}", e)
+                )).unwrap();
+            }
+        }
+
+        assert!((evaluated_jacobian[0][0] - 1.0).abs() < 1e-10);  
+        
+        let metric_jacobian = evaluated_jacobian.clone();
+
+        let (r_matrix, q_matrix, d_matrix) = 
+            GeometricAnalysis::jacobian_factorization(&metric_jacobian, element_dim).unwrap();
+
+        assert!((r_matrix[0][0] - 1.0).abs() < 1e-10);  
+
+        assert!((q_matrix[0][0] - 1.0).abs() < 1e-10);  
+
+        assert!((d_matrix[0][0] - 1.0).abs() < 1e-10);  
+
+        // Calculate inverses of matrices
+        let inverse_evaluated_jacobian = GeometricAnalysis::inverse_matrix(&evaluated_jacobian, element_dim, mesh_dim)
+            .map_err(|e| ElementError::GeometryError(format!("Failed to calculate inverse: {:?}", e))).unwrap();
+        let inverse_q_matrix = GeometricAnalysis::inverse_matrix(&q_matrix, element_dim, element_dim)
+            .map_err(|e| ElementError::GeometryError(format!("Failed to calculate inverse: {:?}", e))).unwrap();
+        let inverse_d_matrix = GeometricAnalysis::inverse_matrix(&d_matrix, element_dim, element_dim)
+            .map_err(|e| ElementError::GeometryError(format!("Failed to calculate inverse: {:?}", e))).unwrap();
+        
+        assert!((inverse_evaluated_jacobian[0][0] - 1.0).abs() < 1e-10);  
+
+        assert!((inverse_q_matrix[0][0] - 1.0).abs() < 1e-10);  
+
+        assert!((inverse_d_matrix[0][0] - 1.0).abs() < 1e-10); 
+        
+
+        let quality = GeometricAnalysis::calculate_element_quality(
+            &element,
+            &element_type,
+            &nodes,
+            mesh_dim,
+        ).unwrap();
+
+        println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
+                 quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
+
+        assert!((quality.shape_metric - 1.0).abs() < 1e-10);
+        assert!((quality.skewness_metric - 1.0).abs() < 1e-10);
+        assert!((quality.length_ratio - 1.0).abs() < 1e-10);
+        assert!((quality.orientation_metric - 1.0).abs() < 1e-10);
+        assert!((quality.volume_metric - 1.0).abs() < 1e-10);
+        assert!((quality.jacobian_ratio - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    // Test 16: 1D quadratic edge element in 1D mesh - Inverted element
+    fn test_1d_quadratic_edge_in_1d_mesh_inverted() { 
+        let element = Element { id: 0, nodes: vec![0, 1, 2] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0] },
+            Node { id: 1, coordinates: vec![4.0] },  
+            Node { id: 2, coordinates: vec![1.0] },  
+            
+        ];
+        let element_type = ElementType::QuadraticEdge;
+        let mesh_dim = 1;
+
+        // Get node coordinates for this element
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+        // Get multiple evaluation points
+        let evaluation_points = GeometricAnalysis::get_evaluation_points(&element_type);
+        // Get element dimensionality (1D, 2D, 3D)
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        // Get element order (linear, quadratic, etc.)
+        let element_order = ElementType::get_element_order(&element_type).unwrap();
+
+        // Retrieve shape functions and their derivatives for this element type
+        let shape_function = ElementType::get_shape_functions(&element_type)
+            .ok_or_else(|| {
+                ElementError::GeometryError("Failed to get shape functions".to_string())
+            }).unwrap();
+
+        let num_nodes = shape_function.num_nodes;
+
+        // Calculate Jacobian matrix and its determinant as polynomial
+        let jacobian_matrix = GaussianQuadrature::calculate_jacobian_monomial(
+            &element_nodes,
+            &shape_function.derivatives,
+            element_dim,
+            num_nodes,
+            mesh_dim,
+            element_order,
+        ).unwrap();
+
+        // Find min, max Jacobian determinant AND check for zeros
+        let (min_point, min_detj, max_detj, has_nonpositive_detj) = GeometricAnalysis::find_min_max_jacobian_determinant(
+            &jacobian_matrix,
+            &evaluation_points,
+            element_dim,
+            mesh_dim,
+        ).unwrap();
+        assert!(has_nonpositive_detj);
+
+        let eval_point_tuple = match min_point.len() {
+            1 => (min_point[0], 0.0, 0.0),
+            2 => (min_point[0], min_point[1], 0.0),
+            3 => (min_point[0], min_point[1], min_point[2]),
+            _ => (0.0, 0.0, 0.0),
+        };
+
+        // Evaluate Jacobian matrix at the worst (minimum) point
+        let mut evaluated_jacobian = vec![vec![0.0; mesh_dim]; element_dim];  // [element_dim][mesh_dim]
+        for i in 0..element_dim {
+            for j in 0..mesh_dim {
+                evaluated_jacobian[i][j] = MonomialPolynomial::evaluate(
+                    &jacobian_matrix[i][j], eval_point_tuple
+                ).map_err(|e| ElementError::GeometryError(
+                    format!("Failed to evaluate Jacobian: {}", e)
+                )).unwrap();
+            }
+        }
+        
+
+        let quality = GeometricAnalysis::calculate_element_quality(
+            &element,
+            &element_type,
+            &nodes,
+            mesh_dim,
+        ).unwrap();
+
+        println!("Perfect Square Test - shape: {:.3}, skew: {:.3}, length: {:.3}, orient: {:.3}, volume: {:.3}, jac_ratio: {:.3}",
+                 quality.shape_metric, quality.skewness_metric, quality.length_ratio, 
+                 quality.orientation_metric, quality.volume_metric, quality.jacobian_ratio);
+
+        assert!((quality.shape_metric - 0.0).abs() < 1e-10);
+        assert!((quality.skewness_metric - 0.0).abs() < 1e-10);
+        assert!((quality.length_ratio - 0.0).abs() < 1e-10);
+        assert!((quality.orientation_metric - 0.0).abs() < 1e-10);
+        assert!((quality.volume_metric - 0.0).abs() < 1e-10);
+        assert!((quality.jacobian_ratio - 0.0).abs() < 1e-10);
     }
 }
+
+
 
 /* 
 // Tests remain the same as they test the public interface

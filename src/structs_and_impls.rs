@@ -1779,7 +1779,7 @@ pub struct ElementQuality {
     pub skewness_metric: f64,       // skewness metric value
     pub length_ratio: f64,          // length ratio metric value
     pub orientation_metric: f64,    // orientation metric value
-    pub signed_volume_metric: f64,  // signed volume metric
+    pub volume_metric: f64,         // volume metric
     pub jacobian_ratio: f64,        // max(detJ) / min(detJ)
 
     // more quality metrics can be added here

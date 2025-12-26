@@ -1,0 +1,17 @@
+*HEADING
+ ** Job name: Unit-Test1D Model name: Model-3
+ *Preprint, echo=NO, model=NO, history=NO
+ **
+ ** PARTS
+ *Part, name=Test1D
+ *Node
+    1, -1.25 
+    2, -0.25 
+    3, 0.25 
+    4, 1.25 
+    5, 0.50 
+*Element, type=C1D2
+ 1, 1, 2
+*Element, type=C1D3
+ 2, 3, 4, 5
+ *End Part
