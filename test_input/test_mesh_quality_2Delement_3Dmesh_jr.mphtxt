@@ -7,7 +7,7 @@
 1 mesh1 
 1 # number of types
 # Types
-3 obj 
+1 obj 
 
 # --------- Object 0 ----------
 
@@ -15,30 +15,25 @@
 4 Mesh # class
 2 # version
 3 # sdim    
-8 # number of mesh vertices   
+6 # number of mesh vertices   
 0 # lowest mesh vertex index
 
 # Mesh vertex coordinates
--1.25 0.0 -2.75
--0.25 0.0 -2.75
--1.25 0.0 -1.75
--0.25 0.0 -1.75
--1.25 1.0 -2.75
--0.25 1.0 -2.75
--1.25 1.0 -1.75
--0.25 1.0 -1.75
-
+-0.5 0.0 0.0
+0.5 0.0 0.0
+-0.5 1.0 0.0
+-0.242 0.0 0.0
+-0.5 0.258 0.0
+0.0 0.5 0.0
 
 1 # number of element types
 
 # Type #0
 
+4 tri2 # type name
 
-4 hex # type name
 
-
-8 # number of vertices per element
+6 # number of vertices per element
 1 # number of elements
 # Elements
-85 86 87 88 89 90 91 92
-
+0 1 2 3 4 5

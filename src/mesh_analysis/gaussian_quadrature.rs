@@ -133,7 +133,7 @@ impl GaussianQuadrature {
         poly.iter().all(|&c| c.abs() < 1e-12)
     }
 
-    /// Find optimal Gauss points for entire mesh - PARALLEL VERSION WITH FALLBACKS
+    /// Find optimal Gauss points for entire mesh - parallel with fallbacks
     pub fn find_optimal_gauss_points_number_mesh(
         mesh_data: &MeshData,
         int_type: IntegrationType,
@@ -268,30 +268,51 @@ impl GaussianQuadrature {
         let max_num_gp = ((max_total_degree as f64 + 1.0) / 2.0).ceil() as usize;
         let theoretical_points = max_num_gp;
 
-        // Find optimal points
-        let mut optimal_points = 1;
-        let mut min_error = 100.0; // Start with a large error
+        // Determine which elements need error calculation
+        let should_calculate_error = matches!(
+            element_type,
+            ElementType::Line |
+            ElementType::QuadraticEdge |
+            ElementType::Quad |
+            ElementType::QuadraticQuad |
+            ElementType::BiquadraticQuad |
+            ElementType::Hexahedron |
+            ElementType::QuadraticHexahedron |
+            ElementType::BiquadraticQuadraticHexahedron |
+            ElementType::TriquadraticHexahedron
+        );
 
-        for n in 1..=max_num_gp {
-            let error_matrix = match Self::calculate_error(&integrand, n, element_dim) {
-                Ok(matrix) => matrix,
-                Err(_) => continue,
-            };
+        let optimal_points = if should_calculate_error {
+            // For these element types, calculate optimal points through error analysis
+            let mut optimal_points = 1;
+            let mut min_error = 100.0; // Start with a large error
 
-            // Find maximum error in the matrix
-            let max_error = Self::find_max_in_matrix(&error_matrix);
+            for n in 1..=max_num_gp {
+                let error_matrix = match Self::calculate_error(&integrand, n, element_dim) {
+                    Ok(matrix) => matrix,
+                    Err(_) => continue,
+                };
 
-            if max_error < min_error {
-                min_error = max_error;
-                optimal_points = n;
+                // Find maximum error in the matrix
+                let max_error = Self::find_max_in_matrix(&error_matrix);
+
+                if max_error < min_error {
+                    min_error = max_error;
+                    optimal_points = n;
+                }
+
+                // If we meet tolerance, we can stop early
+                if max_error <= tolerance {
+                    break;
+                }
             }
-
-            // If we meet tolerance, we can stop early
-            if max_error <= tolerance {
-                break;
-            }
-        }
-
+            
+            optimal_points
+        } else {
+            // For other element types, use theoretical points directly
+            theoretical_points
+        };
+        
         Ok(GaussianPointNumber {
             element_id: element.id,
             theoretical_number: theoretical_points,

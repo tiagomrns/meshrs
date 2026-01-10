@@ -27,7 +27,13 @@ impl VTUWriter {
         let points_data: Vec<f64> = mesh_data  //u32
             .nodes
             .iter()
-            .flat_map(|node| node.coordinates.iter().copied())
+            .flat_map(|node| {
+                node.coordinates
+                    .iter()
+                    .copied()
+                    .chain(std::iter::repeat(0.0)) // Pad with infinite zeros
+                    .take(3)                       // Take exactly 3 components (x, y, z)
+            })
             .collect();
 
         // 2. Pre-calculate sizes
@@ -104,7 +110,13 @@ impl VTUWriter {
         let points_data: Vec<f64> = mesh_data  //u32
             .nodes
             .iter()
-            .flat_map(|node| node.coordinates.iter().copied())
+            .flat_map(|node| {
+                node.coordinates
+                    .iter()
+                    .copied()
+                    .chain(std::iter::repeat(0.0)) // Pad with infinite zeros
+                    .take(3)                       // Take exactly 3 components (x, y, z)
+            })
             .collect();
 
         // 2. Pre-calculate sizes
@@ -279,7 +291,13 @@ impl VTUWriter {
         let points_data: Vec<f64> = mesh_data
             .nodes
             .iter()
-            .flat_map(|node| node.coordinates.iter().copied())
+            .flat_map(|node| {
+                node.coordinates
+                    .iter()
+                    .copied()
+                    .chain(std::iter::repeat(0.0)) // Pad with infinite zeros
+                    .take(3)                       // Take exactly 3 components (x, y, z)
+            })
             .collect();
 
         // 2. Pre-calculate sizes
@@ -322,7 +340,7 @@ impl VTUWriter {
             }
         }
         
-        let volume_metric_attr = Attribute::scalars("Signed_Volume_Metric", 1)
+        let volume_metric_attr = Attribute::scalars("Volume_Metric", 1)
             .with_data(IOBuffer::F64(volume_metric_values));
         cell_attributes.push(volume_metric_attr);
 

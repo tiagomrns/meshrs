@@ -15,30 +15,24 @@
 4 Mesh # class
 2 # version
 3 # sdim    
-8 # number of mesh vertices   
+6 # number of mesh vertices   
 0 # lowest mesh vertex index
 
 # Mesh vertex coordinates
--1.25 0.0 -2.75
--0.25 0.0 -2.75
--1.25 0.0 -1.75
--0.25 0.0 -1.75
--1.25 1.0 -2.75
--0.25 1.0 -2.75
--1.25 1.0 -1.75
--0.25 1.0 -1.75
+0.0 0.0 0.0
+1.0 0.0 0.0
+0.0 1.0 0.0
+0.0 0.0 1.0
+0.032 0.0 1.0
+0.0 0.032 1.0
 
 
 1 # number of element types
 
 # Type #0
+4 prism # type name
 
-
-4 hex # type name
-
-
-8 # number of vertices per element
+6 # number of vertices per element
 1 # number of elements
 # Elements
-85 86 87 88 89 90 91 92
-
+0 1 2 3 4 5        
