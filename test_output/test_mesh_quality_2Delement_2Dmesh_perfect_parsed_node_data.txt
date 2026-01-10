@@ -1,0 +1,41 @@
+NodeValueData {
+    node_values: [
+        NodeValue {
+            id: 0,
+            values: [
+                5.53897,
+                6.85666,
+            ],
+        },
+        NodeValue {
+            id: 1,
+            values: [
+                -5.95396,
+                -7.99095,
+            ],
+        },
+        NodeValue {
+            id: 2,
+            values: [
+                8.22459,
+                7.43364,
+            ],
+        },
+        NodeValue {
+            id: 3,
+            values: [
+                -4.48634,
+                -7.90135,
+            ],
+        },
+    ],
+    node_value_type_info: [
+        NodeValueTypeInfo {
+            dimension: 2,
+            num_nodes: 4,
+            nodevalue_type: Displacement,
+            num_nodevalue_type: 1,
+            start_index: 0,
+        },
+    ],
+}

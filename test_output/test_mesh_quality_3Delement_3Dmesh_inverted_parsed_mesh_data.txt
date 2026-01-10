@@ -1,0 +1,77 @@
+MeshData {
+    dimension: 3,
+    num_nodes: 6,
+    min_node_index: 0,
+    nodes: [
+        Node {
+            id: 0,
+            coordinates: [
+                0.0,
+                0.0,
+                0.0,
+            ],
+        },
+        Node {
+            id: 1,
+            coordinates: [
+                1.0,
+                0.0,
+                0.0,
+            ],
+        },
+        Node {
+            id: 2,
+            coordinates: [
+                0.0,
+                1.0,
+                0.0,
+            ],
+        },
+        Node {
+            id: 3,
+            coordinates: [
+                0.0,
+                0.0,
+                1.0,
+            ],
+        },
+        Node {
+            id: 4,
+            coordinates: [
+                0.0,
+                0.0,
+                1.0,
+            ],
+        },
+        Node {
+            id: 5,
+            coordinates: [
+                1.0,
+                1.0,
+                1.0,
+            ],
+        },
+    ],
+    num_eltypes: 1,
+    elements: [
+        Element {
+            id: 0,
+            nodes: [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+            ],
+        },
+    ],
+    element_type_info: [
+        ElementTypeInfo {
+            element_type: Wedge,
+            num_elements: 1,
+            start_index: 0,
+            nodes_per_element: 6,
+        },
+    ],
+}

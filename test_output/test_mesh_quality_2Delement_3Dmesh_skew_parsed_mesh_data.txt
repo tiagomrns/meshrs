@@ -1,0 +1,77 @@
+MeshData {
+    dimension: 3,
+    num_nodes: 6,
+    min_node_index: 0,
+    nodes: [
+        Node {
+            id: 0,
+            coordinates: [
+                0.0,
+                0.0,
+                0.0,
+            ],
+        },
+        Node {
+            id: 1,
+            coordinates: [
+                0.866,
+                0.0,
+                -0.5,
+            ],
+        },
+        Node {
+            id: 2,
+            coordinates: [
+                1.732,
+                0.612,
+                -0.854,
+            ],
+        },
+        Node {
+            id: 3,
+            coordinates: [
+                0.433,
+                0.0,
+                -0.25,
+            ],
+        },
+        Node {
+            id: 4,
+            coordinates: [
+                0.866,
+                0.306,
+                -0.427,
+            ],
+        },
+        Node {
+            id: 5,
+            coordinates: [
+                1.299,
+                0.306,
+                -0.677,
+            ],
+        },
+    ],
+    num_eltypes: 1,
+    elements: [
+        Element {
+            id: 0,
+            nodes: [
+                0,
+                1,
+                2,
+                3,
+                5,
+                4,
+            ],
+        },
+    ],
+    element_type_info: [
+        ElementTypeInfo {
+            element_type: QuadraticTriangle,
+            num_elements: 1,
+            start_index: 0,
+            nodes_per_element: 6,
+        },
+    ],
+}

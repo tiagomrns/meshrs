@@ -1,0 +1,14 @@
+MeshQualityReport {
+    total_elements: 1,
+    element_qualities: [
+        ElementQuality {
+            element_id: 0,
+            shape_metric: 0.2095188685475281,
+            skewness_metric: 1.0000000000000002,
+            length_ratio: 0.2095188685475281,
+            orientation_metric: 1.0,
+            volume_metric: 10.0,
+            jacobian_ratio: 1.0,
+        },
+    ],
+}

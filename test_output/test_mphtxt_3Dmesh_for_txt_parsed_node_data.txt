@@ -1,0 +1,77 @@
+NodeValueData {
+    node_values: [
+        NodeValue {
+            id: 0,
+            values: [
+                -1.25,
+                0.0,
+                -2.75,
+            ],
+        },
+        NodeValue {
+            id: 1,
+            values: [
+                -0.25,
+                0.0,
+                -2.75,
+            ],
+        },
+        NodeValue {
+            id: 2,
+            values: [
+                -1.25,
+                0.0,
+                -1.75,
+            ],
+        },
+        NodeValue {
+            id: 3,
+            values: [
+                -0.25,
+                0.0,
+                -1.75,
+            ],
+        },
+        NodeValue {
+            id: 4,
+            values: [
+                -1.25,
+                1.0,
+                -2.75,
+            ],
+        },
+        NodeValue {
+            id: 5,
+            values: [
+                -0.25,
+                1.0,
+                -2.75,
+            ],
+        },
+        NodeValue {
+            id: 6,
+            values: [
+                -1.25,
+                1.0,
+                -1.75,
+            ],
+        },
+        NodeValue {
+            id: 7,
+            values: [
+                -0.25,
+                1.0,
+                -1.75,
+            ],
+        },
+    ],
+    node_value_type_info: [
+        NodeValueTypeInfo {
+            dimension: 3,
+            num_nodes: 8,
+            nodevalue_type: Displacement,
+            num_nodevalue_type: 1,
+            start_index: 0,
+        },
+    ],
+}
