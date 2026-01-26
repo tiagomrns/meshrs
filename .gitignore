@@ -1,11 +1,17 @@
-target
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE files
+.vscode/settings.json
+.idea/
+
+# OS files
 .DS_Store
-*.log
+Thumbs.db
+
+# Temporary files
 *.tmp
-*.bak
 *.swp
-*.class
-*.jar
-*.war
-*.ear
-*.lock
+*~

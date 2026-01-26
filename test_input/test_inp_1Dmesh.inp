@@ -5,13 +5,13 @@
  ** PARTS
  *Part, name=Test1D
  *Node
-    1, -1.25 
-    2, -0.25 
-    3, 0.25 
-    4, 1.25 
-    5, 0.50 
-*Element, type=C1D2
+      1, -2.75 
+      2, -1.75 
+      3, -1.25 
+      4, -0.75 
+      5, -0.25
+*Element, type=AC1D2
  1, 1, 2
-*Element, type=C1D3
+*Element, type=DC1D3E
  2, 3, 4, 5
- *End Part
+*End Part

@@ -2,7 +2,6 @@
 use std::env;                    // Provides access to command line arguments via env::args()
 use std::process;               // Enables process control, particularly process::exit() for terminating with error codes
 use std::path::{Path, PathBuf}; // Path manipulation utilities - Path for immutable path references, PathBuf for owned paths
-use std::collections::HashMap;  // For storing Gaussian quadrature optimization results
 use std::fs::File;              // For file operations
 use std::io::Write;             // For writing to files
 
@@ -18,7 +17,6 @@ mod parser;                     // Module containing file format parsers
 use parser::comsol::mphtxt::MphtxtParser;       // Parser specifically for COMSOL .mphtxt mesh files
 use parser::abaqus::abaqus_inp::AbaqusInpParser; // Parser for Abaqus .inp input files
 use parser::comsol::txt_node::ComsolTxtNodeParser;       // Parser for nodal field values for COMSOL .txt result files
-use parser::comsol::txt_element::ComsolTxtElementParser; // Parser for element field values for COMSOL .txt result files
 
 mod writer;                     // Module containing output file writers
 use writer::xml_writer::VTUWriter; // Writer for VTK XML unstructured grid (.vtu) format
@@ -30,10 +28,9 @@ use mesh_analysis::gaussian_quadrature::*; // Gauss quadrature utilities for num
 /// Struct to hold parsed command line arguments in a structured format
 /// This makes it easier to pass around and validate the user's input
 struct CommandLineArgs {
-    mesh_file: Option<String>,        // Path to mesh file (.mphtxt or .inp) - always required but Option for parsing stage
+    mesh_file: Option<String>,        // Path to mesh file (.mphtxt or .inp) - required
     node_txt_file: Option<String>,    // Path to txt file containing node field values - optional
-    element_txt_file: Option<String>, // Path to txt file containing element field values - optional
-    mesh_entity: MeshEntity,            // Specifies which type of values to parse from txt files
+    mesh_entity: MeshEntity,          // Specifies which type of values to parse from txt files
     print_vtu: bool,                  // Flag to control whether to print VTU file content to console
     analyze_mesh: bool,               // Flag to enable mesh quality analysis  
     optimize_gauss: bool,             // Flag to enable Gaussian quadrature optimization
@@ -47,8 +44,8 @@ struct CommandLineArgs {
 #[derive(Debug, Clone, PartialEq)] // Derive traits for debugging, cloning, and comparison
 enum MeshEntity {
     Node,     // Parse txt file as containing node-based field values
-    Element,  // Parse txt file as containing element-based field values
-    Both,     // Parse two txt files (first=nodes, second=elements)
+    //Element,  // Parse txt file as containing element-based field values
+    //Both,     // Parse two txt files (first=nodes, second=elements)
 }
 
 /// Parse command line arguments and validate them according to program requirements
@@ -62,7 +59,6 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
     // Initialize variables to store parsed arguments with default values
     let mut mesh_file: Option<String> = None;        // No mesh file found yet
     let mut node_txt_file: Option<String> = None;    // No node txt file found yet
-    let mut element_txt_file: Option<String> = None; // No element txt file found yet
     let mut mesh_entity = MeshEntity::Node;          // Default to node values (will be overridden if flags provided)
     let mut print_vtu = false;                        // Default to not printing VTU content
     let mut txt_files: Vec<String> = Vec::new();      // Collect all txt files to process based on mesh_entity later
@@ -79,12 +75,6 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
             "--node-values" => {                      // User specified node values flag
                 mesh_entity = MeshEntity::Node;         // Set parsing mode to node values
             },
-            "--element-values" => {                   // User specified element values flag
-                mesh_entity = MeshEntity::Element;      // Set parsing mode to element values
-            },
-            "--both-values" => {                      // User specified both values flag
-                mesh_entity = MeshEntity::Both;         // Set parsing mode to both types
-            },
             "--print-vtu" => {                        // User wants VTU content printed
                 print_vtu = true;                     // Enable VTU content printing
             },
@@ -95,12 +85,14 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
                 optimize_gauss = true;                // Enable Gauss optimization
             },
             "--gauss-tolerance" => {                  // User specified tolerance for Gauss optimization
-                i += 1; // Move to next argument for the value
-                if i >= args.len() {
+                i += 1; // Move to next argument to read the tolerance value
+                if i >= args.len() {                  // Check if value is missing
                     return Err("Missing value for --gauss-tolerance".to_string());
                 }
+                // Parse the tolerance value from string to f64, return error if invalid
                 gauss_tolerance = args[i].parse::<f64>()
                     .map_err(|_| format!("Invalid tolerance value: {}", args[i]))?;
+                // Validate that tolerance is positive (required for numerical methods)
                 if gauss_tolerance <= 0.0 {
                     return Err("Tolerance must be positive".to_string());
                 }
@@ -112,15 +104,16 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
                 integration_type = IntegrationType::Stiffness;
             },
             "--material-property" => {                // User specified material property coefficients
-                i += 1; // Move to next argument for the values
-                if i >= args.len() {
+                i += 1; // Move to next argument to read the coefficient values
+                if i >= args.len() {                  // Check if values are missing
                     return Err("Missing value for --material-property".to_string());
                 }
                 
-                // Parse based on integration type
+                // Parse based on integration type - material properties differ for mass vs stiffness
                 material_property = match integration_type {
                     IntegrationType::Mass => {
-                        // For mass: scalar coefficients
+                        // For mass integration: scalar polynomial coefficients (density, etc.)
+                        // Format: comma-separated coefficients representing polynomial terms
                         let coefficients: Vec<f64> = args[i].split(',')
                             .map(|s| s.trim().parse::<f64>())
                             .collect::<Result<Vec<f64>, _>>()
@@ -131,9 +124,9 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
                         MaterialProperty::Scalar(coefficients)
                     }
                     IntegrationType::Stiffness => {
-                        // For stiffness: each matrix component is a polynomial
+                        // For stiffness integration: tensor/matrix where each component is a polynomial
                         // New Format: "size;c00_coeffs;c01_coeffs;...;cNN_coeffs"
-                        // where each component's coefficients are comma-separated
+                        // Each component's coefficients are comma-separated polynomial terms
                         // Example: "3;1.0,0.5;0.2;0.0;0.2;1.0,0.3;0.0;0.0;0.0;0.5"
                         
                         let parts: Vec<&str> = args[i].split(';').collect();
@@ -141,11 +134,12 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
                             return Err("For stiffness matrix, provide: size;c00;c01;...".to_string());
                         }
                         
-                        // First value is the matrix size (1, 3, or 6)
+                        // First value is the matrix size (dimension-dependent: 1 for 1D, 3 for 2D, 6 for 3D)
                         let matrix_size: usize = parts[0].trim().parse()
                             .map_err(|_| format!("Invalid matrix size: {}", parts[0]))?;
                         
                         // Validate matrix size based on dimensionality
+                        // 1D: 1x1, 2D: 3x3 (xx, xy, yy for plane stress/strain), 3D: 6x6 (full 3D elasticity)
                         if matrix_size != 1 && matrix_size != 3 && matrix_size != 6 {
                             return Err(format!(
                                 "Matrix size must be 1 (1D), 3 (2D), or 6 (3D), got {}",
@@ -153,16 +147,17 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
                             ));
                         }
                         
-                        // Total number of matrix components
+                        // Total number of matrix components (size x size)
                         let num_components = matrix_size * matrix_size;
                         
-                        // Remaining parts are polynomial coefficients for each component
+                        // Remaining parts are polynomial coefficients for each matrix component
                         let component_parts = &parts[1..];
                         
                         if component_parts.is_empty() {
                             return Err("No coefficients provided for stiffness matrix".to_string());
                         }
                         
+                        // Verify we have exactly the right number of components for the matrix
                         if component_parts.len() != num_components {
                             return Err(format!(
                                 "Expected {} components ({}x{} matrix), got {}. Format: size;c00;c01;...;cNN",
@@ -170,7 +165,8 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
                             ));
                         }
                         
-                        // Parse each component's polynomial coefficients
+                        // Parse each component's polynomial coefficients into 2D structure
+                        // material_tensor[i][j] = vector of polynomial coefficients for component (i,j)
                         let mut material_tensor = vec![vec![vec![]; matrix_size]; matrix_size];
                         
                         for (idx, component_str) in component_parts.iter().enumerate() {
@@ -185,7 +181,8 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
                                 return Err(format!("Component {} has no coefficients", idx));
                             }
                             
-                            // Convert flat index to (i, j) matrix indices (row-major order)
+                            // Convert flat index to (i, j) matrix indices using row-major order
+                            // Row-major: idx = i * matrix_size + j
                             let i = idx / matrix_size;
                             let j = idx % matrix_size;
                             
@@ -226,35 +223,21 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
             if !txt_files.is_empty() {                // If at least one txt file was provided
                 node_txt_file = Some(txt_files[0].clone()); // Assign first (and only) txt file as node file
             }
-        },
-        MeshEntity::Element => {                       // User wants to parse element values
-            if txt_files.len() > 1 {                  // Check if more than one txt file provided
-                return Err("Only one txt file allowed for --element-values".to_string()); // Error: too many files
-            }
-            if !txt_files.is_empty() {                // If at least one txt file was provided
-                element_txt_file = Some(txt_files[0].clone()); // Assign first (and only) txt file as element file
-            }
-        },
-        MeshEntity::Both => {                          // User wants to parse both node and element values
-            if txt_files.len() != 2 {                 // Check if exactly 2 txt files provided
-                return Err("Exactly two txt files required for --both-values (first for nodes, second for elements)".to_string());
-            }
-            node_txt_file = Some(txt_files[0].clone());    // First file is for node values
-            element_txt_file = Some(txt_files[1].clone()); // Second file is for element values
         }
     }
 
     // Validate that if txt files are provided, the user must specify what type they contain
     // This prevents ambiguity about how to parse the txt files
-    if !txt_files.is_empty() && !args.iter().any(|arg| arg.starts_with("--") && (arg.contains("values") || arg == "--print-vtu" || arg == "--analyze-mesh" || arg == "--optimize-gauss")) { 
-        return Err("When parsing txt files, you must specify --node-values, --element-values, or --both-values".to_string());
+    if !txt_files.is_empty() && !args.iter().any(|arg| 
+        arg.starts_with("--") && (arg.contains("values") || arg == "--print-vtu" || arg == "--analyze-mesh" || arg == "--optimize-gauss")
+    ) { 
+        return Err("When parsing txt files, you must specify --node-values".to_string());
     }
 
     // Return successfully parsed and validated arguments
     Ok(CommandLineArgs {
         mesh_file,        // Required mesh file path
         node_txt_file,    // Optional node values file path
-        element_txt_file, // Optional element values file path
         mesh_entity,       // Specified mesh entity parsing mode
         print_vtu,        // VTU printing preference
         analyze_mesh,     // Mesh analysis preference
@@ -268,60 +251,63 @@ fn parse_arguments(args: Vec<String>) -> Result<CommandLineArgs, String> {
 /// Print usage information to help users understand how to use the program
 /// Shows required format, optional parameters, and example commands
 fn print_usage(program_name: &str) {
-    eprintln!("Usage: {} <mesh_file> [value_files...] [OPTIONS]", program_name); // Show general usage format
-    eprintln!(); // Empty line for readability
-    eprintln!("Required:"); // Section header for required files
-    eprintln!("  mesh.mphtxt           COMSOL mesh file (required)");     // COMSOL mesh file description
-    eprintln!("  model.inp             Abaqus mesh file (required)");     // Abaqus mesh file description
-    eprintln!(); // Empty line for separation
-    eprintln!("Optional Value Files:"); // Section header for optional files
-    eprintln!("  nodes.txt             COMSOL node result file");         // Node values file description
-    eprintln!("  elements.txt          COMSOL element result file");      // Element values file description
-    eprintln!(); // Empty line for separation
-    eprintln!("Options:"); // Section header for command line options
-    eprintln!("  --node-values         Parse txt file as node values");          // Node values option description
-    eprintln!("  --element-values      Parse txt file as element values");       // Element values option description
-    eprintln!("  --both-values         Parse two txt files (first=nodes, second=elements)"); // Both values option description
-    eprintln!("  --print-vtu           Print VTU file content to console");      // Print option description
-    eprintln!("  --analyze-mesh        Perform mesh quality analysis");          // Analysis option description 
-    eprintln!("  --optimize-gauss      Optimize Gaussian quadrature points");    // Gauss optimization description
-    eprintln!("  --gauss-tolerance <val> Set tolerance for Gauss optimization (default: 1e-6)"); // Tolerance description
+    eprintln!("Usage: {} <mesh_file> [value_files...] [OPTIONS]", program_name);
+    eprintln!("Required: mesh.mphtxt or model.inp");
+    eprintln!("Optional: nodes.txt");
+    eprintln!("Options:");
+    eprintln!("  --node-values         Parse txt file as node values");
+    eprintln!("  --print-vtu           Print VTU file content to console");
+    eprintln!("  --analyze-mesh        Perform mesh quality analysis");
+    eprintln!("  --optimize-gauss      Optimize Gaussian quadrature points");
+    eprintln!("  --gauss-tolerance <val> Set tolerance for Gauss optimization (default: 1e-6)");
     eprintln!("  --mass-integration    Use mass matrix integration (default)");
     eprintln!("  --stiffness-integration Use stiffness matrix integration");
     eprintln!("  --material-property <spec> Material property specification:");
-    eprintln!("     For mass: comma-separated coefficients (default: 1.0)");
+    eprintln!("     For mass: comma-separated polynomial coefficients (default: 1.0)");
     eprintln!("        Example: --material-property 1.0,0.5,0.1");
-    eprintln!("     For stiffness: rows,cols,matrix_values");
-    eprintln!("        Example: --material-property 2,2,1.0,0.0,0.0,1.0");
+    eprintln!("     For stiffness: size;c00;c01;...;cNN where each component is polynomial coefficients");
+    eprintln!("        Example: --material-property 2;1.0;0.0;0.0;1.0");
     eprintln!(); // Empty line for separation
     eprintln!("Note: Mesh file is always required. Value type must be specified when using txt files."); // Important usage note
     eprintln!(); // Empty line for separation
     eprintln!("Examples:"); // Section header for usage examples
     eprintln!("  {} mesh.mphtxt                              # Parse mesh only", program_name); // Basic usage example
     eprintln!("  {} mesh.mphtxt nodes.txt --node-values      # Parse mesh + node values", program_name); // Mesh + nodes example
-    eprintln!("  {} mesh.mphtxt elements.txt --element-values # Parse mesh + element values", program_name); // Mesh + elements example
-    eprintln!("  {} mesh.mphtxt nodes.txt elements.txt --both-values # Parse mesh + both values", program_name); // Complete example
-    eprintln!("  {} model.inp nodes.txt elements.txt --both-values --print-vtu # Parse all with output", program_name); // Full featured example
+    eprintln!("  {} mesh.mphtxt nodes.txt --node-values --print-vtu # Parse all with output", program_name); // Full featured example
     eprintln!("  {} mesh.mphtxt --analyze-mesh               # Parse mesh + quality analysis", program_name); // Analysis example  
     eprintln!("  {} mesh.mphtxt nodes.txt --node-values --analyze-mesh # Parse + analyze both meshes", program_name); // Full analysis example 
-    eprintln!("  {} mesh.mphtxt --optimize-gauss --mass-integration --material-property 2.5", program_name); 
-    eprintln!("  {} mesh.mphtxt --optimize-gauss --mass-integration --material-property 1.0,0.5", program_name); 
-    eprintln!("  {} mesh.mphtxt --optimize-gauss --gauss-tolerance 1e-8 # Custom tolerance", program_name); 
-    eprintln!("  {} mesh.mphtxt --analyze-mesh --optimize-gauss # Both analysis and optimization", program_name); 
+    eprintln!("  {} mesh.mphtxt --optimize-gauss --mass-integration --material-property 2.5", program_name); // Mass integration with scalar
+    eprintln!("  {} mesh.mphtxt --optimize-gauss --mass-integration --material-property 1.0,0.5", program_name); // Mass integration with polynomial
+    eprintln!("  {} mesh.mphtxt --optimize-gauss --gauss-tolerance 1e-8 # Custom tolerance", program_name); // Custom tolerance example
+    eprintln!("  {} mesh.mphtxt --analyze-mesh --optimize-gauss # Both analysis and optimization", program_name); // Combined operations
     eprintln!("  {} mesh.mphtxt --optimize-gauss --stiffness-integration --material-property '3;2.0,2.0;0.5,0.0;0.5;1.0;0.0;0.0,1.2;0.7;1.0,1.2,2.0;1.0'", program_name); // Stiffness example
 }
 
 /// Perform mesh quality analysis and write results to text file 
+/// Calculates geometric quality metrics for each element and generates a report
+/// 
+/// # Arguments
+/// * `mesh_data` - The mesh to analyze
+/// * `mesh_name` - Base name for output file
+/// * `output_dir` - Directory where analysis file will be written
+/// 
+/// # Returns
+/// * `Ok(())` if analysis succeeds
+/// * `Err(String)` with error message if analysis or file writing fails
 fn analyze_mesh_quality(mesh_data: &MeshData, mesh_name: &str, output_dir: &Path) -> Result<(), String> {
     println!("Performing mesh quality analysis...");
     
+    // Construct output file path with descriptive name
     let output_path = output_dir.join(format!("{}_mesh_quality_analysis.txt", mesh_name));
     
+    // Perform the geometric analysis using the specialized analysis module
     match GeometricAnalysis::analyse_mesh_quality(mesh_data) {
         Ok(quality_report) => {
+            // Create output file for writing analysis results
             let mut file = File::create(&output_path)
                 .map_err(|e| format!("Failed to create analysis file: {}", e))?;
             
+            // Write the quality report in debug format for human readability
             writeln!(file, "{:#?}", quality_report)
                 .map_err(|e| format!("Failed to write analysis results: {}", e))?;
             
@@ -329,12 +315,26 @@ fn analyze_mesh_quality(mesh_data: &MeshData, mesh_name: &str, output_dir: &Path
             Ok(())
         },
         Err(e) => {
+            // Return descriptive error message if analysis failed
             Err(format!("Mesh analysis failed: {:?}", e))
         }
     }
 }
 
 /// Perform Gaussian quadrature optimization and write results to text file
+/// Finds optimal number of Gauss points for numerical integration on each element
+/// 
+/// # Arguments
+/// * `mesh_data` - The mesh containing elements to optimize
+/// * `integration_type` - Type of integration (Mass or Stiffness)
+/// * `tolerance` - Convergence tolerance for optimization
+/// * `material_property` - Material property (scalar or matrix with polynomial coefficients)
+/// * `output_dir` - Directory where optimization results will be written
+/// * `mesh_name` - Base name for output file
+/// 
+/// # Returns
+/// * `Ok(())` if optimization succeeds
+/// * `Err(String)` with error message if optimization or file writing fails
 fn optimize_gaussian_quadrature(
     mesh_data: &MeshData,
     integration_type: IntegrationType,
@@ -345,15 +345,19 @@ fn optimize_gaussian_quadrature(
 ) -> Result<(), String> {
     println!("Performing Gaussian quadrature optimization...");
     
+    // Construct output file path with descriptive name
     let output_path = output_dir.join(format!("{}_gauss_optimization.txt", mesh_name));
     
+    // Find optimal Gauss point numbers for all elements in the mesh
     match GaussianQuadrature::find_optimal_gauss_points_number_mesh(
         mesh_data, integration_type, tolerance, material_property
     ) {
         Ok(optimization_results) => {
+            // Create output file for writing optimization results
             let mut file = File::create(&output_path)
                 .map_err(|e| format!("Failed to create optimization file: {}", e))?;
             
+            // Write the optimization results in debug format for human readability
             writeln!(file, "{:#?}", optimization_results)
                 .map_err(|e| format!("Failed to write optimization results: {}", e))?;
             
@@ -362,6 +366,7 @@ fn optimize_gaussian_quadrature(
             Ok(())
         },
         Err(e) => {
+            // Return descriptive error message if optimization failed
             let error_msg = format!("Gaussian quadrature optimization failed: {}", e);
             println!("{}", error_msg);
             Err(error_msg)
@@ -370,14 +375,27 @@ fn optimize_gaussian_quadrature(
 }
 
 /// Write parsed mesh data to text file in debug format
+/// Useful for verifying mesh parsing and inspecting mesh structure
+/// 
+/// # Arguments
+/// * `mesh_data` - The mesh data to write
+/// * `output_dir` - Directory where file will be written
+/// * `mesh_name` - Base name for output file
+/// 
+/// # Returns
+/// * `Ok(())` if writing succeeds
+/// * `Err(String)` with error message if file creation or writing fails
 fn write_mesh_data_to_file(mesh_data: &MeshData, output_dir: &Path, mesh_name: &str) -> Result<(), String> {
     println!("Writing parsed mesh data to file...");
     
+    // Construct output file path with descriptive name
     let output_path = output_dir.join(format!("{}_parsed_mesh_data.txt", mesh_name));
     
+    // Create output file
     let mut file = File::create(&output_path)
         .map_err(|e| format!("Failed to create mesh data file: {}", e))?;
     
+    // Write mesh data in pretty-printed debug format for readability
     writeln!(file, "{:#?}", mesh_data)
         .map_err(|e| format!("Failed to write mesh data: {}", e))?;
     
@@ -386,40 +404,50 @@ fn write_mesh_data_to_file(mesh_data: &MeshData, output_dir: &Path, mesh_name: &
 }
 
 /// Write parsed field data to text files in debug format
+/// Useful for verifying field value parsing and inspecting node/element data
+/// 
+/// # Arguments
+/// * `node_data` - Optional node value data to write
+/// * `output_dir` - Directory where file will be written
+/// * `mesh_name` - Base name for output file
+/// 
+/// # Returns
+/// * `Ok(())` if writing succeeds (or if no data to write)
+/// * `Err(String)` with error message if file creation or writing fails
 fn write_field_data_to_file(
-    node_data: &Option<NodeValueData>, 
-    element_data: &Option<ElementValueData>, 
+    node_data: &Option<NodeValueData>,
     output_dir: &Path, 
     mesh_name: &str
 ) -> Result<(), String> {
+    // Only write if node data was provided
     if let Some(node_data) = node_data {
+        // Construct output file path with descriptive name
         let output_path = output_dir.join(format!("{}_parsed_node_data.txt", mesh_name));
+        
+        // Create output file
         let mut file = File::create(&output_path)
             .map_err(|e| format!("Failed to create node data file: {}", e))?;
         
+        // Write node data in pretty-printed debug format for readability
         writeln!(file, "{:#?}", node_data)
             .map_err(|e| format!("Failed to write node data: {}", e))?;
         
         println!("Parsed node data written to: {}", output_path.display());
     }
     
-    if let Some(element_data) = element_data {
-        let output_path = output_dir.join(format!("{}_parsed_element_data.txt", mesh_name));
-        let mut file = File::create(&output_path)
-            .map_err(|e| format!("Failed to create element data file: {}", e))?;
-        
-        writeln!(file, "{:#?}", element_data)
-            .map_err(|e| format!("Failed to write element data: {}", e))?;
-        
-        println!("Parsed element data written to: {}", output_path.display());
-    }
-    
     Ok(())
 }
 
 /// Main entry point - the function that runs when the program starts
-/// Coordinates the entire parsing and conversion process from command line to VTU output
+/// Orchestrates the entire workflow:
+/// 1. Parse and validate command line arguments
+/// 2. Load and parse mesh file (.mphtxt or .inp)
+/// 3. Optionally load node field values from .txt file
+/// 4. Optionally perform mesh quality analysis
+/// 5. Optionally optimize Gaussian quadrature points
+/// 6. Generate VTU output files for visualization
 fn main() {
+    // ========== STEP 1: PARSE COMMAND LINE ARGUMENTS ==========
     // Collect all command line arguments into a vector of strings
     // args[0] is always the program name, args[1+] are user-provided arguments
     let args: Vec<String> = env::args().collect();
@@ -430,10 +458,11 @@ fn main() {
         Err(e) => {                 // If parsing failed, show error and exit
             eprintln!("Error: {}", e);    // Print the specific error message
             print_usage(&args[0]);        // Show usage information to help user
-            process::exit(1);             // Exit with error code 1
+            process::exit(1);             // Exit with error code 1 to indicate failure
         }
     };
 
+    // ========== STEP 2: SET UP OUTPUT DIRECTORY ==========
     // Set up output directory where generated VTU files will be saved
     // This is a hardcoded path but could be made configurable in the future
     let output_dir = PathBuf::from(r"C:\Users\caybe\OneDrive\Vorlesungen\Master\Master Thesis\Master-Thesis-Caglar-Ayberk-Saglik\test_output");
@@ -446,13 +475,16 @@ fn main() {
         }
     }
 
+    // ========== STEP 3: PARSE MESH FILE ==========
     // Parse mesh file (always required) - unwrap is safe because we validated it exists
     let mesh_data = parse_mesh_file(cmd_args.mesh_file.as_ref().unwrap());
 
-    // Parse txt files for field values if provided - returns (node_data, element_data) tuple
-    let (node_value_data, element_value_data) = parse_txt_files(&cmd_args.node_txt_file, &cmd_args.element_txt_file);
+    // ========== STEP 4: PARSE OPTIONAL FIELD VALUE FILES ==========
+    // Parse txt files for field values if provided - returns node_data
+    let node_value_data = parse_txt_files(&cmd_args.node_txt_file);
 
-    // Print simple summaries of parsed data
+    // ========== STEP 5: PRINT PARSING SUMMARY ==========
+    // Print simple summaries of parsed data to inform user of successful parsing
     println!("{}", "=".repeat(50));                             // Print visual separator line
     println!("Mesh parsed successfully:");
     println!("  - Nodes: {}", mesh_data.num_nodes);
@@ -460,32 +492,30 @@ fn main() {
     println!("  - Dimension: {}", mesh_data.dimension);
     println!("  - Material property coefficients: {:?}", cmd_args.material_property);
 
-    // If any field values were parsed, show simple summary
-    if node_value_data.is_some() || element_value_data.is_some() {
-        println!("Field values parsed:");
-        if node_value_data.is_some() {
-            println!("  - Node values: Yes");
-        }
-        if element_value_data.is_some() {
-            println!("  - Element values: Yes");
-        }
+    // If node field values were parsed, show simple summary
+    if node_value_data.is_some() {
+        println!("Field values parsed: Node values: Yes");
     }
 
-    // Generate mesh name for output files
+    // ========== STEP 6: GENERATE OUTPUT FILE NAMES ==========
+    // Generate mesh name for output files by extracting filename without extension
     let mesh_name = cmd_args.mesh_file
         .as_ref()                                                // Get reference to Option<String>
         .map(|f| Path::new(f).file_stem().unwrap_or_default().to_string_lossy().to_string()) // Extract filename without extension
         .unwrap_or_else(|| "output".to_string());               // Fallback name if somehow no mesh file (shouldn't happen)
 
-    // Write parsed data to text files for inspection
+    // ========== STEP 7: WRITE DEBUG OUTPUT FILES ==========
+    // Write parsed data to text files for inspection and debugging
     if let Err(e) = write_mesh_data_to_file(&mesh_data, &output_dir, &mesh_name) {
         eprintln!("Warning: Failed to write mesh data to file: {}", e);
     }
 
-    if let Err(e) = write_field_data_to_file(&node_value_data, &element_value_data, &output_dir, &mesh_name) {
+    if let Err(e) = write_field_data_to_file(&node_value_data, &output_dir, &mesh_name) {
         eprintln!("Warning: Failed to write field data to file: {}", e);
     }
 
+    // ========== STEP 8: INITIALIZE ANALYSIS REPORT STRUCTURES ==========
+    // Initialize empty report structures that will be filled if analysis is performed
     let mut mesh_quality_report = MeshQualityReport {
         total_elements: 0,
         element_qualities: Vec::new(),
@@ -496,11 +526,14 @@ fn main() {
         gauss_point_numbers: Vec::new(),
     };
 
+    // ========== STEP 9: OPTIONAL MESH QUALITY ANALYSIS ==========
     // MESH QUALITY ANALYSIS SECTION
     if cmd_args.analyze_mesh {
+        // Perform analysis and write results to file
         if let Err(e) = analyze_mesh_quality(&mesh_data, &mesh_name, &output_dir) {
             eprintln!("Warning: Mesh analysis failed: {}", e);
         } else {
+            // Get the report for inclusion in VTU file
             match GeometricAnalysis::analyse_mesh_quality(&mesh_data) {
                 Ok(report) => mesh_quality_report = report,
                 Err(e) => eprintln!("Warning: Could not get mesh quality report for VTU: {:?}", e),
@@ -508,11 +541,14 @@ fn main() {
         }
     }
 
+    // ========== STEP 10: OPTIONAL GAUSSIAN QUADRATURE OPTIMIZATION ==========
     // GAUSSIAN QUADRATURE OPTIMIZATION SECTION
     if cmd_args.optimize_gauss {
+        // Perform optimization and write results to file
         if let Err(e) = optimize_gaussian_quadrature(&mesh_data, cmd_args.integration_type, cmd_args.gauss_tolerance, &cmd_args.material_property, &output_dir, &mesh_name) {
             eprintln!("Warning: Gaussian quadrature optimization failed: {}", e);
         } else {
+            // Get the report for inclusion in VTU file
             match GaussianQuadrature::find_optimal_gauss_points_number_mesh(
                 &mesh_data, 
                 cmd_args.integration_type, 
@@ -525,6 +561,7 @@ fn main() {
         }
     }
 
+    // ========== STEP 11: GENERATE PRIMARY VTU FILE ==========
     // Generate output file name based on input mesh file name
     let output_filename = mesh_name;
     
@@ -536,28 +573,14 @@ fn main() {
     println!("\nWriting VTU file: {}", output_path.display());
     
     // Write VTU file with or without field values based on what data is available
-    let write_result = match (&node_value_data, &element_value_data) {
-        (Some(node_data), Some(element_data)) => {              // Both node and element values available
-            VTUWriter::write_vtu_with_field_values(&mesh_data, node_data, element_data, output_str)
+    let write_result = match &node_value_data {
+        Some(node_data) => {
+            // Write VTU with both mesh and node field values
+            VTUWriter::write_vtu_with_field_values(&mesh_data, node_data, output_str)
         },
-        (Some(node_data), None) => {                            // Only node values available
-            // Create empty element data structure to satisfy writer interface
-            let empty_element_data = ElementValueData {
-                element_values: Vec::new(),                      // Empty values array
-                element_value_type_info: Vec::new(),             // Empty type info array
-            };
-            VTUWriter::write_vtu_with_field_values(&mesh_data, node_data, &empty_element_data, output_str)
-        },
-        (None, Some(element_data)) => {                         // Only element values available
-            // Create empty node data structure to satisfy writer interface
-            let empty_node_data = NodeValueData {
-                node_values: Vec::new(),                         // Empty values array
-                node_value_type_info: Vec::new(),                // Empty type info array
-            };
-            VTUWriter::write_vtu_with_field_values(&mesh_data, &empty_node_data, element_data, output_str)
-        },
-        (None, None) => {                                       // No field values, just mesh geometry
-            VTUWriter::write_vtu(&mesh_data, output_str)        // Use simpler writer method for mesh only
+        None => {
+            // Write VTU with mesh data only
+            VTUWriter::write_vtu(&mesh_data, output_str)
         }
     };
 
@@ -567,12 +590,15 @@ fn main() {
         Err(e) => eprintln!("Error writing VTU file: {:?}", e), // Error message if writing fails
     }
 
+    // ========== STEP 12: GENERATE ANALYSIS VTU FILE IF NEEDED ==========
+    // If analysis or optimization was performed, create additional VTU with those results
     if cmd_args.analyze_mesh || cmd_args.optimize_gauss {
         let analysis_output_path = output_dir.join(format!("{}_with_analysis.vtu", output_filename));
         let analysis_output_str = analysis_output_path.to_str().expect("Invalid UTF-8 in output path");
 
         println!("\nWriting analysis VTU file: {}", analysis_output_path.display());
         
+        // Write VTU file that includes mesh quality and/or Gauss point number data
         match VTUWriter::write_vtu_with_geometric_analysis_and_gaussian_points_number(
             &mesh_data,
             &mesh_quality_report,
@@ -584,6 +610,7 @@ fn main() {
         }
     }
 
+    // ========== STEP 13: OPTIONAL CONSOLE OUTPUT ==========
     // Optionally print the VTU file content to terminal (useful for debugging or verification)
     if cmd_args.print_vtu {                                    // Only if user specified --print-vtu flag
         println!("\nVTU FILE CONTENT");                      // Header for file content section
@@ -595,6 +622,7 @@ fn main() {
             Err(e) => eprintln!("Error reading VTU file: {:?}", e), // Print error if file read fails
         }
 
+        // If analysis file was generated, print that too
         if cmd_args.analyze_mesh || cmd_args.optimize_gauss {
             let analysis_output_path = output_dir.join(format!("{}_with_analysis.vtu", output_filename));
             println!("\nANALYSIS VTU FILE CONTENT");
@@ -606,6 +634,7 @@ fn main() {
         }
     }
 
+    // ========== STEP 14: COMPLETION MESSAGE ==========
     // Print final completion message to indicate successful program execution
     println!("\nPROCESSING COMPLETED!");
     println!("{}", "=".repeat(50));                          // Visual separator for clean output
@@ -613,6 +642,15 @@ fn main() {
 
 /// Parse mesh file based on its extension and return structured mesh data
 /// Supports both COMSOL (.mphtxt) and Abaqus (.inp) mesh formats
+/// 
+/// # Arguments
+/// * `filename` - Path to the mesh file to parse
+/// 
+/// # Returns
+/// * `MeshData` - Parsed mesh data structure containing nodes and elements
+/// 
+/// # Exits
+/// * Exits with code 1 if file format is unsupported or parsing fails
 fn parse_mesh_file(filename: &str) -> MeshData {
     let path = Path::new(filename);                           // Create Path object for easy extension checking
     
@@ -640,47 +678,41 @@ fn parse_mesh_file(filename: &str) -> MeshData {
         Ok(data) => data,   // If parsing succeeded, return the mesh data
         Err(e) => {         // If parsing failed
             eprintln!("Error parsing mesh file: {:?}", e);   // Print error details
-            process::exit(1); // Exit with error code
+            process::exit(1); // Exit with error code to indicate failure
         }
     }
 }
 
-/// Parse txt files for field values using appropriate parsers
-/// Takes optional file paths and returns tuple of (node_data, element_data)
-fn parse_txt_files(node_txt_file: &Option<String>, element_txt_file: &Option<String>) -> (Option<NodeValueData>, Option<ElementValueData>) {
-    let mut node_value_data = None;       // Initialize as None - will be populated if file provided
-    let mut element_value_data = None;    // Initialize as None - will be populated if file provided
-    
-    // Parse node values if file path provided
-    if let Some(node_file) = node_txt_file {                 // Check if node file path exists
-        println!("Parsing node values from: {}", node_file); // Inform user about node parsing
-        match ComsolTxtNodeParser::parse_file(node_file) {   // Attempt to parse node values
-            Ok(data) => {                                     // If parsing succeeded
-                println!("Successfully parsed node values"); // Success message
-                node_value_data = Some(data);                 // Store parsed node data
+/// Parse txt files for field values 
+/// Currently only supports node value files from COMSOL
+/// 
+/// # Arguments
+/// * `node_txt_file` - Optional path to txt file containing node field values
+/// 
+/// # Returns
+/// * `Some(NodeValueData)` if file was provided and parsed successfully
+/// * `None` if no file was provided
+/// 
+/// # Exits
+/// * Exits with code 1 if file parsing fails
+fn parse_txt_files(node_txt_file: &Option<String>) -> Option<NodeValueData> {
+    if let Some(node_file) = node_txt_file {
+        // Inform user about parsing operation
+        println!("Parsing node values from: {}", node_file);
+        
+        // Attempt to parse the node values file
+        match ComsolTxtNodeParser::parse_file(node_file) {
+            Ok(data) => {
+                println!("Successfully parsed node values");
+                Some(data)  // Return parsed data
             },
-            Err(e) => {                                       // If parsing failed
-                eprintln!("Error parsing node values from {}: {:?}", node_file, e); // Error message with filename
-                process::exit(1);                             // Exit since we can't continue with invalid data
+            Err(e) => {
+                // Print error and exit if parsing fails
+                eprintln!("Error parsing node values from {}: {:?}", node_file, e);
+                process::exit(1);
             }
         }
+    } else {
+        None  // No file provided, return None
     }
-    
-    // Parse element values if file path provided
-    if let Some(element_file) = element_txt_file {           // Check if element file path exists
-        println!("Parsing element values from: {}", element_file); // Inform user about element parsing
-        match ComsolTxtElementParser::parse_file(element_file) {   // Attempt to parse element values
-            Ok(data) => {                                     // If parsing succeeded
-                println!("Successfully parsed element values"); // Success message
-                element_value_data = Some(data);              // Store parsed element data
-            },
-            Err(e) => {                                       // If parsing failed
-                eprintln!("Error parsing element values from {}: {:?}", element_file, e); // Error message with filename
-                process::exit(1);                             // Exit since we can't continue with invalid data
-            }
-        }
-    }
-    
-    // Return tuple of parsed data (both may be None if no files provided)
-    (node_value_data, element_value_data)
 }

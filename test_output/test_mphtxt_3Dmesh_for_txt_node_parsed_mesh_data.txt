@@ -1,0 +1,199 @@
+MeshData {
+    dimension: 3,
+    num_nodes: 18,
+    min_node_index: 0,
+    nodes: [
+        Node {
+            id: 0,
+            coordinates: [
+                0.0,
+                0.0,
+                0.0,
+            ],
+        },
+        Node {
+            id: 1,
+            coordinates: [
+                2.0,
+                0.0,
+                0.0,
+            ],
+        },
+        Node {
+            id: 2,
+            coordinates: [
+                0.0,
+                2.0,
+                0.0,
+            ],
+        },
+        Node {
+            id: 3,
+            coordinates: [
+                2.0,
+                2.0,
+                0.0,
+            ],
+        },
+        Node {
+            id: 4,
+            coordinates: [
+                1.0,
+                1.0,
+                2.0,
+            ],
+        },
+        Node {
+            id: 5,
+            coordinates: [
+                1.0,
+                0.0,
+                0.0,
+            ],
+        },
+        Node {
+            id: 6,
+            coordinates: [
+                0.0,
+                1.0,
+                0.0,
+            ],
+        },
+        Node {
+            id: 7,
+            coordinates: [
+                1.0,
+                1.0,
+                0.0,
+            ],
+        },
+        Node {
+            id: 8,
+            coordinates: [
+                2.0,
+                1.0,
+                0.0,
+            ],
+        },
+        Node {
+            id: 9,
+            coordinates: [
+                1.0,
+                2.0,
+                0.0,
+            ],
+        },
+        Node {
+            id: 10,
+            coordinates: [
+                0.5,
+                0.5,
+                1.0,
+            ],
+        },
+        Node {
+            id: 11,
+            coordinates: [
+                1.5,
+                0.5,
+                1.0,
+            ],
+        },
+        Node {
+            id: 12,
+            coordinates: [
+                0.5,
+                1.5,
+                1.0,
+            ],
+        },
+        Node {
+            id: 13,
+            coordinates: [
+                1.5,
+                1.5,
+                1.0,
+            ],
+        },
+        Node {
+            id: 14,
+            coordinates: [
+                0.0,
+                0.0,
+                -2.0,
+            ],
+        },
+        Node {
+            id: 15,
+            coordinates: [
+                2.0,
+                0.0,
+                -2.0,
+            ],
+        },
+        Node {
+            id: 16,
+            coordinates: [
+                0.0,
+                2.0,
+                -2.0,
+            ],
+        },
+        Node {
+            id: 17,
+            coordinates: [
+                2.0,
+                2.0,
+                -2.0,
+            ],
+        },
+    ],
+    num_eltypes: 2,
+    elements: [
+        Element {
+            id: 0,
+            nodes: [
+                0,
+                1,
+                3,
+                2,
+                4,
+                5,
+                8,
+                9,
+                6,
+                10,
+                11,
+                13,
+                12,
+            ],
+        },
+        Element {
+            id: 1,
+            nodes: [
+                14,
+                15,
+                17,
+                16,
+                0,
+                1,
+                3,
+                2,
+            ],
+        },
+    ],
+    element_type_info: [
+        ElementTypeInfo {
+            element_type: QuadraticPyramid,
+            num_elements: 1,
+            start_index: 0,
+            nodes_per_element: 14,
+        },
+        ElementTypeInfo {
+            element_type: Hexahedron,
+            num_elements: 1,
+            start_index: 1,
+            nodes_per_element: 8,
+        },
+    ],
+}

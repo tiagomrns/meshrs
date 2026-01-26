@@ -41,8 +41,8 @@ MeshData {
         Node {
             id: 5,
             coordinates: [
-                0.5,
-                1.0,
+                0.75,
+                0.75,
             ],
         },
         Node {
@@ -91,21 +91,21 @@ MeshData {
             id: 12,
             coordinates: [
                 -2.25,
-                -1.4,
+                -1.25,
             ],
         },
         Node {
             id: 13,
             coordinates: [
                 -2.5,
-                -0.6,
+                -0.75,
             ],
         },
         Node {
             id: 14,
             coordinates: [
                 -2.0,
-                -0.6,
+                -0.75,
             ],
         },
         Node {
@@ -168,13 +168,13 @@ MeshData {
             id: 23,
             coordinates: [
                 0.75,
-                -1.4,
+                -1.25,
             ],
         },
         Node {
             id: 24,
             coordinates: [
-                0.1,
+                0.25,
                 -0.75,
             ],
         },
@@ -188,7 +188,7 @@ MeshData {
         Node {
             id: 26,
             coordinates: [
-                1.4,
+                1.25,
                 -0.75,
             ],
         },
@@ -196,7 +196,7 @@ MeshData {
             id: 27,
             coordinates: [
                 0.75,
-                -0.1,
+                -0.25,
             ],
         },
     ],

@@ -1,0 +1,21 @@
+ElementValueData {
+    element_values: [
+        ElementValue {
+            id: 0,
+            values: [
+                2000000.0,
+                -1500000.0,
+                1000000.0,
+            ],
+        },
+    ],
+    element_value_type_info: [
+        ElementValueTypeInfo {
+            dimension: 3,
+            num_elements: 1,
+            elementvalue_type: Stress,
+            num_elementvalue_type: 1,
+            start_index: 0,
+        },
+    ],
+}

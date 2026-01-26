@@ -1,0 +1,19 @@
+ElementValueData {
+    element_values: [
+        ElementValue {
+            id: 0,
+            values: [
+                30.0,
+            ],
+        },
+    ],
+    element_value_type_info: [
+        ElementValueTypeInfo {
+            dimension: 1,
+            num_elements: 1,
+            elementvalue_type: Temperature,
+            num_elementvalue_type: 1,
+            start_index: 0,
+        },
+    ],
+}

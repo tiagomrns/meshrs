@@ -1,12 +1,11 @@
 // Import standard library modules for file I/O operations
 use std::fs::File;              // For opening files
-use std::io::{self, BufRead, BufReader}; // For buffered reading of files line by line
+use std::io::{BufRead, BufReader}; // For buffered reading of files line by line
 
-//use crate::database::*;                     // Import mesh data structures and error types from database module
-
-//use crate::lib::*;                  // Import mesh data structures and error types from lib module
-use crate::structs_and_impls::*;                  // Import mesh data structures and error types from lib module
-use crate::error::*;                     // Import mesh data structures and error types from error module
+// Import mesh data structures (MeshData, Node, Element, ElementType, ElementTypeInfo)
+use crate::structs_and_impls::*;
+// Import error types (ParseError) for robust error handling
+use crate::error::*;
 
 // Implementation block for ElementType enum - adds methods to the ElementType enum
 impl ElementType {
@@ -57,30 +56,14 @@ impl ElementType {
             return Some(ElementType::QuadraticQuad);
         }
 
-        //Cylindrical Element types (specialized for cylindrical coordinate systems)
-        else if s.contains("CL9") { // 9-node cylindrical prism
-            return Some(ElementType::QuadraticWedge);    // Map to closest VTK equivalent
-        } else if s.contains("CL12") { // 12-node cylindrical brick
-            return Some(ElementType::QuadraticHexahedron);
-        } else if s.contains("CL18") { // 18-node cylindrical prism (high-order)
+        // Cylindrical Element types (specialized for cylindrical coordinate systems)
+        // These are high-order elements used in cylindrical coordinates
+        else if s.contains("CL18") { // 18-node cylindrical prism (biquadratic)
             return Some(ElementType::BiquadraticQuadraticWedge);
-        } else if s.contains("CL24") { // 24-node cylindrical brick (high-order)
+        } else if s.contains("CL24") { // 24-node cylindrical brick (biquadratic)
             return Some(ElementType::BiquadraticQuadraticHexahedron);
         }
-
-        //Axisymmetric Element types (for problems with rotational symmetry)
-        else if s.contains("AX2") {   // 2-node axisymmetric line element
-            return Some(ElementType::Line);
-        } else if s.contains("AX3") { // 3-node axisymmetric triangle
-            return Some(ElementType::Triangle);
-        } else if s.contains("AX4") || s.contains("AXA4") { // 4-node axisymmetric quad
-            return Some(ElementType::Quad);
-        } else if s.contains("AX6") { // 6-node axisymmetric quadratic triangle
-            return Some(ElementType::QuadraticTriangle);
-        } else if s.contains("AX8") || s.contains("AXA8") { // 8-node axisymmetric quadratic quad
-            return Some(ElementType::QuadraticQuad);
-        }
-
+        
         // If no match found, return None (will cause parsing error)
         None
     }
@@ -261,14 +244,14 @@ impl AbaqusInpParser {
     fn parse_single_element_type(
         lines: &[&String],          // Lines to parse
         header_line: &str,          // The *ELEMENT header line
-        start_element_id: usize,    // Starting element ID for this type
+        _start_element_id: usize,   // Starting element ID for this type (currently unused)
         start_index: usize,         // Starting index in elements array
     ) -> Result<(Vec<Element>, ElementTypeInfo, usize), ParseError> {
         
         // Extract Abaqus element type name from header (e.g., "C3D8", "S4R")
         let full_element_type = Self::extract_full_element_type_from_header(header_line)?;
         // Convert Abaqus element type to our internal ElementType enum
-        let element_type = ElementType::from_str_abaqus((&full_element_type))
+        let element_type = ElementType::from_str_abaqus(&full_element_type)
             .ok_or_else(|| ParseError::FormatError(format!(
                 "Unknown element type: {}", &full_element_type
             )))?;
@@ -469,18 +452,8 @@ impl AbaqusInpParser {
                     element.nodes = abaqus_nodes;
                 }
                 ElementType::QuadraticWedge => {
-                    if abaqus_nodes.len() == 15 {           // Standard 15-node quadratic wedge
-                        element.nodes = abaqus_nodes;       // Same ordering as VTK
-                    } else if abaqus_nodes.len() == 9 {     // Special case: 9-node cylindrical prism
-                        // Need to pad with additional nodes or remap - this might need adjustment
-                        // based on your specific VTK writer expectations
-                        element.nodes = vec![
-                            abaqus_nodes[0], abaqus_nodes[1], abaqus_nodes[2], abaqus_nodes[3],
-                            abaqus_nodes[4], abaqus_nodes[5], abaqus_nodes[6], abaqus_nodes[7],
-                            abaqus_nodes[8], abaqus_nodes[9], abaqus_nodes[10], abaqus_nodes[11],
-                            abaqus_nodes[12], abaqus_nodes[13], abaqus_nodes[14]
-                        ];
-                    }
+                    // 15-node quadratic wedge/prism: Abaqus and VTK use same ordering
+                    element.nodes = abaqus_nodes;
                 }
                 ElementType::BiquadraticQuadraticWedge => {
                     // 18-node biquadratic wedge: needs specific reordering
@@ -497,18 +470,8 @@ impl AbaqusInpParser {
                     element.nodes = abaqus_nodes;
                 }
                 ElementType::QuadraticHexahedron => {
-                    if abaqus_nodes.len() == 20 {           // Standard 20-node quadratic hexahedron
-                        element.nodes = abaqus_nodes;       // Same ordering as VTK
-                    } else if abaqus_nodes.len() == 12 {    // Special case: 12-node cylindrical brick
-                        // Pad to 20 nodes for VTK compatibility - might need adjustment
-                        element.nodes = vec![
-                            abaqus_nodes[0], abaqus_nodes[1], abaqus_nodes[2], abaqus_nodes[3],
-                            abaqus_nodes[4], abaqus_nodes[5], abaqus_nodes[6], abaqus_nodes[7],
-                            abaqus_nodes[8], abaqus_nodes[9], abaqus_nodes[10], abaqus_nodes[11],
-                            abaqus_nodes[12], abaqus_nodes[13], abaqus_nodes[14], abaqus_nodes[15],
-                            abaqus_nodes[16], abaqus_nodes[17], abaqus_nodes[18], abaqus_nodes[19]
-                        ];
-                    }
+                    // 20-node quadratic hexahedron/brick: Abaqus and VTK use same ordering
+                    element.nodes = abaqus_nodes;
                 }
                 ElementType::BiquadraticQuadraticHexahedron => {
                     // 24-node biquadratic hexahedron: complex reordering needed

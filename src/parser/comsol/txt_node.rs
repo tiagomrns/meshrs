@@ -1,277 +1,593 @@
+// Standard library imports for file I/O operations
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::collections::HashMap;
 
-//use crate::database::*;                     // Import mesh data structures and error types from database module
+// Import custom data structures and error types
+use crate::structs_and_impls::*;  // NodeValueData, NodeValue, ValueType, etc.
+use crate::error::*;               // ParseError and related error types
 
-//use crate::lib::*;                  // Import mesh data structures and error types from lib module
-use crate::structs_and_impls::*;                  // Import mesh data structures and error types from lib module
-use crate::error::*;                     // Import mesh data structures and error types from error module
-
+/// Parser for COMSOL text export files containing node field values.
+/// 
+/// This parser handles static analysis results exported from COMSOL as text files.
+/// It can parse field values such as displacement, velocity, stress, strain, etc.
+/// The text files are expected to have a specific format:
+/// - Header lines starting with '%' containing column names
+/// - Data lines with whitespace-separated numeric values
+/// - Optional unit specifications in parentheses (e.g., "(Pa)")
+/// 
+/// # Example File Format
+/// ```text
+/// % Node   displacement_x (m)   displacement_y (m)   stress_xx (Pa)
+/// 0.0      1.2e-5               3.4e-6               1.5e6
+/// 0.1      2.3e-5               4.5e-6               1.7e6
+/// ```
 pub struct ComsolTxtNodeParser;
 
 impl ComsolTxtNodeParser {
-    /// Parse a COMSOL txt result file from disk (static data only)
+    /// Parse a COMSOL text result file from disk containing static analysis data.
+    /// 
+    /// This is the main entry point for parsing COMSOL text files. It opens the file,
+    /// creates a buffered reader, and delegates to the main parse function.
+    /// 
+    /// # Arguments
+    /// * `filename` - Path to the COMSOL text file on disk
+    /// 
+    /// # Returns
+    /// * `Ok(NodeValueData)` - Successfully parsed node values with metadata
+    /// * `Err(ParseError)` - File I/O error or parsing failure
+    /// 
+    /// # Example
+    /// ```no_run
+    /// let data = ComsolTxtNodeParser::parse_file("results.txt")?;
+    /// ```
     pub fn parse_file(filename: &str) -> Result<NodeValueData, ParseError> {
-        let file = File::open(filename)?; // Open the file from disk
-        let reader = BufReader::new(file); // Wrap in buffered reader for efficient line reading
-        Self::parse(reader) // Call main parse function with the reader
+        // Open the file from disk (may fail if file doesn't exist or no permissions)
+        let file = File::open(filename)?;
+        
+        // Wrap in buffered reader for efficient line-by-line reading
+        let reader = BufReader::new(file);
+        
+        // Delegate to main parse function that works with any reader
+        Self::parse(reader)
     }
 
-    /// Main parsing function for static data
+    /// Main parsing function that processes COMSOL text data from any buffered reader.
+    /// 
+    /// This function orchestrates the three-phase parsing process:
+    /// 1. Parse headers to identify column names and their physical meanings
+    /// 2. Parse all numeric data rows
+    /// 3. Build structured NodeValueData with proper organization and metadata
+    /// 
+    /// # Type Parameters
+    /// * `R` - Any type that implements BufRead (file, string buffer, network stream, etc.)
+    /// 
+    /// # Arguments
+    /// * `reader` - Buffered reader providing access to the COMSOL text data
+    /// 
+    /// # Returns
+    /// * `Ok(NodeValueData)` - Structured node values organized by type
+    /// * `Err(ParseError)` - Header parsing error, invalid data, or format mismatch
     pub fn parse<R: BufRead>(reader: R) -> Result<NodeValueData, ParseError> {
-        let mut reader = reader; // Make reader mutable for line-by-line reading
+        // Make reader mutable so we can consume lines during parsing
+        let mut reader = reader;
         
-        // Step 1: Parse headers to find column layout
-        let (column_indices, column_names, first_data_line) = Self::parse_headers(&mut reader)?; // Extract column structure from file headers
+        // PHASE 1: Parse headers to find column layout
+        // Returns: column indices mapping, original column names, and optionally the first data line
+        let (column_indices, column_names, first_data_line) = Self::parse_headers(&mut reader)?;
         
-        // Step 2: Parse all data rows
-        let data = Self::parse_data(&mut reader, &column_indices, first_data_line)?; // Read all numeric data rows
+        // PHASE 2: Parse all data rows into raw numeric vectors
+        // The first_data_line may already contain the first row if read during header parsing
+        let data = Self::parse_data(&mut reader, &column_indices, first_data_line)?;
         
-        // Step 3: Build the final NodeValueData structure
-        Self::build_node_value_data(data, &column_indices, &column_names) // Convert raw data into structured NodeValue objects
+        // PHASE 3: Build the final structured NodeValueData
+        // Converts raw numeric data into properly typed and organized NodeValue structs
+        Self::build_node_value_data(data, &column_indices, &column_names)
     }
 
-    /// Parse header section to find column names and their indices
+    /// Parse the header section of a COMSOL text file to extract column information.
+    /// 
+    /// This function reads lines until it finds the first data line, collecting header
+    /// information along the way. COMSOL text files have headers starting with '%'.
+    /// The last header line before data contains the column names (and optional units).
+    /// 
+    /// # Arguments
+    /// * `reader` - Mutable reference to buffered reader (will consume header lines)
+    /// 
+    /// # Returns
+    /// A tuple containing:
+    /// * `ColumnIndices` - Mapping of columns to value types and dimensions
+    /// * `Vec<String>` - List of original column names in order
+    /// * `Option<String>` - First data line if encountered (to avoid re-reading)
+    /// 
+    /// # Errors
+    /// * Returns `ParseError::FormatError` if no headers found or invalid format
     fn parse_headers<R: BufRead>(reader: &mut R) -> Result<(ColumnIndices, Vec<String>, Option<String>), ParseError> {
-        let mut line = String::new(); // Buffer to read each line
-        let mut last_header_line = String::new(); // Store the last header line containing column names
+        // Buffer for reading each line from the file
+        let mut line = String::new();
         
-        // Read file line by line until we find data
+        // Store the last header line we encounter (contains column names)
+        let mut last_header_line = String::new();
+        
+        // Read file line by line until we find the first data line
         while reader.read_line(&mut line)? > 0 {
-            let trimmed = line.trim(); // Remove whitespace from line
+            // Remove leading/trailing whitespace for easier processing
+            let trimmed = line.trim();
             
-            if trimmed.starts_with('%') { // COMSOL header lines start with %
-                last_header_line = trimmed.trim_start_matches('%').trim().to_string(); // Remove % and store header content
-                line.clear(); // Clear buffer for next line
-            } else if !trimmed.is_empty() { // Found first non-empty, non-header line (data line)
-                let first_data_line = Some(trimmed.to_string()); // Save first data line to process later
-                let column_names = Self::parse_header_line(&last_header_line)?; // Extract column names from last header
-                let column_indices = Self::map_columns(&column_names)?; // Map column names to their types and indices
-                return Ok((column_indices, column_names, first_data_line)); // Return parsed header info
+            // Check if this is a header line (COMSOL headers start with '%')
+            if trimmed.starts_with('%') {
+                // Remove the '%' prefix and any extra whitespace, then save as last header
+                last_header_line = trimmed.trim_start_matches('%').trim().to_string();
+                
+                // Clear the line buffer for reuse in next iteration
+                line.clear();
+            } 
+            // Check if we found a non-empty, non-header line (this is data)
+            else if !trimmed.is_empty() {
+                // Save the first data line so we don't lose it
+                let first_data_line = Some(trimmed.to_string());
+                
+                // Parse column names from the last header line we saved
+                let column_names = Self::parse_header_line(&last_header_line)?;
+                
+                // Map column names to their types (displacement, stress, etc.) and indices
+                let column_indices = Self::map_columns(&column_names)?;
+                
+                // Return all header info plus the first data line
+                return Ok((column_indices, column_names, first_data_line));
             }
-            line.clear(); // Clear buffer for next iteration
+            
+            // Clear line buffer for next iteration
+            line.clear();
         }
         
-        // Handle case where file ends without data lines
+        // If we reach here, file ended without any data lines
+        // Check if we at least found a header
         if last_header_line.is_empty() {
-            return Err(ParseError::FormatError("No header found".to_string())); // No header found at all
+            return Err(ParseError::FormatError("No header found".to_string()));
         }
         
-        let column_names = Self::parse_header_line(&last_header_line)?; // Parse the header we found
-        let column_indices = Self::map_columns(&column_names)?; // Map columns even without data
+        // Parse the header we found even though there's no data
+        let column_names = Self::parse_header_line(&last_header_line)?;
+        let column_indices = Self::map_columns(&column_names)?;
         
-        Ok((column_indices, column_names, None)) // Return header info without first data line
+        // Return header info without a first data line
+        Ok((column_indices, column_names, None))
     }
 
-    /// Parse a single header line to extract column names
+    /// Parse a single header line to extract column names, filtering out unit specifications.
+    /// 
+    /// COMSOL text files may include unit specifications in parentheses, such as:
+    /// - Standalone: "displacement_x (m) displacement_y (m)"
+    /// - Inline: "stress_xx(Pa) stress_yy(Pa)"
+    /// 
+    /// This function extracts just the column names, converting them to lowercase
+    /// for case-insensitive matching.
+    /// 
+    /// # Arguments
+    /// * `header_line` - The header line with '%' already removed
+    /// 
+    /// # Returns
+    /// * `Ok(Vec<String>)` - List of column names in lowercase
+    /// 
+    /// # Example
+    /// Input: "Node displacement_x (m) displacement_y (m) stress_xx(Pa)"
+    /// Output: ["node", "displacement_x", "displacement_y", "stress_xx"]
     fn parse_header_line(header_line: &str) -> Result<Vec<String>, ParseError> {
+        // Collection to store the extracted column names
         let mut cols = Vec::new();
+        
+        // Create an iterator over whitespace-separated tokens with peek capability
         let mut it = header_line.split_whitespace().peekable();
 
+        // Process each token in the header line
         while let Some(tok) = it.next() {
-            // Skip standalone unit tokens like "(Pa)"
+            // Skip standalone unit tokens like "(Pa)" or "(m)"
+            // These are separate tokens that we don't want as column names
             if tok.starts_with('(') && tok.ends_with(')') {
                 continue;
             }
 
-            // Handle inline units like "stress_xx(Pa)" just in case
+            // Handle inline units like "stress_xx(Pa)" by splitting on '('
+            // Takes only the part before '(' as the column name
             let name = tok.split('(').next().unwrap_or("").trim().to_lowercase();
-            if name.is_empty() { continue; }
+            
+            // Skip empty names (can happen with malformed input)
+            if name.is_empty() { 
+                continue; 
+            }
 
-            // If the next token is a standalone units token, skip it
+            // Check if the next token is a standalone unit specification
+            // If so, consume it (skip it) so we don't process it as a column name
             if let Some(peek) = it.peek() {
                 if peek.starts_with('(') && peek.ends_with(')') {
-                    it.next();
+                    it.next(); // Consume the unit token
                 }
             }
 
+            // Add the extracted column name to our collection
             cols.push(name);
         }
+        
+        // Return the extracted column names
         Ok(cols)
     }
 
 
-    /// Map column names to their indices and determine column types
+    /// Map column names to their indices and determine physical value types and dimensions.
+    /// 
+    /// This function performs a two-pass analysis:
+    /// 1. Group columns by their base name (e.g., "displacement_x" → base: "displacement", component: "x")
+    /// 2. Determine the dimension based on number of components:
+    ///    - 1 component: Scalar value
+    ///    - 3 components: Vector (x, y, z)
+    ///    - 6 components: Tensor (xx, yy, zz, xy, xz, yz)
+    /// 
+    /// # Arguments
+    /// * `column_names` - Slice of column names from the header
+    /// 
+    /// # Returns
+    /// * `Ok(ColumnIndices)` - Mapping of columns to value types with dimensions
+    /// * `Err(ParseError)` - No recognized value columns found
+    /// 
+    /// # Example
+    /// Input: ["node", "displacement_x", "displacement_y", "displacement_z"]
+    /// Output: ColumnIndices with one entry: ([1,2,3], ValueType::Displacement, 3)
     fn map_columns(column_names: &[String]) -> Result<ColumnIndices, ParseError> {
-        let mut indices = ColumnIndices { // Initialize structure to hold column mapping
-            value_columns: Vec::new(), // Will store (column_indices, value_type, dimension) tuples
+        // Initialize the structure that will hold our column mapping
+        let mut indices = ColumnIndices {
+            // Will store tuples of (column_indices, value_type, dimension)
+            value_columns: Vec::new(),
         };
 
-        // First pass: identify value columns and their components
-        let mut value_groups: HashMap<String, Vec<(usize, String)>> = HashMap::new(); // Group components by base name
+        // PASS 1: Identify value columns and their components
+        // HashMap groups components by their base name
+        // Key: base name (e.g., "displacement"), Value: list of (column_index, component) pairs
+        let mut value_groups: HashMap<String, Vec<(usize, String)>> = HashMap::new();
         
-        for (idx, name) in column_names.iter().enumerate() { // Iterate through each column name with its index
-            // Check for vector components like "displacement_x", "stress_xx", etc.
-            if let Some((base_name, component)) = Self::parse_component_name(name) { // Try to split name into base + component
-                value_groups.entry(base_name).or_insert_with(Vec::new).push((idx, component)); // Group component with its base name
+        // Iterate through each column name with its position index
+        for (idx, name) in column_names.iter().enumerate() {
+            // Try to parse as a component name (e.g., "displacement_x" → ("displacement", "x"))
+            if let Some((base_name, component)) = Self::parse_component_name(name) {
+                // Add this component to the group for its base name
+                value_groups.entry(base_name).or_insert_with(Vec::new).push((idx, component));
             }
-            // Also check for simple names without components
-            else if ValueType::from_str_txt(name).is_some() { // Check if name is a recognized scalar value type
-                value_groups.entry(name.clone()).or_insert_with(Vec::new).push((idx, "scalar".to_string())); // Treat as scalar component
+            // Also check for simple scalar names without components (e.g., just "temperature")
+            else if ValueType::from_str_txt(name).is_some() {
+                // Treat as a scalar value with a pseudo-component named "scalar"
+                value_groups.entry(name.clone()).or_insert_with(Vec::new).push((idx, "scalar".to_string()));
+            }
+            // Note: Column names that don't match any value type are silently ignored
+            // (e.g., "node", "element", coordinate columns, etc.)
+        }
+
+        // PASS 2: Organize components and determine dimensions for each value type
+        for (base_name, mut components) in value_groups {
+            // Verify that the base name corresponds to a recognized value type
+            if let Some(vtype) = ValueType::from_str_txt(&base_name) {
+                // Sort components in standard order (x, y, z for vectors; xx, yy, zz, xy, xz, yz for tensors)
+                // This ensures consistent data layout regardless of column order in file
+                components.sort_by(|a, b| Self::component_order(&a.1).cmp(&Self::component_order(&b.1)));
+                
+                // Dimension is determined by the number of components:
+                // 1 = scalar, 3 = vector, 6 = tensor (symmetric)
+                let dim = components.len();
+                
+                // Extract just the column indices, discarding component names
+                let column_indices: Vec<usize> = components.into_iter().map(|(idx, _)| idx).collect();
+                
+                // Store the complete mapping for this value type
+                indices.value_columns.push((column_indices, vtype, dim));
             }
         }
 
-        // Second pass: organize components and determine dimensions
-        for (base_name, mut components) in value_groups { // Process each group of components
-            if let Some(vtype) = ValueType::from_str_txt(&base_name) { // Verify base name is a valid value type
-                // Sort components for consistent ordering (x, y, z for vectors; xx, yy, zz, xy, xz, yz for tensors)
-                components.sort_by(|a, b| Self::component_order(&a.1).cmp(&Self::component_order(&b.1))); // Sort by predefined component order
-                
-                let dim = components.len(); // Number of components determines dimension (1=scalar, 3=vector, 6=tensor)
-                let column_indices: Vec<usize> = components.into_iter().map(|(idx, _)| idx).collect(); // Extract just the column indices
-                
-                indices.value_columns.push((column_indices, vtype, dim)); // Store mapping for this value type
-            }
-        }
-
-        // Require at least one value column
+        // Validation: Ensure we found at least one valid value column
         if indices.value_columns.is_empty() {
-            return Err(ParseError::FormatError( // Error if no valid columns found
+            return Err(ParseError::FormatError(
                 "No recognized value columns found".to_string()
             ));
         }
 
-        Ok(indices) // Return the column mapping
+        // Return the complete column mapping
+        Ok(indices)
     }
 
-    /// Parse component names like "displacement_x" -> ("displacement", "x")
+    /// Parse component names with underscores into base name and component suffix.
+    /// 
+    /// COMSOL exports field components with naming conventions like:
+    /// - Vector components: "displacement_x", "velocity_y", "displacement_z"
+    /// - Tensor components: "stress_xx", "stress_yy", "strain_xy"
+    /// 
+    /// This function splits on the last underscore and validates that the base
+    /// name is a recognized value type.
+    /// 
+    /// # Arguments
+    /// * `name` - Column name to parse
+    /// 
+    /// # Returns
+    /// * `Some((base, component))` - If successfully parsed and base is valid
+    /// * `None` - If no underscore found or base name not recognized
+    /// 
+    /// # Examples
+    /// - "displacement_x" → Some(("displacement", "x"))
+    /// - "stress_xy" → Some(("stress", "xy"))
+    /// - "temperature" → None (no underscore)
+    /// - "unknown_x" → None (base not a recognized value type)
     fn parse_component_name(name: &str) -> Option<(String, String)> {
-        if let Some(pos) = name.rfind('_') { // Find last underscore in name
-            let base = &name[..pos]; // Everything before underscore is base name
-            let component = &name[pos + 1..]; // Everything after underscore is component
+        // Find the last underscore in the name (rightmost occurrence)
+        // This handles cases like "some_field_name_x" correctly
+        if let Some(pos) = name.rfind('_') {
+            // Split the name: everything before underscore is the base name
+            let base = &name[..pos];
             
-            // Check if the base name is a recognized value type
-            if ValueType::from_str_txt(base).is_some() { // Verify base is valid value type
-                return Some((base.to_string(), component.to_string())); // Return parsed components
+            // Everything after underscore is the component identifier (x, y, z, xx, xy, etc.)
+            let component = &name[pos + 1..];
+            
+            // Verify that the base name is a recognized physical value type
+            // (e.g., "displacement", "stress", "velocity", etc.)
+            if ValueType::from_str_txt(base).is_some() {
+                // Return the parsed components as owned strings
+                return Some((base.to_string(), component.to_string()));
             }
         }
-        None // Return None if parsing failed
-    }
-
-    /// Define component ordering for consistent arrangement
-    fn component_order(component: &str) -> usize {
-        match component { // Define standard ordering for components
-            "x" => 0, "y" => 1, "z" => 2, // Vector components
-            "xx" => 0, "yy" => 1, "zz" => 2, "xy" => 3, "xz" => 4, "yz" => 5, // Tensor components
-            "scalar" => 0, // Scalar component
-            _ => 999, // Unknown components go last
-        }
-    }
-
-    /// Parse all data rows (static data only)
-    fn parse_data<R: BufRead>(
-        reader: &mut R, // Buffered reader for file access
-        _indices: &ColumnIndices, // Column indices (not used in current implementation)
-        first_data_line: Option<String>, // First data line if already read during header parsing
-    ) -> Result<Vec<Vec<f64>>, ParseError> {
-        let mut data = Vec::new(); // Store all data rows as Vec<Vec<f64>>
-        let mut line = String::new(); // Buffer for reading lines
-
-        // Process first data line if we have one
-        if let Some(first_line) = first_data_line { // If we already read first data line during header parsing
-            let values: Result<Vec<f64>, _> = first_line // Parse first line into numbers
-                .split_whitespace() // Split by whitespace
-                .map(|s| s.parse().map_err(|e| // Convert each token to f64
-                    ParseError::NumberParseError(format!("Invalid number '{}': {}", s, e)) // Custom error for parse failures
-                ))
-                .collect(); // Collect all parsed numbers
-            data.push(values?); // Add first row to data collection
-        }
-
-        // Continue reading data lines
-        while reader.read_line(&mut line)? > 0 { // Read each remaining line
-            let trimmed = line.trim(); // Remove whitespace
-            
-            if trimmed.is_empty() || trimmed.starts_with('%') { // Skip empty lines and comments
-                line.clear(); // Clear buffer
-                continue; // Skip to next line
-            }
-
-            let values: Result<Vec<f64>, _> = trimmed // Parse current line into numbers
-                .split_whitespace() // Split by whitespace
-                .map(|s| s.parse().map_err(|e| // Convert each token to f64
-                    ParseError::NumberParseError(format!("Invalid number '{}': {}", s, e)) // Custom error for parse failures
-                ))
-                .collect(); // Collect all parsed numbers
-            
-            data.push(values?); // Add row to data collection
-            line.clear(); // Clear buffer for next iteration
-        }
-
-        if data.is_empty() { // Check if any data was found
-            return Err(ParseError::FormatError("No data rows found".to_string())); // Error if no data
-        }
-
-        Ok(data) // Return all parsed data rows
-    }
-
-    /// Build the final NodeValueData structure with NodeValue structs
-    fn build_node_value_data(
-        data: Vec<Vec<f64>>, // Raw numeric data from file
-        indices: &ColumnIndices, // Column mapping information
-        _column_names: &[String], // Original column names (not used)
-    ) -> Result<NodeValueData, ParseError> {
-        let num_nodes = data.len(); // Number of nodes equals number of data rows
         
-        if num_nodes == 0 { // Verify we have data to process
-            return Err(ParseError::FormatError("No data found".to_string())); // Error if no data
+        // Return None if no underscore found or base name not recognized
+        None
+    }
+
+    /// Define the standard ordering for field components.
+    /// 
+    /// This ensures components are always stored in a consistent order regardless
+    /// of how they appear in the COMSOL export file. This is important for:
+    /// - Consistent data layout across different files
+    /// - Proper interpretation of vector/tensor data
+    /// - Matching expected component order in downstream processing
+    /// 
+    /// # Component Order
+    /// - Vector: x=0, y=1, z=2
+    /// - Tensor (symmetric, Voigt notation): xx=0, yy=1, zz=2, xy=3, xz=4, yz=5
+    /// - Scalar: scalar=0
+    /// - Unknown: 999 (sorted last)
+    /// 
+    /// # Arguments
+    /// * `component` - Component identifier string (e.g., "x", "yy", "xy")
+    /// 
+    /// # Returns
+    /// * `usize` - Numeric order value for sorting
+    fn component_order(component: &str) -> usize {
+        match component {
+            // Vector components (standard 3D Cartesian)
+            "x" => 0,   // X-component
+            "y" => 1,   // Y-component
+            "z" => 2,   // Z-component
+            
+            // Symmetric tensor components in Voigt notation
+            // Normal stresses/strains
+            "xx" => 0,  // X-normal component
+            "yy" => 1,  // Y-normal component
+            "zz" => 2,  // Z-normal component
+            // Shear stresses/strains
+            "xy" => 3,  // XY-shear component
+            "xz" => 4,  // XZ-shear component
+            "yz" => 5,  // YZ-shear component
+            
+            // Scalar quantities (single value)
+            "scalar" => 0,
+            
+            // Unrecognized components get sorted to the end
+            _ => 999,
+        }
+    }
+
+    /// Parse all numeric data rows from the file.
+    /// 
+    /// This function reads all remaining lines after the headers and converts them
+    /// to vectors of f64 values. Each line becomes one row in the output matrix.
+    /// The function handles:
+    /// - Scientific notation (e.g., 1.23e-5)
+    /// - Standard decimal notation
+    /// - Whitespace-separated values
+    /// - Empty lines and comment lines (skipped)
+    /// 
+    /// # Arguments
+    /// * `reader` - Mutable reference to buffered reader (positioned after headers)
+    /// * `_indices` - Column indices structure (currently unused but kept for future extensions)
+    /// * `first_data_line` - Optional first data line already read during header parsing
+    /// 
+    /// # Returns
+    /// * `Ok(Vec<Vec<f64>>)` - Matrix of numeric data (rows × columns)
+    /// * `Err(ParseError)` - Number parsing error or no data found
+    /// 
+    /// # Note
+    /// Each inner Vec<f64> represents one node's data across all columns
+    fn parse_data<R: BufRead>(
+        reader: &mut R,
+        _indices: &ColumnIndices,
+        first_data_line: Option<String>,
+    ) -> Result<Vec<Vec<f64>>, ParseError> {
+        // Storage for all data rows (each row is a Vec<f64>)
+        let mut data = Vec::new();
+        
+        // Buffer for reading lines from the file
+        let mut line = String::new();
+
+        // Process the first data line if we already read it during header parsing
+        // This avoids losing the first row of data
+        if let Some(first_line) = first_data_line {
+            // Parse the first line: split by whitespace and convert each token to f64
+            let values: Result<Vec<f64>, _> = first_line
+                .split_whitespace()                     // Split on any whitespace
+                .map(|s| s.parse().map_err(|e|         // Try to parse each token as f64
+                    ParseError::NumberParseError(       // Convert parse error to our error type
+                        format!("Invalid number '{}': {}", s, e)
+                    )
+                ))
+                .collect();                             // Collect all Results into one Result<Vec<f64>>
+            
+            // Add the parsed first row to our data collection
+            // The ? operator will early-return if parsing failed
+            data.push(values?);
         }
 
-        let mut all_node_values = Vec::new(); // Collection of all NodeValue structs
-        let mut node_value_type_info = Vec::new(); // Metadata for each value type
-        let mut start_index = 0; // Track starting position for each value type in the collection
-
-        // Process each value type group
-        for (column_indices, vtype, dim) in &indices.value_columns { // Iterate through each identified value type
-            let mut type_node_values = Vec::new(); // NodeValues for current value type
+        // Continue reading remaining data lines from the file
+        while reader.read_line(&mut line)? > 0 {
+            // Remove leading/trailing whitespace
+            let trimmed = line.trim();
             
-            // For each node (row in data), create a NodeValue struct
-            for node_idx in 0..num_nodes { // Process each node/row
-                let row = &data[node_idx]; // Get data for current node
-                let mut values = Vec::new(); // Values for current node and value type
+            // Skip empty lines and comment lines (starting with '%')
+            if trimmed.is_empty() || trimmed.starts_with('%') {
+                line.clear(); // Clear buffer for next iteration
+                continue;
+            }
+
+            // Parse this line: split by whitespace and convert to f64
+            let values: Result<Vec<f64>, _> = trimmed
+                .split_whitespace()                     // Split on any whitespace
+                .map(|s| s.parse().map_err(|e|         // Try to parse each token as f64
+                    ParseError::NumberParseError(       // Convert parse error to our error type
+                        format!("Invalid number '{}': {}", s, e)
+                    )
+                ))
+                .collect();                             // Collect all Results into one Result<Vec<f64>>
+            
+            // Add the parsed row to our data collection
+            data.push(values?);
+            
+            // Clear line buffer for next iteration
+            line.clear();
+        }
+
+        // Validation: Ensure we found at least one data row
+        if data.is_empty() {
+            return Err(ParseError::FormatError("No data rows found".to_string()));
+        }
+
+        // Return the complete data matrix
+        Ok(data)
+    }
+
+    /// Build the final NodeValueData structure from raw numeric data.
+    /// 
+    /// This function transforms the raw data matrix into a structured format with:
+    /// - Individual NodeValue structs for each node and value type
+    /// - Metadata describing the organization and dimensions
+    /// - Proper indexing for efficient access
+    /// 
+    /// The output structure organizes data by value type (all displacement values
+    /// together, all stress values together, etc.) rather than by node. This
+    /// improves cache locality when processing all values of one type.
+    /// 
+    /// # Arguments
+    /// * `data` - Raw numeric data as a matrix (rows = nodes, columns = all fields)
+    /// * `indices` - Column mapping that identifies which columns belong to which value types
+    /// * `_column_names` - Original column names (currently unused)
+    /// 
+    /// # Returns
+    /// * `Ok(NodeValueData)` - Structured data with NodeValue objects and metadata
+    /// * `Err(ParseError)` - If no data found
+    /// 
+    /// # Data Layout
+    /// The resulting NodeValueData has all values organized as:
+    /// [displacement_node0, displacement_node1, ..., stress_node0, stress_node1, ...]
+    /// With metadata indicating where each value type's section begins.
+    fn build_node_value_data(
+        data: Vec<Vec<f64>>,
+        indices: &ColumnIndices,
+        _column_names: &[String],
+    ) -> Result<NodeValueData, ParseError> {
+        // Number of nodes equals the number of data rows
+        let num_nodes = data.len();
+        
+        // Validation: Ensure we have data to process
+        if num_nodes == 0 {
+            return Err(ParseError::FormatError("No data found".to_string()));
+        }
+
+        // Master collection of all NodeValue structs (organized by value type)
+        let mut all_node_values = Vec::new();
+        
+        // Metadata describing each value type's location and properties
+        let mut node_value_type_info = Vec::new();
+        
+        // Track where each value type's section starts in all_node_values
+        let mut start_index = 0;
+
+        // Process each value type (displacement, stress, velocity, etc.)
+        for (column_indices, vtype, dim) in &indices.value_columns {
+            // Temporary collection for this value type's NodeValue structs
+            let mut type_node_values = Vec::new();
+            
+            // Create one NodeValue struct for each node
+            for node_idx in 0..num_nodes {
+                // Get the data row for this node
+                let row = &data[node_idx];
                 
-                // Collect all components for this value type
-                for &col_idx in column_indices { // Iterate through columns for this value type
-                    if col_idx < row.len() { // Check if column exists in this row
-                        values.push(row[col_idx]); // Add actual value from data
+                // Collect the component values for this value type
+                let mut values = Vec::new();
+                
+                // Extract each component value from the appropriate columns
+                for &col_idx in column_indices {
+                    // Check if this column exists in the current row
+                    if col_idx < row.len() {
+                        // Use the actual value from the data
+                        values.push(row[col_idx]);
                     } else {
-                        values.push(0.0); // Default value if column missing
+                        // Use 0.0 as default if column is missing (shouldn't happen normally)
+                        values.push(0.0);
                     }
                 }
                 
-                // Create NodeValue struct
-                type_node_values.push(NodeValue { // Create new NodeValue for this node and value type
-                    id: node_idx, // Node identifier (row index)
-                    values, // Component values for this value type
+                // Create a NodeValue struct for this node and value type
+                type_node_values.push(NodeValue {
+                    id: node_idx,  // Node identifier (0-indexed row number)
+                    values,        // All component values for this value type
                 });
             }
             
-            if !type_node_values.is_empty() { // If we have valid NodeValues for this type
-                // Add metadata for this value type
-                node_value_type_info.push(NodeValueTypeInfo { // Create metadata for this value type
-                    dimension: *dim, // Physical dimension (1=scalar, 3=vector, 6=tensor)
-                    num_nodes: num_nodes, // Total number of nodes
-                    nodevalue_type: vtype.clone(), // Type of physical quantity
-                    num_nodevalue_type: 1, // Static analysis = 1 type per value
-                    start_index, // Starting position in all_node_values collection
+            // Only add this value type if we successfully created NodeValues for it
+            if !type_node_values.is_empty() {
+                // Create metadata describing this value type's properties and location
+                node_value_type_info.push(NodeValueTypeInfo {
+                    dimension: *dim,                // Number of components (1/3/6)
+                    num_nodes: num_nodes,           // Total number of nodes
+                    nodevalue_type: vtype.clone(),  // Type (Displacement, Stress, etc.)
+                    num_nodevalue_type: 1,          // Always 1 for static analysis
+                    start_index,                     // Where this type's data starts
                 });
                 
-                // Add all NodeValue structs for this type to the main collection
-                all_node_values.extend(type_node_values); // Add all NodeValues for this type
-                start_index = all_node_values.len(); // Update start index for next value type
+                // Add all NodeValues for this type to the master collection
+                all_node_values.extend(type_node_values);
+                
+                // Update start_index for the next value type
+                start_index = all_node_values.len();
             }
         }
 
-        Ok(NodeValueData { // Create final data structure
-            node_values: all_node_values, // All NodeValue structs organized by type
-            node_value_type_info, // Metadata describing the organization
+        // Create and return the final structured data
+        Ok(NodeValueData {
+            node_values: all_node_values,           // All NodeValue structs
+            node_value_type_info,                   // Metadata for each value type
         })
     }
 }
 
-/// Helper structure for column indices (simplified for static data)
+/// Internal structure for mapping column indices to physical value types.
+/// 
+/// This structure is created during header parsing and used during data parsing
+/// to correctly interpret which columns contain which physical quantities.
+/// 
+/// # Fields
+/// * `value_columns` - Vector of tuples, each containing:
+///   - `Vec<usize>` - Column indices for all components of this value type
+///   - `ValueType` - The physical quantity (Displacement, Stress, etc.)
+///   - `usize` - Dimension (number of components: 1=scalar, 3=vector, 6=tensor)
+/// 
+/// # Example
+/// For a file with columns: [Node, displacement_x, displacement_y, displacement_z, stress_xx]
+/// This would contain:
+/// - ([1, 2, 3], ValueType::Displacement, 3)
+/// - ([4], ValueType::Stress, 1)
 struct ColumnIndices {
-    value_columns: Vec<(Vec<usize>, ValueType, usize)>, // (column_indices, value_type, dimension) for each value type
+    value_columns: Vec<(Vec<usize>, ValueType, usize)>,
 }
 

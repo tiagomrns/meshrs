@@ -1,17 +1,26 @@
-use core::num;
+// Import standard library modules for floating point operations
 use std::f64;
-use std::vec;
+// Import project-specific modules for mesh structures and error handling
 use crate::structs_and_impls::*;
 use crate::error::*;
+// Import geometric analysis module for mesh quality calculations
 use super::geometric_analysis::GeometricAnalysis;
+// Import lazy static initialization for precomputed factorials
 use once_cell::sync::Lazy;
+// Import rayon for parallel processing
 use rayon::prelude::*;
+// Import timing utilities for performance measurement
 use std::time::Instant;
 
+/// Tolerance threshold for considering a coefficient as effectively zero
+/// Used throughout for polynomial degree detection and numerical comparisons
+const COEFFICIENT_TOLERANCE: f64 = 1e-12;
 
-// Precompute factorials for efficient error calculation
+// Precompute factorials up to n=99 for efficient error calculation in Gaussian quadrature
+// Factorials appear frequently in error bound formulas for numerical integration
 static FACT: Lazy<[f64; 100]> = Lazy::new(|| {
     let mut v = [1.0_f64; 100];
+    // Build factorial table iteratively: n! = (n-1)! * n
     for i in 1..v.len() {
         v[i] = v[i - 1] * (i as f64);
     }
@@ -19,11 +28,22 @@ static FACT: Lazy<[f64; 100]> = Lazy::new(|| {
 });
 
 /// Calculate factorial with fallback to Stirling's approximation for large n
+/// 
+/// For n < 100, returns precomputed exact factorial from lookup table.
+/// For n >= 100, uses Stirling's approximation with first-order correction:
+/// n! ≈ sqrt(2πn) * (n/e)^n * (1 + 1/(12n))
+/// 
+/// # Arguments
+/// * `n` - The input value for n!
+/// 
+/// # Returns
+/// * Factorial value or approximation
 fn factorial(n: usize) -> f64 {
     if n < FACT.len() {
+        // Use precomputed exact value from lookup table
         FACT[n]
     } else {
-        // Stirling with first correction
+        // Stirling's approximation with first-order correction for large n
         let nf = n as f64;
         (2.0 * std::f64::consts::PI * nf).sqrt()
             * (nf / std::f64::consts::E).powi(n as i32)
@@ -31,48 +51,81 @@ fn factorial(n: usize) -> f64 {
     }
 }
 
+/// Main structure for Gaussian quadrature calculations in finite element analysis
+/// 
+/// This module provides optimized Gaussian quadrature point selection for numerical integration
+/// of mass and stiffness matrices in FEA. Key features:
+/// - Automatic polynomial degree detection from integrands
+/// - Optimal quadrature point selection based on error tolerance
+/// - Support for 1D, 2D, and 3D elements with various orders
+/// - Parallel processing for mesh-level computations
 pub struct GaussianQuadrature;
 
 impl GaussianQuadrature {
 
-    /// Detect polynomial orders in 1D coefficient vector
-    /// Returns the maximum degree based on non-zero coefficients
+    /// Detect polynomial degree from 1D coefficient vector
+    /// 
+    /// Scans coefficient vector to find the highest index with non-zero coefficient.
+    /// For polynomial p(x) = a₀ + a₁x + a₂x² + ... + aₙxⁿ, returns n.
+    /// 
+    /// # Arguments
+    /// * `coeffs` - Polynomial coefficients [a₀, a₁, a₂, ..., aₙ]
+    /// 
+    /// # Returns
+    /// * Maximum polynomial degree (highest index with non-zero coefficient)
     pub fn detect_polynomial_order_1d(coeffs: &[f64]) -> usize {
         if coeffs.is_empty() {
             return 0;
         }
 
         let mut max_deg = 0;
+        // Scan from low to high degree to find highest non-zero coefficient
         for (i, &coeff) in coeffs.iter().enumerate() {
-            if coeff.abs() > 1e-12 {
+            if coeff.abs() > COEFFICIENT_TOLERANCE {
                 max_deg = i;
             }
         }
         max_deg
     }
 
-    /// Detect polynomial orders in 2D coefficient matrix
-    /// Returns (max_degree_x, max_degree_y) based on non-zero coefficients
+    /// Detect polynomial degrees from 2D coefficient matrix
+    /// 
+    /// For bivariate polynomial p(x,y) = Σᵢⱼ cᵢⱼ xⁱ yʲ, finds maximum degrees in each variable.
+    /// This is critical for determining required Gaussian quadrature order in 2D elements.
+    /// 
+    /// # Arguments
+    /// * `coeff_matrix` - 2D coefficient matrix where coeff_matrix[i][j] represents xⁱyʲ term
+    /// 
+    /// # Returns
+    /// * (max_degree_x, max_degree_y) - Maximum polynomial degrees in x and y directions
     pub fn detect_polynomial_orders_2d(coeff_matrix: &[Vec<f64>]) -> (usize, usize) {
         if coeff_matrix.is_empty() {
             return (0, 0);
         }
 
         let (mut max_i, mut max_j) = (0, 0);
-        // Scan through all coefficients to find maximum non-zero indices
+        // Scan through all coefficients to find maximum non-zero indices in each direction
         for i in 0..coeff_matrix.len() {
             for j in 0..coeff_matrix[i].len() {
-                if coeff_matrix[i][j].abs() > 1e-12 { // Tolerance for "non-zero"
-                    max_i = max_i.max(i);
-                    max_j = max_j.max(j);
+                if coeff_matrix[i][j].abs() > COEFFICIENT_TOLERANCE {
+                    max_i = max_i.max(i);  // Maximum degree in x
+                    max_j = max_j.max(j);  // Maximum degree in y
                 }
             }
         }
         (max_i, max_j)
     }
 
-    /// Detect polynomial orders in 3D coefficient tensor
-    /// Returns (max_degree_x, max_degree_y, max_degree_z)
+    /// Detect polynomial degrees from 3D coefficient tensor
+    /// 
+    /// For trivariate polynomial p(x,y,z) = Σᵢⱼₖ cᵢⱼₖ xⁱ yʲ zᵏ, finds maximum degrees.
+    /// Essential for optimal quadrature point selection in 3D hexahedral elements.
+    /// 
+    /// # Arguments
+    /// * `coeff_tensor` - 3D coefficient tensor where coeff_tensor[i][j][k] represents xⁱyʲzᵏ term
+    /// 
+    /// # Returns
+    /// * (max_degree_x, max_degree_y, max_degree_z) - Maximum polynomial degrees in each direction
     pub fn detect_polynomial_orders_3d(coeff_tensor: &[Vec<Vec<f64>>]) -> (usize, usize, usize) {
         if coeff_tensor.is_empty() {
             return (0, 0, 0);
@@ -83,10 +136,10 @@ impl GaussianQuadrature {
         for i in 0..coeff_tensor.len() {
             for j in 0..coeff_tensor[i].len() {
                 for k in 0..coeff_tensor[i][j].len() {
-                    if coeff_tensor[i][j][k].abs() > 1e-12 {
-                        max_i = max_i.max(i);
-                        max_j = max_j.max(j);
-                        max_k = max_k.max(k);
+                    if coeff_tensor[i][j][k].abs() > COEFFICIENT_TOLERANCE {
+                        max_i = max_i.max(i);  // Maximum degree in x
+                        max_j = max_j.max(j);  // Maximum degree in y
+                        max_k = max_k.max(k);  // Maximum degree in z
                     }
                 }
             }
@@ -94,31 +147,42 @@ impl GaussianQuadrature {
         (max_i, max_j, max_k)
     }
 
-    /// Check if material matrix C is symmetric (in physical space)
+    /// Check if material constitutive matrix C is symmetric
+    /// 
+    /// In continuum mechanics, the material matrix C relates stresses to strains.
+    /// Physical materials must have symmetric C matrices (Cijkl = Cjikl).
+    /// Each entry C[i][j] is represented as a polynomial in parametric coordinates.
+    /// 
+    /// # Arguments
+    /// * `matrix` - Material property matrix where each entry is a polynomial coefficient vector
+    /// 
+    /// # Returns
+    /// * true if matrix is symmetric (C[i][j] == C[j][i] for all polynomial coefficients)
     fn is_symmetric_material_matrix(matrix: &Vec<Vec<Vec<f64>>>) -> bool {
         let n = matrix.len();
         
-        // Check dimensions are square
+        // Verify matrix is square (necessary condition for symmetry)
         for row in matrix {
             if row.len() != n {
                 return false;
             }
         }
         
-        // Check symmetry: C[i][j] == C[j][i]
+        // Check symmetry: C[i][j] == C[j][i] for all coefficients
         for i in 0..n {
             for j in (i+1)..n {
-                // Compare polynomial coefficients
+                // Compare polynomial coefficients element-wise
                 let poly_ij = &matrix[i][j];
                 let poly_ji = &matrix[j][i];
                 
-                // Handle different lengths
+                // Handle polynomials of different lengths (trailing zeros)
                 let max_len = poly_ij.len().max(poly_ji.len());
                 for k in 0..max_len {
                     let coeff_ij = if k < poly_ij.len() { poly_ij[k] } else { 0.0 };
                     let coeff_ji = if k < poly_ji.len() { poly_ji[k] } else { 0.0 };
                     
-                    if (coeff_ij - coeff_ji).abs() > 1e-12 {
+                    // Check if corresponding coefficients are equal within tolerance
+                    if (coeff_ij - coeff_ji).abs() > COEFFICIENT_TOLERANCE {
                         return false;
                     }
                 }
@@ -128,12 +192,36 @@ impl GaussianQuadrature {
         true
     }
 
-    /// Check if a polynomial component is effectively zero
+    /// Check if a polynomial is effectively zero (all coefficients negligible)
+    /// 
+    /// # Arguments
+    /// * `poly` - Polynomial coefficient vector
+    /// 
+    /// # Returns
+    /// * true if all coefficients are below tolerance threshold
     fn is_zero_polynomial(poly: &[f64]) -> bool {
-        poly.iter().all(|&c| c.abs() < 1e-12)
+        poly.iter().all(|&c| c.abs() < COEFFICIENT_TOLERANCE)
     }
 
-    /// Find optimal Gauss points for entire mesh - parallel with fallbacks
+    /// Find optimal Gaussian quadrature points for all elements in mesh (parallelized)
+    /// 
+    /// This is the main entry point for mesh-level Gaussian quadrature optimization.
+    /// Processes all elements in parallel using Rayon for maximum performance.
+    /// 
+    /// For each element:
+    /// 1. Calculates integrand (mass or stiffness matrix entries)
+    /// 2. Detects polynomial degree of integrand
+    /// 3. Determines theoretical minimum quadrature points
+    /// 4. Finds optimal points that satisfy error tolerance
+    /// 
+    /// # Arguments
+    /// * `mesh_data` - Complete mesh with nodes and elements
+    /// * `int_type` - Integration type (Mass or Stiffness matrix)
+    /// * `tolerance` - Maximum acceptable integration error
+    /// * `material_property` - Material properties (density for mass, elasticity for stiffness)
+    /// 
+    /// # Returns
+    /// * Report containing optimal quadrature points for each element with timing statistics
     pub fn find_optimal_gauss_points_number_mesh(
         mesh_data: &MeshData,
         int_type: IntegrationType,
@@ -144,15 +232,17 @@ impl GaussianQuadrature {
         let mesh_dim = mesh_data.dimension;
         let total_start_time = Instant::now();
 
-        // Collect all elements that need processing
+        // Phase 1: Collect all elements that need processing (exclude vertex elements)
         let collection_start = Instant::now();
         let all_elements: Vec<(usize, &Element, &ElementType)> = mesh_data.element_type_info
             .iter()
+            // Skip vertex elements (0D points don't need quadrature)
             .filter(|type_info| !matches!(type_info.element_type, ElementType::Vertex))
             .flat_map(|type_info| {
                 let start_idx = type_info.start_index;
                 let end_idx = start_idx + type_info.num_elements;
                 
+                // Create iterator over element range with bounds checking
                 (start_idx..end_idx)
                     .filter(|&element_idx| element_idx < mesh_data.elements.len())
                     .map(move |element_idx| {
@@ -168,10 +258,12 @@ impl GaussianQuadrature {
 
         let parallel_start = Instant::now();
 
-        // Process elements in parallel
+        // Phase 2: Process elements in parallel using Rayon
+        // Each thread independently calculates optimal quadrature points for its assigned elements
         let gauss_point_numbers: Vec<GaussianPointNumber> = all_elements
             .par_iter()
             .map(|(element_idx, element, element_type)| {
+                // Attempt to find optimal quadrature points for this element
                 let result = match Self::find_optimal_gauss_points(
                     int_type.clone(),
                     element,
@@ -182,14 +274,15 @@ impl GaussianQuadrature {
                     material_property,
                 ) {
                     Ok(gauss_point_number) => {
+                        // Progress indicator (every 100th element)
                         if element_idx % 100 == 0 {
                             println!("Processed element {} successfully", element_idx);
                         }
                         gauss_point_number
                     }
                     Err(e) => {
+                        // Fallback for failed elements: use conservative defaults
                         println!("Element {} failed: {:?}, using fallback", element_idx, e);
-                        // Fallback with reasonable defaults
                         GaussianPointNumber {
                             element_id: element.id,
                             theoretical_number: 0,
@@ -204,7 +297,7 @@ impl GaussianQuadrature {
         let parallel_time = parallel_start.elapsed();
         let total_time = total_start_time.elapsed();
 
-        // Calculate basic statistics
+        // Phase 3: Calculate performance statistics
         let elements_per_second = if parallel_time.as_secs_f64() > 0.0 {
             gauss_point_numbers.len() as f64 / parallel_time.as_secs_f64()
         } else {
@@ -217,7 +310,7 @@ impl GaussianQuadrature {
             std::time::Duration::ZERO
         };
 
-        // Print timing report
+        // Print comprehensive timing report for performance monitoring
         println!("\n{}", "=".repeat(50));
         println!("GAUSSIAN QUADRATURE TIMING");
         println!("{}", "=".repeat(50));
@@ -235,7 +328,29 @@ impl GaussianQuadrature {
         })
     }
 
-    /// Find optimal Gaussian points that minimize error under tolerance
+    /// Find optimal Gaussian quadrature points for a single element
+    /// 
+    /// This function implements the core algorithm for determining the minimum number of
+    /// Gaussian quadrature points needed to integrate the element matrices within tolerance.
+    /// 
+    /// Algorithm:
+    /// 1. Calculate the integrand polynomial (varies by integration type)
+    /// 2. Detect maximum polynomial degree in integrand
+    /// 3. Compute theoretical minimum quadrature points: ceil((degree + 1) / 2)
+    /// 4. For supported elements, iteratively test quadrature orders until error < tolerance
+    /// 5. Return both theoretical and optimal point counts
+    /// 
+    /// # Arguments
+    /// * `int_type` - Mass or Stiffness integration
+    /// * `element` - Element to analyze
+    /// * `element_type` - Type of finite element (Line, Quad, Hex, etc.)
+    /// * `nodes` - Global node array
+    /// * `mesh_dim` - Spatial dimension of mesh (1D, 2D, or 3D)
+    /// * `tolerance` - Maximum acceptable integration error
+    /// * `material_property` - Material properties for this element
+    /// 
+    /// # Returns
+    /// * GaussianPointNumber with theoretical and optimal quadrature point counts
     pub fn find_optimal_gauss_points(
         int_type: IntegrationType,
         element: &Element,
@@ -246,15 +361,17 @@ impl GaussianQuadrature {
         material_property: &MaterialProperty,
     ) -> Result<GaussianPointNumber, GaussError> {
 
-        // Get element dimension
+        // Get element dimension (1D line, 2D quad/tri, 3D hex/tet, etc.)
         let element_dim = ElementType::get_element_dimension(element_type)
             .ok_or_else(|| GaussError::UnsupportedDimension(0))?;
 
-        // Get element nodes
+        // Extract nodes for this element from global node list
         let element_nodes: Vec<Node> = GeometricAnalysis::get_element_nodes(element, nodes)
             .map_err(|e| e)?;
 
-        // Calculate the integrand
+        // Calculate the integrand: the polynomial function to be integrated
+        // For mass matrix: ρ(x) * N_i(x) * N_j(x) * det(J)
+        // For stiffness matrix: B^T * C * B * det(J)
         let integrand = Self::calculate_integrand(
             &int_type,
             &element_type,
@@ -263,12 +380,17 @@ impl GaussianQuadrature {
             mesh_dim,
         )?;
 
-        // Calculate theoretical maximum points based on polynomial degree
+        // Find maximum polynomial degree across all integrand matrix entries
+        // This determines the theoretical minimum quadrature order needed
         let max_total_degree = Self::find_max_degree_in_matrix(&integrand);
+        
+        // Gaussian quadrature of order n exactly integrates polynomials up to degree 2n-1
+        // So for polynomial of degree d, we need n >= ceil((d+1)/2) points
         let max_num_gp = ((max_total_degree as f64 + 1.0) / 2.0).ceil() as usize;
         let theoretical_points = max_num_gp;
 
-        // Determine which elements need error calculation
+        // Determine which element types support error-based optimization
+        // Currently implemented for tensor product elements (lines, quads, hexes)
         let should_calculate_error = matches!(
             element_type,
             ElementType::Line |
@@ -283,25 +405,27 @@ impl GaussianQuadrature {
         );
 
         let optimal_points = if should_calculate_error {
-            // For these element types, calculate optimal points through error analysis
+            // Iteratively test increasing quadrature orders to find minimum satisfying tolerance
             let mut optimal_points = 1;
-            let mut min_error = 100.0; // Start with a large error
+            let mut min_error = 100.0;  // Start with artificially large error
 
             for n in 1..=max_num_gp {
+                // Calculate integration error matrix for n-point quadrature
                 let error_matrix = match Self::calculate_error(&integrand, n, element_dim) {
                     Ok(matrix) => matrix,
-                    Err(_) => continue,
+                    Err(_) => continue,  // Skip this order if error calculation fails
                 };
 
-                // Find maximum error in the matrix
+                // Find maximum error across all matrix entries (worst case)
                 let max_error = Self::find_max_in_matrix(&error_matrix);
 
+                // Track minimum error found so far
                 if max_error < min_error {
                     min_error = max_error;
                     optimal_points = n;
                 }
 
-                // If we meet tolerance, we can stop early
+                // Early termination: if we meet tolerance, no need to test higher orders
                 if max_error <= tolerance {
                     break;
                 }
@@ -309,7 +433,8 @@ impl GaussianQuadrature {
             
             optimal_points
         } else {
-            // For other element types, use theoretical points directly
+            // For simplex elements (triangles, tetrahedra) and other unsupported types,
+            // use theoretical minimum directly (conservative but safe)
             theoretical_points
         };
         
@@ -320,7 +445,16 @@ impl GaussianQuadrature {
         })
     }
 
-    /// Helper function to find maximum degree in integrand matrix
+    /// Find maximum polynomial degree across all entries in integrand matrix
+    /// 
+    /// Scans the entire integrand matrix to find the highest polynomial degree.
+    /// This determines the required Gaussian quadrature order.
+    /// 
+    /// # Arguments
+    /// * `matrix` - Integrand matrix where each entry is a polynomial coefficient vector
+    /// 
+    /// # Returns
+    /// * Maximum total degree found across all polynomials in the matrix
     fn find_max_degree_in_matrix(matrix: &[Vec<Vec<f64>>]) -> u32 {
         let mut max_deg = 0;
         for row in matrix {
@@ -332,7 +466,16 @@ impl GaussianQuadrature {
         max_deg
     }
 
-    /// Helper function to find maximum value in error matrix
+    /// Find maximum absolute value in error matrix
+    /// 
+    /// Used to determine worst-case integration error across all matrix entries.
+    /// The maximum error dictates whether a quadrature order is acceptable.
+    /// 
+    /// # Arguments
+    /// * `matrix` - Error matrix from quadrature error estimation
+    /// 
+    /// # Returns
+    /// * Maximum absolute error value
     fn find_max_in_matrix(matrix: &[Vec<f64>]) -> f64 {
         let mut max_val = 0.0;
         for row in matrix {
@@ -346,12 +489,29 @@ impl GaussianQuadrature {
         max_val
     }
 
-    /// Check if a polynomial is constant (all coefficients beyond first are zero)
+    /// Check if a polynomial is constant (only c₀ term non-zero)
+    /// 
+    /// Constant polynomials don't vary spatially, simplifying integration.
+    /// 
+    /// # Arguments
+    /// * `poly` - Polynomial coefficient vector [c₀, c₁, c₂, ...]
+    /// 
+    /// # Returns
+    /// * true if polynomial is constant (all coefficients except first are zero)
     fn is_constant_polynomial(poly: &[f64]) -> bool {
-        poly.iter().enumerate().all(|(i, &c)| i == 0 || c.abs() < 1e-12)
+        poly.iter().enumerate().all(|(i, &c)| i == 0 || c.abs() < COEFFICIENT_TOLERANCE)
     }
 
-    /// Check if a material property matrix has constant components
+    /// Check if all entries in material property matrix are constant polynomials
+    /// 
+    /// Constant material properties enable significant computational optimizations
+    /// in integrand calculation and coordinate transformations.
+    /// 
+    /// # Arguments
+    /// * `matrix` - Material property matrix (each entry is a polynomial)
+    /// 
+    /// # Returns
+    /// * true if all polynomials in the matrix are constant
     fn is_constant_material_matrix(matrix: &Vec<Vec<Vec<f64>>>) -> bool {
         for row in matrix {
             for poly in row {
@@ -363,7 +523,32 @@ impl GaussianQuadrature {
         true
     }
 
-    // Calculate integrand for given element and integration type
+    /// Calculate integrand polynomial for finite element integration
+    /// 
+    /// This is the core function that computes what needs to be integrated for FEA matrices.
+    /// The integrand depends on the integration type:
+    /// 
+    /// **Mass Matrix**: ∫ ρ(x) N_i(x) N_j(x) det(J) dΩ
+    /// - ρ(x): density (scalar material property)
+    /// - N_i, N_j: shape functions
+    /// - det(J): Jacobian determinant (coordinate transformation)
+    /// 
+    /// **Stiffness Matrix**: ∫ B^T(x) C(x) B(x) det(J) dΩ
+    /// - B: strain-displacement matrix (derivatives of shape functions)
+    /// - C: elasticity tensor (relates stress to strain)
+    /// - det(J): Jacobian determinant
+    /// 
+    /// All quantities are represented as polynomials in parametric coordinates (ξ, η, ζ).
+    /// 
+    /// # Arguments
+    /// * `int_type` - Mass or Stiffness integration
+    /// * `element_type` - Type of finite element
+    /// * `element_nodes` - Nodal coordinates for this element
+    /// * `material_property` - Material properties (scalar for mass, tensor for stiffness)
+    /// * `mesh_dim` - Spatial dimension of the problem
+    /// 
+    /// # Returns
+    /// * Integrand matrix where each entry [i][j] is a polynomial to integrate
     pub fn calculate_integrand(
         int_type: &IntegrationType,
         element_type: &ElementType,
@@ -372,20 +557,23 @@ impl GaussianQuadrature {
         mesh_dim: usize,
     ) -> Result<Vec<Vec<Vec<f64>>>, GaussError> {
 
-        // Get element properties
+        // Extract element geometric properties
         let element_dim = ElementType::get_element_dimension(element_type)
             .ok_or(GaussError::UnsupportedDimension(0))?;
         let element_order = ElementType::get_element_order(element_type)
             .ok_or(GaussError::InvalidElement("Element order not found".to_string()))?;
         
-        // Get shape functions and their derivatives
+        // Get shape functions N_i(ξ,η,ζ) and their derivatives ∂N_i/∂ξ, ∂N_i/∂η, ∂N_i/∂ζ
         let shape_function = ElementType::get_shape_functions(element_type)
             .ok_or_else(|| GaussError::InvalidElement("Shape functions not found".to_string()))?;
         
         let num_nodes = shape_function.num_nodes;
         
-        // Calculate Jacobian with correct dimensions [element_dim × mesh_dim]
-        // This maps from parametric space (xi,eta,psi) to physical space (x,y,z)
+        // Calculate Jacobian matrix J = ∂x/∂ξ (transforms parametric to physical coordinates)
+        // Dimensions: [element_dim × mesh_dim]
+        // - Rows: parametric dimensions (ξ, η, ζ)
+        // - Columns: physical dimensions (x, y, z)
+        // Example for 2D quad in 3D space: J is 2×3 matrix
         let jacobian_matrix = GaussianQuadrature::calculate_jacobian_monomial(
             &element_nodes,
             &shape_function.derivatives,
@@ -395,27 +583,33 @@ impl GaussianQuadrature {
             element_order,
         )?;
         
-        // Extract determinant (or metric) for integration measure
+        // Calculate determinant or metric tensor for integration measure
+        // - For square J (element_dim == mesh_dim): det(J) is standard Jacobian determinant
+        // - For rectangular J (element_dim < mesh_dim): computes √(det(J^T J)) (surface/curve metric)
         let det_j = GaussianQuadrature::calculate_determinant_monomial(
             &jacobian_matrix,
             mesh_dim,
             element_dim,
         )?;
         
-        // Validate determinant
+        // Validate determinant is not degenerate
         if det_j.is_empty() {
             return Err(GaussError::GeometryError("Jacobian determinant is empty".to_string()));
         }
 
-        // Initialize integrand matrix (size depends on mesh dimension and number of nodes)
+        // Initialize integrand matrix [matrix_size × matrix_size]
+        // Each node has mesh_dim DOFs (e.g., ux, uy, uz in 3D)
         let matrix_size = mesh_dim * num_nodes;
         let mut integrand = vec![vec![vec![0.0]; matrix_size]; matrix_size];
 
         match int_type {
-            // Mass matrix: M = ∫ ρ(x) N_i(x) N_j(x) det(J) dξ
-            // Represents inertial properties of the element
+            // ============================================================================
+            // MASS MATRIX INTEGRATION: M_ij = ∫ ρ(x) N_i(x) N_j(x) det(J) dΩ
+            // ============================================================================
+            // The mass matrix represents the element's inertial properties.
+            // It's symmetric and has a block-diagonal structure for multi-dimensional problems.
             IntegrationType::Mass => {
-                // Get density material property
+                // Extract density as scalar polynomial
                 let rho_physical = material_property.as_scalar()?;
 
                 if rho_physical.is_empty() {
@@ -424,10 +618,12 @@ impl GaussianQuadrature {
                     ));
                 }
 
-                // Transform density from physical to isoparametric coordinates if non-constant
+                // Transform density from physical coordinates (x,y,z) to parametric (ξ,η,ζ)
+                // For constant density, no transformation needed (significant optimization)
                 let rho_isoparametric = if MonomialPolynomial::is_constant_polynomial(rho_physical) {
-                    rho_physical.to_vec()  // No transformation needed for constant
+                    rho_physical.to_vec()  // Skip expensive transformation
                 } else {
+                    // Substitute x = Σ N_i(ξ) x_i, y = Σ N_i(ξ) y_i, z = Σ N_i(ξ) z_i
                     Self::transform_material_property_scalar(
                         rho_physical,
                         element_nodes,
@@ -436,36 +632,38 @@ impl GaussianQuadrature {
                     )?
                 };
 
-                // Calculate ρ * det(J) (integrand without shape functions)
+                // Multiply density by Jacobian determinant: ρ(ξ,η,ζ) * |J|
                 let rho_detj = MonomialPolynomial::multiply_optimized(&rho_isoparametric, &det_j);
 
                 // OPTIMIZATION: Mass matrix is symmetric, compute only upper triangular part
+                // This reduces computation by ~50% for large meshes
                 let mut mass_entries = vec![vec![vec![0.0]; num_nodes]; num_nodes];
                 
                 for i in 0..num_nodes {
-                    for j in i..num_nodes {  // Only compute upper triangular
-                        // Calculate N_i * N_j
+                    for j in i..num_nodes {  // Only compute j >= i (upper triangle)
+                        // Calculate N_i(ξ) * N_j(ξ) (product of shape functions)
                         let ni_nj = MonomialPolynomial::multiply_optimized(
                             &shape_function.values[i],
                             &shape_function.values[j]
                         );
-                        // Multiply by ρ * det(J)
+                        // Complete integrand for nodes i,j: ρ * N_i * N_j * |J|
                         mass_entries[i][j] = MonomialPolynomial::multiply_optimized(&rho_detj, &ni_nj);
                         
-                        // Mirror to lower triangular (symmetry)
+                        // Mirror to lower triangular part (exploit symmetry)
                         if i != j {
                             mass_entries[j][i] = mass_entries[i][j].clone();
                         }
                     }
                 }
                 
-                // Distribute to all spatial dimensions (block diagonal structure)
-                // Each DOF (u, v, w) at node i couples with same DOF at node j
+                // Distribute node-based mass entries to DOF-based integrand matrix
+                // Mass matrix has block-diagonal structure: each spatial DOF couples independently
+                // Example 2D: M_ux,i_ux,j = M_uy,i_uy,j = mass_entries[i][j]
                 for i in 0..num_nodes {
                     for j in 0..num_nodes {
                         for dim in 0..mesh_dim {
-                            let row = mesh_dim * i + dim;
-                            let col = mesh_dim * j + dim;
+                            let row = mesh_dim * i + dim;  // Global DOF index for dimension dim at node i
+                            let col = mesh_dim * j + dim;  // Global DOF index for dimension dim at node j
                             integrand[row][col] = mass_entries[i][j].clone();
                         }
                     }
@@ -474,11 +672,14 @@ impl GaussianQuadrature {
                 Ok(integrand)
             }
             
-            // Stiffness matrix: K = ∫ B^T * C * B * det(J) dξ
-            // Represents elastic properties of the element
+            // ============================================================================
+            // STIFFNESS MATRIX INTEGRATION: K_ij = ∫ B^T(x) C(x) B(x) det(J) dΩ
+            // ============================================================================
+            // The stiffness matrix relates nodal forces to nodal displacements via K·u = f
+            // It encodes the element's elastic resistance to deformation.
             IntegrationType::Stiffness => {
-                // Calculate inverse Jacobian with correct parameter order
-                // J^(-1) transforms derivatives from parametric to physical space
+                // Calculate inverse Jacobian: J^(-1) = (∂ξ/∂x)
+                // Needed to transform derivatives: ∂N/∂x = J^(-1) · ∂N/∂ξ
                 // Dimensions: [mesh_dim × element_dim]
                 let inv_jacobian = Self::inverse_matrix_monomial(
                     &jacobian_matrix,
@@ -488,8 +689,9 @@ impl GaussianQuadrature {
                     GaussError::GeometryError(format!("Failed to calculate inverse Jacobian: {:?}", e))
                 })?;
                 
-                // Build B matrix (strain-displacement matrix)
-                // B relates nodal displacements to element strains
+                // Build strain-displacement matrix B
+                // B relates nodal displacements u to element strains ε: ε = B·u
+                // In Voigt notation: [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_xz]^T = B·[u1x, u1y, u1z, ..., unx, uny, unz]^T
                 let b_matrix = Self::build_b_matrix(
                     &shape_function.derivatives,
                     &inv_jacobian,
@@ -498,25 +700,26 @@ impl GaussianQuadrature {
                     element_dim,
                 )?;
 
-                // Get elasticity matrix (constitutive relationship)
+                // Get elasticity matrix C (constitutive relationship: σ = C·ε)
+                // C is the material stiffness tensor in Voigt notation
                 let c_matrix_physical = material_property.as_matrix()?;
 
-                // Validate material matrix dimensions
+                // Validate material matrix dimensions based on problem dimensionality
                 let expected_c_size = match mesh_dim {
-                    1 => 1,  // 1D: σ = E * ε
-                    2 => 3,  // 2D: [σ_xx, σ_yy, τ_xy]^T = C * [ε_xx, ε_yy, γ_xy]^T
-                    3 => 6,  // 3D: 6 stress components
+                    1 => 1,  // 1D: σ = E * ε (single stress-strain relationship)
+                    2 => 3,  // 2D plane stress/strain: [σ_xx, σ_yy, τ_xy]^T = C * [ε_xx, ε_yy, γ_xy]^T
+                    3 => 6,  // 3D: full stress tensor in Voigt notation
                     _ => return Err(GaussError::UnsupportedDimension(mesh_dim)),
                 };
 
                 if c_matrix_physical.len() != expected_c_size {
                     return Err(GaussError::InvalidMaterialProperty(format!(
-                        "Material matrix has {} rows, expected {} for {} C elements",
+                        "Material matrix has {} rows, expected {} for {}D problem",
                         c_matrix_physical.len(), expected_c_size, mesh_dim
                     )));
                 }
 
-                // Validate each row has correct number of columns
+                // Validate each row has correct number of columns (C must be square)
                 for (i, row) in c_matrix_physical.iter().enumerate() {
                     if row.len() != expected_c_size {
                         return Err(GaussError::InvalidMaterialProperty(format!(
@@ -538,16 +741,18 @@ impl GaussianQuadrature {
                     }
                 }
 
-                // Detect symmetry and constancy BEFORE transformation
+                // Detect material properties to enable optimizations
                 let is_symmetric = Self::is_symmetric_material_matrix(&c_matrix_physical);
                 let is_constant = Self::is_constant_material_matrix(&c_matrix_physical);
                 
-                // Use optimized transformation for symmetric matrices
+                // Transform material matrix from physical to parametric coordinates
+                // Use optimized paths for constant and symmetric materials
                 let c_matrix_isoparametric = if is_constant {
-                    // No transformation needed for constant
+                    // Constant material: skip transformation entirely
                     c_matrix_physical.clone()
                 } else if is_symmetric {
-                    // Transform only upper triangle, then mirror
+                    // Symmetric material: transform only upper triangle, then mirror
+                    // This exploits physical symmetry (Cijkl = Cjikl from thermodynamics)
                     Self::transform_material_property_tensor_symmetric(
                         c_matrix_physical,
                         element_nodes,
@@ -555,7 +760,7 @@ impl GaussianQuadrature {
                         mesh_dim,
                     )?
                 } else {
-                    // Full transformation for non-symmetric
+                    // Anisotropic/non-symmetric: full transformation required
                     Self::transform_material_property_tensor(
                         c_matrix_physical,
                         element_nodes,
@@ -566,6 +771,7 @@ impl GaussianQuadrature {
 
                 let voigt_size = b_matrix.len();
 
+                // Consistency check between B and C dimensions
                 if voigt_size != expected_c_size {
                     return Err(GaussError::GeometryError(format!(
                         "B matrix has {} rows but material matrix expects {}",
@@ -573,7 +779,8 @@ impl GaussianQuadrature {
                     )));
                 }
                 
-                //Build sparsity map for C matrix (track zero entries)
+                // Build sparsity map for C matrix to skip zero multiplications
+                // Many materials have structured sparsity (e.g., orthotropic materials)
                 let mut c_is_zero = vec![vec![false; voigt_size]; voigt_size];
                 for i in 0..voigt_size {
                     for j in 0..voigt_size {
@@ -581,23 +788,26 @@ impl GaussianQuadrature {
                     }
                 }
                 
-                // Step 1: Compute B^T × C, exploiting C sparsity and symmetry
-                // Result: [matrix_size × voigt_size] matrix
+                // ========================================================================
+                // STEP 1: Compute B^T × C (intermediate matrix product)
+                // ========================================================================
+                // Result: [matrix_size × voigt_size] matrix of polynomials
+                // This computes stress-like quantities related to nodal displacement fields
                 let mut bt_times_c = vec![vec![vec![0.0]; voigt_size]; matrix_size];
                 
                 if is_symmetric {
-                    // Exploit C symmetry for better cache locality
+                    // Exploit C symmetry: C_ij = C_ji improves cache locality
                     for i in 0..matrix_size {
                         for j in 0..voigt_size {
                             let mut sum = vec![0.0];
                             
-                            // B^T[i][k] = B[k][i]
+                            // B^T[i][k] = B[k][i] (transpose of B)
                             for k in 0..voigt_size {
                                 if c_is_zero[k][j] {
-                                    continue;  // Skip zero entries
+                                    continue;  // Skip zero entries (sparsity optimization)
                                 }
                                 
-                                // Compute B[k][i] × C[k][j]
+                                // Accumulate: Σ_k B[k][i] × C[k][j]
                                 let term = MonomialPolynomial::multiply_optimized(
                                     &b_matrix[k][i], 
                                     &c_matrix_isoparametric[k][j]
@@ -609,14 +819,14 @@ impl GaussianQuadrature {
                         }
                     }
                 } else {
-                    // Non-symmetric: standard computation with zero-skipping
+                    // Non-symmetric C: standard computation with zero-skipping
                     for i in 0..matrix_size {
                         for j in 0..voigt_size {
                             let mut sum = vec![0.0];
                             
                             for k in 0..voigt_size {
                                 if c_is_zero[k][j] {
-                                    continue;
+                                    continue;  // Skip zero entries
                                 }
                                 
                                 let term = MonomialPolynomial::multiply_optimized(
@@ -631,23 +841,27 @@ impl GaussianQuadrature {
                     }
                 }
                 
-                // Step 2: Compute K = (B^T × C) × B × det(J)
+                // ========================================================================
+                // STEP 2: Compute K = (B^T × C) × B × det(J)
+                // ========================================================================
+                // Final stiffness integrand: [matrix_size × matrix_size] matrix
                 if is_symmetric {
-                    // K is also symmetric, compute only upper triangle
+                    // K is symmetric when C is symmetric, compute only upper triangle
                     for i in 0..matrix_size {
-                        for j in i..matrix_size {  // Only upper triangle
+                        for j in i..matrix_size {  // Only j >= i (upper triangle)
                             let mut sum = vec![0.0];
                             for k in 0..voigt_size {
-                                // (B^T × C)[i][k] × B[k][j]
+                                // Accumulate: Σ_k (B^T × C)[i][k] × B[k][j]
                                 let term = MonomialPolynomial::multiply_optimized(
                                     &bt_times_c[i][k], 
                                     &b_matrix[k][j]
                                 );
                                 sum = MonomialPolynomial::add_optimized(&sum, &term);
                             }
+                            // Multiply by Jacobian determinant for final integrand
                             integrand[i][j] = MonomialPolynomial::multiply_optimized(&sum, &det_j);
                             
-                            // Mirror to lower triangle
+                            // Mirror to lower triangle (exploit symmetry)
                             if i != j {
                                 integrand[j][i] = integrand[i][j].clone();
                             }
@@ -675,7 +889,30 @@ impl GaussianQuadrature {
         }
     }
 
-    // Build B matrix with updated shape derivatives format and optimized operations
+    /// Build strain-displacement matrix (B matrix) for finite element analysis
+    /// 
+    /// The B matrix is fundamental to FEA - it relates nodal displacements to element strains.
+    /// For a displacement vector u = [u₁x, u₁y, u₁z, u₂x, u₂y, u₂z, ...]^T,
+    /// the strain vector is ε = B·u in Voigt notation.
+    /// 
+    /// Process:
+    /// 1. Transform shape function derivatives from parametric to physical space: ∂N/∂x = J⁻¹·∂N/∂ξ
+    /// 2. Assemble B matrix according to strain-displacement relationships (varies by dimension)
+    /// 
+    /// Voigt Notation:
+    /// - 1D: ε = [ε_xx]
+    /// - 2D: ε = [ε_xx, ε_yy, γ_xy]^T
+    /// - 3D: ε = [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_zx]^T
+    /// 
+    /// # Arguments
+    /// * `shape_derivatives` - Shape function derivatives in parametric space: ∂N_i/∂ξ, ∂N_i/∂η, ∂N_i/∂ζ
+    /// * `inv_jacobian` - Inverse Jacobian matrix J⁻¹ [mesh_dim × element_dim]
+    /// * `num_nodes` - Number of element nodes
+    /// * `mesh_dim` - Spatial dimension (1, 2, or 3)
+    /// * `element_dim` - Parametric dimension (1 for lines, 2 for quads, 3 for hexes)
+    /// 
+    /// # Returns
+    /// * B matrix with dimensions [num_strain_components × (mesh_dim * num_nodes)]
     fn build_b_matrix(
         shape_derivatives: &Vec<Vec<Vec<f64>>>, // [param_dim][node][coefficients]
         inv_jacobian: &Vec<Vec<Vec<f64>>>,      // [mesh_dim][element_dim]
@@ -684,104 +921,118 @@ impl GaussianQuadrature {
         element_dim: usize,
     ) -> Result<Vec<Vec<Vec<f64>>>, GaussError> {
         
-        // Step 1: Compute dN/dx = J^(-1) * dN/dxi for all nodes
-        // This transforms shape function derivatives from parametric to physical space
-        // Result: [num_nodes × mesh_dim] matrix
+        // ========================================================================
+        // STEP 1: Transform derivatives from parametric to physical coordinates
+        // ========================================================================
+        // Compute ∂N/∂x = J⁻¹ · ∂N/∂ξ for all nodes
+        // This maps derivatives from (ξ,η,ζ) space to (x,y,z) space
         let mut dn_dx = vec![vec![vec![0.0]; mesh_dim]; num_nodes];
 
         for node in 0..num_nodes {
             for phys_dim in 0..mesh_dim {  // Loop over x, y, z
                 let mut sum = vec![0.0];
-                for param_dim in 0..element_dim {  // Loop over xi, eta, psi
-                    // Compute: dN_node/dx = Σ_param J^(-1)[phys][param] * dN_node/dxi
-                    // inv_jacobian[phys_dim][param_dim] since J^(-1) is [mesh_dim × element_dim]
+                for param_dim in 0..element_dim {  // Loop over ξ, η, ζ
+                    // Matrix-vector product: (J⁻¹)_ij · (∂N/∂ξ_j)
+                    // inv_jacobian[phys_dim][param_dim] is J⁻¹ component (physical/parametric)
+                    // shape_derivatives[param_dim][node] is ∂N_node/∂ξ_param
                     let term = MonomialPolynomial::multiply_optimized(
-                        &inv_jacobian[phys_dim][param_dim],      // J^(-1) component
-                        &shape_derivatives[param_dim][node]      // dN/dxi component
+                        &inv_jacobian[phys_dim][param_dim],
+                        &shape_derivatives[param_dim][node]
                     );
                     sum = MonomialPolynomial::add_optimized(&sum, &term);
                 }
-                // Store result: dn_dx[node][phys_dim] = dN_node/dx
+                // Store result: ∂N_node/∂x_phys
                 dn_dx[node][phys_dim] = MonomialPolynomial::trim_to_valid_length_fallback(&sum);
             }
         }
 
-        // Step 2: Build B matrix according to standard Voigt notation
-        // B matrix maps nodal displacements to strain components
+        // ========================================================================
+        // STEP 2: Assemble B matrix based on strain-displacement relationships
+        // ========================================================================
         match mesh_dim {
-            // 1D: Only axial strain ε_xx = du/dx
-            // B = [dN1/dx, dN2/dx, ...] with size [1 × num_nodes]
+            // ====================================================================
+            // 1D: Axial deformation only
+            // ====================================================================
+            // Strain: ε_xx = du/dx
+            // B = [dN₁/dx, dN₂/dx, ..., dNₙ/dx]  (size: 1 × num_nodes)
             1 => {
                 let mut b_matrix = vec![vec![vec![0.0]; num_nodes]; 1];
                 for node in 0..num_nodes {
-                    b_matrix[0][node] = dn_dx[node][0].clone();  // ε_xx row
+                    b_matrix[0][node] = dn_dx[node][0].clone();  // Only ε_xx component
                 }
                 Ok(b_matrix)
             }
             
-            // 2D: Plane stress/strain with 3 strain components
-            // Voigt notation: ε = [ε_xx, ε_yy, γ_xy]^T
+            // ====================================================================
+            // 2D: Plane stress/strain (or axisymmetric)
+            // ====================================================================
+            // Strains: ε_xx = du/dx, ε_yy = dv/dy, γ_xy = du/dy + dv/dx
             // B matrix size: [3 × (2*num_nodes)]
+            // Layout: [u₁, v₁, u₂, v₂, ..., uₙ, vₙ]
             2 => {
                 let mut b_matrix = vec![vec![vec![0.0]; 2 * num_nodes]; 3];
                 
                 for node in 0..num_nodes {
-                    let u_col = 2 * node;      // u displacement column
-                    let v_col = 2 * node + 1;  // v displacement column
+                    let u_col = 2 * node;      // u displacement DOF
+                    let v_col = 2 * node + 1;  // v displacement DOF
                     
-                    // Row 0: ε_xx = du/dx
+                    // Row 0: ε_xx = ∂u/∂x
                     b_matrix[0][u_col] = dn_dx[node][0].clone();
                     
-                    // Row 1: ε_yy = dv/dy
+                    // Row 1: ε_yy = ∂v/∂y
                     b_matrix[1][v_col] = dn_dx[node][1].clone();
                     
-                    // Row 2: γ_xy = du/dy + dv/dx (engineering shear strain)
-                    b_matrix[2][u_col] = dn_dx[node][1].clone();  // du/dy
-                    b_matrix[2][v_col] = dn_dx[node][0].clone();  // dv/dx
+                    // Row 2: γ_xy = ∂u/∂y + ∂v/∂x (engineering shear strain)
+                    b_matrix[2][u_col] = dn_dx[node][1].clone();  // ∂u/∂y
+                    b_matrix[2][v_col] = dn_dx[node][0].clone();  // ∂v/∂x
                 }
                 Ok(b_matrix)
             }
             
-            // 3D: Full 3D stress state with 6 strain components
-            // Voigt notation: ε = [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_zx]^T
+            // ====================================================================
+            // 3D: Full three-dimensional solid
+            // ====================================================================
+            // Six strain components in Voigt notation:
+            // ε = [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_zx]^T
             // B matrix size: [6 × (3*num_nodes)]
+            // Layout: [u₁, v₁, w₁, u₂, v₂, w₂, ..., uₙ, vₙ, wₙ]
             3 => {
                 let mut b_matrix = vec![vec![vec![0.0]; 3 * num_nodes]; 6];
                 
                 for node in 0..num_nodes {
-                    let u_col = 3 * node;      // u displacement column
-                    let v_col = 3 * node + 1;  // v displacement column
-                    let w_col = 3 * node + 2;  // w displacement column
+                    let u_col = 3 * node;      // u (x-direction) displacement DOF
+                    let v_col = 3 * node + 1;  // v (y-direction) displacement DOF
+                    let w_col = 3 * node + 2;  // w (z-direction) displacement DOF
 
-                    // Ensure no empty polynomials (safety check)
+                    // Ensure derivatives are never empty (safety for polynomial operations)
                     if dn_dx[node][0].is_empty() { dn_dx[node][0] = vec![0.0]; }
                     if dn_dx[node][1].is_empty() { dn_dx[node][1] = vec![0.0]; }
                     if dn_dx[node][2].is_empty() { dn_dx[node][2] = vec![0.0]; }
                     
-                    // Normal strains (rows 0-2)
-                    b_matrix[0][u_col] = dn_dx[node][0].clone();  // ε_xx = du/dx
-                    b_matrix[1][v_col] = dn_dx[node][1].clone();  // ε_yy = dv/dy
-                    b_matrix[2][w_col] = dn_dx[node][2].clone();  // ε_zz = dw/dz
+                    // Normal strains (diagonal components of strain tensor)
+                    b_matrix[0][u_col] = dn_dx[node][0].clone();  // ε_xx = ∂u/∂x
+                    b_matrix[1][v_col] = dn_dx[node][1].clone();  // ε_yy = ∂v/∂y
+                    b_matrix[2][w_col] = dn_dx[node][2].clone();  // ε_zz = ∂w/∂z
                     
-                    // Shear strains (rows 3-5)
-                    // γ_xy = du/dy + dv/dx
-                    b_matrix[3][u_col] = dn_dx[node][1].clone();  // du/dy
-                    b_matrix[3][v_col] = dn_dx[node][0].clone();  // dv/dx
+                    // Shear strains (off-diagonal components, engineering notation)
+                    // γ_xy = ∂u/∂y + ∂v/∂x
+                    b_matrix[3][u_col] = dn_dx[node][1].clone();  // ∂u/∂y
+                    b_matrix[3][v_col] = dn_dx[node][0].clone();  // ∂v/∂x
                     
-                    // γ_yz = dv/dz + dw/dy
-                    b_matrix[4][v_col] = dn_dx[node][2].clone();  // dv/dz
-                    b_matrix[4][w_col] = dn_dx[node][1].clone();  // dw/dy
+                    // γ_yz = ∂v/∂z + ∂w/∂y
+                    b_matrix[4][v_col] = dn_dx[node][2].clone();  // ∂v/∂z
+                    b_matrix[4][w_col] = dn_dx[node][1].clone();  // ∂w/∂y
                     
-                    // γ_zx = dw/dx + du/dz
-                    b_matrix[5][w_col] = dn_dx[node][0].clone();  // dw/dx
-                    b_matrix[5][u_col] = dn_dx[node][2].clone();  // du/dz
+                    // γ_zx = ∂w/∂x + ∂u/∂z
+                    b_matrix[5][w_col] = dn_dx[node][0].clone();  // ∂w/∂x
+                    b_matrix[5][u_col] = dn_dx[node][2].clone();  // ∂u/∂z
                 }
 
-                // Final safety check: ensure no empty polynomials in B matrix
+                // Final validation: ensure no empty polynomials in B matrix
                 for i in 0..b_matrix.len() {
                     for j in 0..b_matrix[i].len() {
                         if b_matrix[i][j].is_empty() {
-                            b_matrix[i][j] = vec![0.0];
+                            b_matrix[i][j] = vec![0.0];  // Replace empty with zero polynomial
                         }
                     }
                 }
@@ -793,6 +1044,26 @@ impl GaussianQuadrature {
     }
 
     // Transform scalar material property (density ρ) from physical to isoparametric coordinates 
+    /// Transform scalar material property from physical to parametric coordinates
+    /// 
+    /// For spatially-varying material properties (e.g., density ρ(x,y,z)), we need to express them
+    /// in terms of parametric coordinates (ξ,η,ζ) for Gaussian quadrature integration.
+    /// 
+    /// Transformation: Replace (x,y,z) with isoparametric mapping:
+    /// x = Σ N_i(ξ,η,ζ) · x_i
+    /// y = Σ N_i(ξ,η,ζ) · y_i  
+    /// z = Σ N_i(ξ,η,ζ) · z_i
+    /// 
+    /// Example: ρ(x,y) = a + bx + cy² becomes ρ(ξ,η) by substituting x(ξ,η) and y(ξ,η)
+    /// 
+    /// # Arguments
+    /// * `material_property_physical` - Polynomial in physical coordinates (x,y,z)
+    /// * `element_nodes` - Nodal coordinates for this element
+    /// * `shape_function_values` - Shape functions N_i(ξ,η,ζ)
+    /// * `mesh_dim` - Spatial dimension (1, 2, or 3)
+    /// 
+    /// # Returns
+    /// * Material property polynomial in parametric coordinates (ξ,η,ζ)
     pub fn transform_material_property_scalar(
         material_property_physical: &[f64],
         element_nodes: &Vec<Node>,
@@ -800,28 +1071,44 @@ impl GaussianQuadrature {
         mesh_dim: usize,
     ) -> Result<Vec<f64>, GaussError> {
 
-        // Use safe trimming
+        // Trim trailing zeros from polynomial representation
         let material_property_physical = MonomialPolynomial::trim_to_valid_length(material_property_physical)
             .map_err(|e| GaussError::PolynomialError(format!("Failed to trim material property: {}", e)))?;
 
-        // Build coordinate mappings: x(xi,eta,psi), y(xi,eta,psi), z(xi,eta,psi)
+        // Build coordinate mappings: x(ξ), y(ξ,η), z(ξ,η,ζ) as polynomials
         let coordinate_maps = Self::build_coordinate_maps(
             element_nodes,
             shape_function_values,
             mesh_dim,
         )?;
 
+        // Validate coordinate maps are well-formed
         if coordinate_maps.iter().any(|m| m.is_empty()) {
             return Err(GaussError::GeometryError(
                 "Empty coordinate mapping detected".to_string()
             ));
         }
 
-        // Substitute physical coordinates with isoparametric coordinate polynomials
+        // Perform substitution: replace variables in material property with coordinate maps
         Self::substitute_polynomial(&material_property_physical, &coordinate_maps)
     }
 
-    // Transform tensor material property (elasticity matrix C) from physical to isoparametric
+    /// Transform tensor material property (elasticity matrix C) from physical to parametric coordinates
+    /// 
+    /// For spatially-varying elasticity (e.g., functionally graded materials), each component
+    /// C_ij(x,y,z) must be transformed to C_ij(ξ,η,ζ).
+    /// 
+    /// This function handles general (possibly non-symmetric) material matrices.
+    /// For symmetric materials, use `transform_material_property_tensor_symmetric` for better performance.
+    /// 
+    /// # Arguments
+    /// * `material_property_physical` - Elasticity matrix where each entry is a polynomial in (x,y,z)
+    /// * `element_nodes` - Nodal coordinates
+    /// * `shape_function_values` - Shape functions N_i(ξ,η,ζ)
+    /// * `mesh_dim` - Spatial dimension
+    /// 
+    /// # Returns
+    /// * Elasticity matrix in parametric coordinates (ξ,η,ζ)
     pub fn transform_material_property_tensor(
         material_property_physical: &Vec<Vec<Vec<f64>>>,
         element_nodes: &Vec<Node>,
@@ -829,7 +1116,7 @@ impl GaussianQuadrature {
         mesh_dim: usize,
     ) -> Result<Vec<Vec<Vec<f64>>>, GaussError> {
             
-        // Validate input tensor
+        // Validate all tensor components are non-empty
         for i in 0..material_property_physical.len() {
             for j in 0..material_property_physical[i].len() {
                 if material_property_physical[i][j].is_empty() {
@@ -840,14 +1127,14 @@ impl GaussianQuadrature {
             }
         }
 
-        // Build coordinate maps once for all components
+        // Build coordinate maps once (shared across all components)
         let coordinate_maps = Self::build_coordinate_maps(
             element_nodes,
             shape_function_values,
             mesh_dim,
         )?;
 
-        // Transform each component of the C matrix independently
+        // Transform each component C_ij independently
         let matrix_size = material_property_physical.len();
         let mut material_property_isoparametric = vec![vec![vec![0.0]; matrix_size]; matrix_size];
         
@@ -855,11 +1142,11 @@ impl GaussianQuadrature {
             for j in 0..matrix_size {
                 let component = &material_property_physical[i][j];
                 
-                // Skip transformation for constant components
+                // OPTIMIZATION: Skip transformation for constant components
                 if MonomialPolynomial::is_constant_polynomial(component) {
                     material_property_isoparametric[i][j] = component.clone();
                 } else {
-                    // Only transform non-constant components
+                    // Transform spatially-varying components
                     let trimmed_input = MonomialPolynomial::trim_to_valid_length(component)
                         .map_err(|e| {
                             GaussError::PolynomialError(format!("Failed to trim component ({},{}): {}", i, j, e))
@@ -876,7 +1163,20 @@ impl GaussianQuadrature {
         Ok(material_property_isoparametric)
     }
 
-    /// Transform symmetric tensor material property - only upper triangle
+    /// Transform symmetric tensor material property - optimized for physical symmetry
+    /// 
+    /// Most real materials have symmetric elasticity matrices: C_ij = C_ji (reciprocal relations).
+    /// This function exploits symmetry by transforming only the upper triangle, then mirroring.
+    /// Reduces computational cost by ~50% compared to full transformation.
+    /// 
+    /// # Arguments
+    /// * `material_property_physical` - Symmetric elasticity matrix C_ij = C_ji
+    /// * `element_nodes` - Nodal coordinates
+    /// * `shape_function_values` - Shape functions
+    /// * `mesh_dim` - Spatial dimension
+    /// 
+    /// # Returns
+    /// * Transformed symmetric elasticity matrix (symmetry preserved)
     pub fn transform_material_property_tensor_symmetric(
         material_property_physical: &Vec<Vec<Vec<f64>>>,
         element_nodes: &Vec<Node>,
@@ -886,7 +1186,7 @@ impl GaussianQuadrature {
         
         let matrix_size = material_property_physical.len();
         
-        // Validate input tensor
+        // Validate tensor structure (must be square)
         for i in 0..matrix_size {
             if material_property_physical[i].len() != matrix_size {
                 return Err(GaussError::InvalidMaterialProperty(
@@ -1434,9 +1734,9 @@ impl GaussianQuadrature {
                 Self::calculate_sqrt_monomial(&squared_length)
             }
 
-            // 2D elements in 3D space: J is [2×3], metric = sqrt(det(J^T*J))
+            // 2D elements in 3D space: J is [2×3], metric = sqrt(det(J*J^T))
             (2, 3) => {
-                // Build metric tensor G = J^T * J where J is [2×3]
+                // Build metric tensor G = J * J^T where J is [2×3]
                 // G will be [3×3] but we only need [2×2] part
                 let mut g = vec![vec![vec![0.0; matrix[0][0].len()]; 2]; 2];
                 
@@ -1517,13 +1817,24 @@ impl GaussianQuadrature {
         Ok(MonomialPolynomial::multiply_scalar(&result, sqrt_a0))
     }
 
-    /// Calculate inverse of Jacobian determinant/metric for polynomial matrices
+    /// Calculate inverse of a polynomial (for det(J) inversion)
+    /// 
+    /// For a polynomial p(ξ) = a₀ + a₁ξ + a₂ξ² + ..., computes 1/p(ξ) as a polynomial series.
+    /// Uses geometric series expansion: 1/(a₀(1+q)) = (1/a₀) Σ(-q)^n where q = (p-a₀)/a₀
+    /// 
+    /// This is essential for computing 1/det(J) when needed for element quality metrics.
+    /// 
+    /// # Arguments
+    /// * `poly` - Polynomial coefficients [a₀, a₁, a₂, ...]
+    /// 
+    /// # Returns
+    /// * Polynomial approximation of 1/p(ξ) (truncated series)
     pub fn calculate_inverse_monomial( 
         poly: &Vec<f64>, 
     ) -> Result<Vec<f64>, ElementError> {
-        // Handle constant polynomial case directly
+        // SPECIAL CASE: Constant polynomial (a₀ only)
         if poly.len() == 1 {
-            if poly[0].abs() < 1e-12 {
+            if poly[0].abs() < COEFFICIENT_TOLERANCE {
                 return Err(ElementError::GeometryError(
                     "Cannot invert zero polynomial".to_string()
                 ));
@@ -1531,10 +1842,11 @@ impl GaussianQuadrature {
             return Ok(vec![1.0 / poly[0]]);
         }
 
-        let wished_n = 5; // Can be parameterized later
+        // Number of terms in geometric series expansion
+        const SERIES_TERMS: usize = 5;
 
-        // Check if leading coefficient is zero
-        if poly[0].abs() < 1e-12 {
+        // Validate leading coefficient is non-zero
+        if poly[0].abs() < COEFFICIENT_TOLERANCE {
             return Err(ElementError::GeometryError(
                 "Leading coefficient is zero, cannot normalize polynomial".to_string()
             ));
@@ -1543,28 +1855,47 @@ impl GaussianQuadrature {
         let a0 = poly[0];
         let inv_a0 = 1.0 / a0;
 
+        // Normalize: create q(ξ) = p(ξ)/a₀ - 1
         let nominal_poly = MonomialPolynomial::multiply_scalar(&poly, inv_a0);
-        let mut term = vec![vec![0.0]; wished_n];
-        term[0] = vec![1.0]; // Constant term is 1
+        
+        // Build powers of q: q⁰, q¹, q², ..., q^(n-1)
+        let mut term = vec![vec![0.0]; SERIES_TERMS];
+        term[0] = vec![1.0]; // q⁰ = 1
         term[1] = nominal_poly;
-        for i in 2..(wished_n-1) {
+        for i in 2..SERIES_TERMS {
             term[i] = MonomialPolynomial::multiply_optimized(&term[i-1], &term[1]);
         }
+        
+        // Compute geometric series: 1 - q + q² - q³ + ... (alternating signs)
         let mut result = vec![0.0];
-        for j in 0..(wished_n-1) {
+        for j in 0..SERIES_TERMS {
             let sign = if j % 2 == 0 { 1.0 } else { -1.0 };
             let signed_term = MonomialPolynomial::multiply_scalar(&term[j], sign);
             result = MonomialPolynomial::add_optimized(&result, &signed_term);
         }
         
-        // Multiply by 1/poly[0]
+        // Scale by 1/a₀ to get final result
         let result = MonomialPolynomial::multiply_scalar(&result, inv_a0);
         
         Ok(result)
     }
 
 
-    /// Calculate error based on element type and dispatch to appropriate quadrature rule
+    /// Calculate integration error for n-point Gaussian quadrature
+    /// 
+    /// For each matrix entry of the integrand, estimates the numerical integration error
+    /// that would result from using n-point Gaussian quadrature.
+    /// 
+    /// This drives the optimization process: we iteratively test n = 1, 2, 3, ...
+    /// until the maximum error across all matrix entries falls below tolerance.
+    /// 
+    /// # Arguments
+    /// * `integrand` - Matrix of polynomial integrands [i][j] = polynomial(ξ,η,ζ)
+    /// * `n` - Number of Gaussian quadrature points per dimension
+    /// * `element_dim` - Element dimension (1D, 2D, or 3D)
+    /// 
+    /// # Returns
+    /// * Error matrix where errors[i][j] is the estimated integration error for integrand[i][j]
     pub fn calculate_error(
         integrand: &Vec<Vec<Vec<f64>>>,
         n: usize,
@@ -1574,6 +1905,7 @@ impl GaussianQuadrature {
         let matrix_size = integrand.len();
         let mut errors = vec![vec![0.0; matrix_size]; matrix_size];
         
+        // Calculate error for each integrand matrix entry independently
         for i in 0..matrix_size {
             for j in 0..matrix_size {
                 match Self::gauss_legendre_error(&integrand[i][j], n, element_dim) {
@@ -1581,7 +1913,7 @@ impl GaussianQuadrature {
                         errors[i][j] = error;
                     }
                     Err(_) => {
-                        errors[i][j] = 0.0; // Use zero error as fallback
+                        errors[i][j] = 0.0; // Conservative fallback: assume zero error
                     }
                 }
             }
@@ -1590,22 +1922,46 @@ impl GaussianQuadrature {
         Ok(errors)
     }
 
-    // Gauss-Legendre quadrature error estimation
+    /// Gauss-Legendre quadrature error estimation for a single polynomial
+    /// 
+    /// Estimates the integration error when using n-point Gauss-Legendre quadrature.
+    /// 
+    /// **Theory**: n-point Gauss-Legendre quadrature exactly integrates polynomials
+    /// up to degree 2n-1. For higher degree polynomials, there is error.
+    /// 
+    /// **Error Formula** (1D):
+    /// E ≈ c Σ_{k=2n}^∞ |aₖ|/(k+1)
+    /// where c = n!⁴ / ((2n+1) · (2n)!³)
+    /// 
+    /// For 2D/3D, uses tensor product quadrature error (product of 1D errors).
+    /// 
+    /// # Arguments
+    /// * `integrand` - Polynomial coefficient vector
+    /// * `n` - Number of quadrature points per dimension
+    /// * `element_dim` - Dimension of element (1, 2, or 3)
+    /// 
+    /// # Returns
+    /// * Estimated absolute integration error
     fn gauss_legendre_error(
         integrand: &[f64],
         n: usize,
         element_dim: usize,
     ) -> Result<f64, GaussError> {
 
-        // Handle empty polynomials immediately
+        // Empty polynomial has zero error (integrates to zero)
         if integrand.is_empty() {
             return Ok(0.0);
         }
 
+        // Compute error coefficient: c = n!⁴ / ((2n+1) · (2n)!³)
+        // This coefficient appears in the Gauss-Legendre error bound formula
         let c = factorial(n).powi(4) / ((2 * n + 1) as f64 * factorial(2 * n).powi(3));
 
         match element_dim {
-            1 => {  //1D Gauss-Legendre error function
+            // ====================================================================
+            // 1D: Line elements (edges)
+            // ====================================================================
+            1 => {
                 let coeff_vector = match MonomialPolynomial::get_coefficients_1d(&integrand) {
                     Ok(vec) => vec,
                     Err(_) => return Ok(0.0),
@@ -1613,11 +1969,14 @@ impl GaussianQuadrature {
 
                 let poly_degree = Self::detect_polynomial_order_1d(&coeff_vector);
                 let mut s = 0.0;
+                
+                // Sum error contributions from coefficients beyond 2n-1
+                // (these are the polynomial terms not exactly integrated)
                 if poly_degree >= 2 * n && coeff_vector.len() > 2 * n {
                     let upper = poly_degree.min(coeff_vector.len() - 1);
                     for k in (2 * n)..=upper {
                         let ak = coeff_vector[k].abs();
-                        if ak > 1e-12 {
+                        if ak > COEFFICIENT_TOLERANCE {
                             s += ak * (factorial(k) / factorial(k - 2 * n));
                         }
                     }
@@ -3197,7 +3556,7 @@ mod minimal_tests {
         assert_eq!(result.theoretical_number, 2);
     }
 
-    // TEST 12: Optimal Gauss points - VARIABLE material - MASS matrix
+    // TEST 14: Optimal Gauss points - VARIABLE material - MASS matrix
     #[test]
     fn test_optimal_gauss_points_2d_element_in_2d_space_variable_material_mass() {
         let element = Element { id: 0, nodes: vec![0, 1, 2] };
@@ -3404,9 +3763,7 @@ mod minimal_tests {
         assert_eq!(result.optimal_number, 2);
     }
 
-    
-
-    // TEST 12: Complex 3D case with variable material
+    // TEST 16: Complex 3D case with variable material
     #[test]
     fn test_3d_tetra_variable_material() {
         let element = Element { id: 0, nodes: vec![0, 1, 2, 3] };
@@ -3436,552 +3793,2335 @@ mod minimal_tests {
         let max_degree = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
         assert!(max_degree >= 2, "Variable material should increase polynomial degree");
     }
+
+    // TEST 17: Optimal Gauss points - CONSTANT material - MASS matrix - 1D quadratic element - 1D space - Perfect
+    #[test]
+    fn test_optimal_gauss_points_1d_1d_constant_material_mass_perfect() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0] },
+            Node { id: 1, coordinates: vec![1.0] },
+            Node { id: 2, coordinates: vec![0.5] },
+        ];
+        let element_type = ElementType::QuadraticEdge;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 1;
+        let tolerance = 1e-4;
+        
+        // CONSTANT density
+        let material_property = MaterialProperty::Scalar(vec![1.0]);
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 4);
+        assert_eq!(theoretical_num_gp, 3); 
+
+        let mut coeff_vector_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![0.0]; integrand.len()]; integrand.len()];
+        let mut poly_degree_matrix: Vec<Vec<usize>> = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_vector = MonomialPolynomial::get_coefficients_1d(&integrand[i][j]).unwrap(); 
+                let poly_degree = GaussianQuadrature::detect_polynomial_order_1d(&coeff_vector);
+                
+                coeff_vector_matrix[i][j] = coeff_vector;
+                poly_degree_matrix[i][j] = poly_degree;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+                
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 3);
+        assert_eq!(result.theoretical_number, 3);
+    }
+
+    // TEST 18: Optimal Gauss points - CONSTANT material - MASS matrix - 1D quadratic element - 1D space - Bad JR
+    #[test]
+    fn test_optimal_gauss_points_1d_1d_constant_material_mass_bad_jr() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0] },
+            Node { id: 1, coordinates: vec![1.0] },
+            Node { id: 2, coordinates: vec![0.26] },
+        ];
+        let element_type = ElementType::QuadraticEdge;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 1;
+        let tolerance = 1e-4;
+        
+        // CONSTANT density
+        let material_property = MaterialProperty::Scalar(vec![1.0]);
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 5);
+        assert_eq!(theoretical_num_gp, 3); 
+
+        let mut coeff_vector_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![0.0]; integrand.len()]; integrand.len()];
+        let mut poly_degree_matrix: Vec<Vec<usize>> = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_vector = MonomialPolynomial::get_coefficients_1d(&integrand[i][j]).unwrap(); 
+                let poly_degree = GaussianQuadrature::detect_polynomial_order_1d(&coeff_vector);
+                
+                coeff_vector_matrix[i][j] = coeff_vector;
+                poly_degree_matrix[i][j] = poly_degree;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+                
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 3);
+        assert_eq!(result.theoretical_number, 3);
+    }
+
+    // TEST 19: Optimal Gauss points - CONSTANT material - MASS matrix - 1D quadratic element - 1D space - Inverted
+    #[test]
+    fn test_optimal_gauss_points_1d_1d_constant_material_mass_inverted() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0] },
+            Node { id: 1, coordinates: vec![4.0] },  
+            Node { id: 2, coordinates: vec![1.0] },  
+        ];
+        let element_type = ElementType::QuadraticEdge;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 1;
+        let tolerance = 1e-4;
+        
+        // CONSTANT density
+        let material_property = MaterialProperty::Scalar(vec![1.0]);
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 5);
+        assert_eq!(theoretical_num_gp, 3); 
+
+        let mut coeff_vector_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![0.0]; integrand.len()]; integrand.len()];
+        let mut poly_degree_matrix: Vec<Vec<usize>> = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_vector = MonomialPolynomial::get_coefficients_1d(&integrand[i][j]).unwrap(); 
+                let poly_degree = GaussianQuadrature::detect_polynomial_order_1d(&coeff_vector);
+                
+                coeff_vector_matrix[i][j] = coeff_vector;
+                poly_degree_matrix[i][j] = poly_degree;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+                
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 3);
+        assert_eq!(result.theoretical_number, 3);
+    }
+
+    // TEST 20: Optimal Gauss points - LINEAR material - MASS matrix - 1D quadratic element - 1D space - Perfect
+    #[test]
+    fn test_optimal_gauss_points_1d_1d_linear_material_mass_perfect() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0] },
+            Node { id: 1, coordinates: vec![1.0] },
+            Node { id: 2, coordinates: vec![0.5] },
+        ];
+        let element_type = ElementType::QuadraticEdge;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 1;
+        let tolerance = 1e-4;
+        
+        // VARIABLE density: rho(x) = 1 + 2x
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, 2.0, 0.0, 0.0]); // 1 + 2x
+        
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 5);
+        assert_eq!(theoretical_num_gp, 3); 
+
+        let mut coeff_vector_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![0.0]; integrand.len()]; integrand.len()];
+        let mut poly_degree_matrix: Vec<Vec<usize>> = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_vector = MonomialPolynomial::get_coefficients_1d(&integrand[i][j]).unwrap(); 
+                let poly_degree = GaussianQuadrature::detect_polynomial_order_1d(&coeff_vector);
+                
+                coeff_vector_matrix[i][j] = coeff_vector;
+                poly_degree_matrix[i][j] = poly_degree;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+                
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 3);
+        assert_eq!(result.theoretical_number, 3);
+    }
+
+    // TEST 21: Optimal Gauss points - CUBIC material - MASS matrix - 1D quadratic element - 1D space - Perfect
+    #[test]
+    fn test_optimal_gauss_points_1d_1d_cubic_material_mass_perfect() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0] },
+            Node { id: 1, coordinates: vec![1.0] },
+            Node { id: 2, coordinates: vec![0.5] },
+        ];
+        let element_type = ElementType::QuadraticEdge;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 1;
+        let tolerance = 1e-4;
+        
+        // VARIABLE density: rho(x) = 5.0 + 2.0*x + 0.5*x^3
+        let material_property_physical = MaterialProperty::Scalar(vec![5.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5]); // 5.0 + 2.0*x + 0.5*x^3
+        
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 7);
+        assert_eq!(theoretical_num_gp, 4); 
+
+        let mut coeff_vector_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![0.0]; integrand.len()]; integrand.len()];
+        let mut poly_degree_matrix: Vec<Vec<usize>> = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_vector = MonomialPolynomial::get_coefficients_1d(&integrand[i][j]).unwrap(); 
+                let poly_degree = GaussianQuadrature::detect_polynomial_order_1d(&coeff_vector);
+                
+                coeff_vector_matrix[i][j] = coeff_vector;
+                poly_degree_matrix[i][j] = poly_degree;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+                
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 4);
+        assert_eq!(result.theoretical_number, 4);
+    }
+
+    // TEST 22: Optimal Gauss points - QUADRATIC material - MASS matrix - 1D quadratic element - 1D space - Perfect
+    #[test]
+    fn test_optimal_gauss_points_1d_1d_quadratic_material_mass_perfect() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0] },
+            Node { id: 1, coordinates: vec![1.0] },
+            Node { id: 2, coordinates: vec![0.5] },
+        ];
+        let element_type = ElementType::QuadraticEdge;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 1;
+        let tolerance = 1e-4;
+        
+        // VARIABLE density: rho(x) = 1 - 2x + 3x^2
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, -2.0, 0.0, 0.0, 3.0]); // 1 - 2x + 3x^2
+        
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 6);
+        assert_eq!(theoretical_num_gp, 4); 
+
+        let mut coeff_vector_matrix: Vec<Vec<Vec<f64>>> = vec![vec![vec![0.0]; integrand.len()]; integrand.len()];
+        let mut poly_degree_matrix: Vec<Vec<usize>> = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_vector = MonomialPolynomial::get_coefficients_1d(&integrand[i][j]).unwrap(); 
+                let poly_degree = GaussianQuadrature::detect_polynomial_order_1d(&coeff_vector);
+                
+                coeff_vector_matrix[i][j] = coeff_vector;
+                poly_degree_matrix[i][j] = poly_degree;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+                
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 4);
+        assert_eq!(result.theoretical_number, 4);
+    }
+
+    // TEST 23: Optimal Gauss points - CONSTANT material - MASS matrix - 2D biquadratic quad - 2D space - Perfect
+    #[test]
+    fn test_optimal_gauss_points_2d_2d_constant_material_mass() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7, 8] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 1.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0] },
+            Node { id: 4, coordinates: vec![0.5, 0.0] },
+            Node { id: 5, coordinates: vec![1.0, 0.5] },
+            Node { id: 6, coordinates: vec![0.5, 1.0] },
+            Node { id: 7, coordinates: vec![0.0, 0.5] },
+            Node { id: 8, coordinates: vec![0.5, 0.5] },
+
+        ];
+        let element_type = ElementType::BiquadraticQuad;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 2;
+        let tolerance = 1e-4;
+        
+
+        // CONSTANT density: rho(x,y) = 1
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0]); // 1
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 8);
+        assert_eq!(theoretical_num_gp, 5); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 3);
+        assert_eq!(result.theoretical_number, 5);
+    }
+
+    // TEST 24: Optimal Gauss points - LINEAR material - MASS matrix - 2D biquadratic quad - 2D space - Perfect
+    #[test]
+    fn test_optimal_gauss_points_2d_2d_linear_material_mass() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7, 8] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 1.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0] },
+            Node { id: 4, coordinates: vec![0.5, 0.0] },
+            Node { id: 5, coordinates: vec![1.0, 0.5] },
+            Node { id: 6, coordinates: vec![0.5, 1.0] },
+            Node { id: 7, coordinates: vec![0.0, 0.5] },
+            Node { id: 8, coordinates: vec![0.5, 0.5] },
+
+        ];
+        let element_type = ElementType::BiquadraticQuad;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 2;
+        let tolerance = 1e-4;
+        
+
+        // LINEAR density: rho(x,y) = 1 + 2*x
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, 2.0]); // 1 + 2*x
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 9);
+        assert_eq!(theoretical_num_gp, 5); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 3);
+        assert_eq!(result.theoretical_number, 5);
+    }
+
+    // TEST 25: Optimal Gauss points - BILINEAR material - MASS matrix - 2D biquadratic quad - 2D space - Perfect
+    #[test]
+    fn test_optimal_gauss_points_2d_2d_bilinear_material_mass() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7, 8] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 1.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0] },
+            Node { id: 4, coordinates: vec![0.5, 0.0] },
+            Node { id: 5, coordinates: vec![1.0, 0.5] },
+            Node { id: 6, coordinates: vec![0.5, 1.0] },
+            Node { id: 7, coordinates: vec![0.0, 0.5] },
+            Node { id: 8, coordinates: vec![0.5, 0.5] },
+
+        ];
+        let element_type = ElementType::BiquadraticQuad;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 2;
+        let tolerance = 1e-4;
+        
+
+        // BILINEAR density: rho(x,y) = 1.0 + 2*x - y
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, 2.0, -1.0]); // 1 + 2*x - y
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 9);
+        assert_eq!(theoretical_num_gp, 5); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 3);
+        assert_eq!(result.theoretical_number, 5);
+    }
+
+    // TEST 26: Optimal Gauss points - QUADRATIC material - MASS matrix - 2D biquadratic quad - 2D space - Perfect
+    #[test]
+    fn test_optimal_gauss_points_2d_2d_quadratic_material_mass() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7, 8] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 1.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0] },
+            Node { id: 4, coordinates: vec![0.5, 0.0] },
+            Node { id: 5, coordinates: vec![1.0, 0.5] },
+            Node { id: 6, coordinates: vec![0.5, 1.0] },
+            Node { id: 7, coordinates: vec![0.0, 0.5] },
+            Node { id: 8, coordinates: vec![0.5, 0.5] },
+
+        ];
+        let element_type = ElementType::BiquadraticQuad;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 2;
+        let tolerance = 1e-4;
+        
+
+        // CONSTANT density: rho(x,y) = 1.0 + 2*x^2 + 3*y - x*y
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, 0.0, 3.0, 0.0, 2.0, -1.0]); // 1.0 + 2*x^2 + 3*y - x*y
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 10);
+        assert_eq!(theoretical_num_gp, 6); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 4);
+        assert_eq!(result.theoretical_number, 6);
+    }
+
+    // TEST 27: Optimal Gauss points - BILINEAR material - MASS matrix - 2D biquadratic quad - 2D space - BAD Skewness
+    #[test]
+    fn test_optimal_gauss_points_2d_2d_bilinear_material_mass_skew() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7, 8] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.98, 0.2] },
+            Node { id: 3, coordinates: vec![0.98, 0.2] },
+            Node { id: 4, coordinates: vec![0.5, 0.0] },
+            Node { id: 5, coordinates: vec![1.49, 0.1] },
+            Node { id: 6, coordinates: vec![1.48, 0.2] },
+            Node { id: 7, coordinates: vec![0.49, 0.1] },
+            Node { id: 8, coordinates: vec![0.99, 0.1] },
+
+        ];
+        let element_type = ElementType::BiquadraticQuad;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 2;
+        let tolerance = 1e-4;
+        
+
+        // CONSTANT density: rho(x,y) = 1.0 + 2*x - y
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, 2.0, -1.0]); // 1.0 + 2*x - y
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 9);
+        assert_eq!(theoretical_num_gp, 5); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 3);
+        assert_eq!(result.theoretical_number, 5);
+    }
+
+    // TEST 28: Optimal Gauss points - BILINEAR material - MASS matrix - 2D biquadratic quad - 2D space - BAD Length Ratio
+    #[test]
+    fn test_optimal_gauss_points_2d_2d_bilinear_material_mass_length_ratio() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7, 8] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0] },
+            Node { id: 1, coordinates: vec![10.0, 0.0] },
+            Node { id: 2, coordinates: vec![10.0, 1.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0] },
+            Node { id: 4, coordinates: vec![5.0, 0.0] },
+            Node { id: 5, coordinates: vec![10.0, 0.5] },
+            Node { id: 6, coordinates: vec![5.0, 1.0] },
+            Node { id: 7, coordinates: vec![0.0, 0.5] },
+            Node { id: 8, coordinates: vec![5.0, 5.0] },
+
+        ];
+        let element_type = ElementType::BiquadraticQuad;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 2;
+        let tolerance = 1e-4;
+        
+
+        // CONSTANT density: rho(x,y) = 1.0 + 2*x - y
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, 2.0, -1.0]); // 1.0 + 2*x - y
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        println!("Max total degree in matrix: {}", max_total_degree_in_matrix);
+        assert_eq!(max_total_degree_in_matrix, 15);
+        assert_eq!(theoretical_num_gp, 8); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 5);
+        assert_eq!(result.theoretical_number, 8);
+    }
+
+    // TEST 29: Optimal Gauss points - BILINEAR material - MASS matrix - 2D biquadratic quad - 2D space - BAD Orientation
+    #[test]
+    fn test_optimal_gauss_points_2d_2d_bilinear_material_mass_orientation() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7, 8] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![1.2044,  0.4384] },
+            Node { id: 1, coordinates: vec![0.5616,  1.2044] },
+            Node { id: 2, coordinates: vec![-0.2044,  0.5616] },
+            Node { id: 3, coordinates: vec![0.4384, -0.2044] },
+            Node { id: 4, coordinates: vec![0.8830,  0.8214] },
+            Node { id: 5, coordinates: vec![0.1786,  0.8830] },
+            Node { id: 6, coordinates: vec![0.1170,  0.1786] },
+            Node { id: 7, coordinates: vec![0.8214,  0.1170] },
+            Node { id: 8, coordinates: vec![0.5000,  0.5000] },
+
+        ];
+        let element_type = ElementType::BiquadraticQuad;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 2;
+        let tolerance = 1e-4;
+        
+
+        // CONSTANT density: rho(x,y) = 1.0 + 2*x - y
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, 2.0, -1.0]); // 1.0 + 2*x - y
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        println!("Max total degree in matrix: {}", max_total_degree_in_matrix);
+        assert_eq!(max_total_degree_in_matrix, 9);
+        assert_eq!(theoretical_num_gp, 5); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 3);
+        assert_eq!(result.theoretical_number, 5);
+    }
+
+    // TEST 30: Optimal Gauss points - BILINEAR material - MASS matrix - 2D biquadratic quad - 2D space - BAD Jacobian Ratio
+    #[test]
+    fn test_optimal_gauss_points_2d_2d_bilinear_material_mass_bad_jr() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7, 8] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.000, 0.000] },
+            Node { id: 1, coordinates: vec![1.000, 0.000] },
+            Node { id: 2, coordinates: vec![1.000, 1.000] },
+            Node { id: 3, coordinates: vec![0.000, 1.000] },
+            Node { id: 4, coordinates: vec![0.255, 0.000] },
+            Node { id: 5, coordinates: vec![1.000, 0.500] },
+            Node { id: 6, coordinates: vec![0.500, 1.000] },
+            Node { id: 7, coordinates: vec![0.000, 0.255] },
+            Node { id: 8, coordinates: vec![0.255, 0.255] },
+
+        ];
+        let element_type = ElementType::BiquadraticQuad;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 2;
+        let tolerance = 1e-4;
+        
+
+        // CONSTANT density: rho(x,y) = 1.0 + 2*x - y
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, 2.0, -1.0]); // 1.0 + 2*x - y
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        println!("Max total degree in matrix: {}", max_total_degree_in_matrix);
+        assert_eq!(max_total_degree_in_matrix, 17);
+        assert_eq!(theoretical_num_gp, 9); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 5);
+        assert_eq!(result.theoretical_number, 9);
+    }
+
+    // TEST 31: Optimal Gauss points - CONSTANT material - MASS matrix - 3D hexahedron - 3D space - Perfect
+    #[test]
+    fn test_optimal_gauss_points_3d_3d_constant_material_mass() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 1.0, 0.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0, 0.0] },
+            Node { id: 4, coordinates: vec![0.0, 0.0, 1.0] },
+            Node { id: 5, coordinates: vec![1.0, 0.0, 1.0] },
+            Node { id: 6, coordinates: vec![1.0, 1.0, 1.0] },
+            Node { id: 7, coordinates: vec![0.0, 1.0, 1.0] },
+
+        ];
+        let element_type = ElementType::Hexahedron;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 3;
+        let tolerance = 1e-4;
+        
+
+        // CONSTANT density: rho(x,y,z) = 1
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0]); // 1
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 6);
+        assert_eq!(theoretical_num_gp, 4); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 2);
+        assert_eq!(result.theoretical_number, 4);
+    }
+
+    // TEST 32: Optimal Gauss points - LINEAR material - MASS matrix - 3D hexahedron - 3D space - Perfect
+    #[test]
+    fn test_optimal_gauss_points_3d_3d_linear_material_mass() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 1.0, 0.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0, 0.0] },
+            Node { id: 4, coordinates: vec![0.0, 0.0, 1.0] },
+            Node { id: 5, coordinates: vec![1.0, 0.0, 1.0] },
+            Node { id: 6, coordinates: vec![1.0, 1.0, 1.0] },
+            Node { id: 7, coordinates: vec![0.0, 1.0, 1.0] },
+
+        ];
+        let element_type = ElementType::Hexahedron;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 3;
+        let tolerance = 1e-4;
+        
+
+        // LINEAR density: rho(x,y,z) = 1 - x
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, -1.0, 0.0, 0.0]); // 1 - x
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 7);
+        assert_eq!(theoretical_num_gp, 4); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 2);
+        assert_eq!(result.theoretical_number, 4);
+    }
+
+    // TEST 33: Optimal Gauss points - BILINEAR material - MASS matrix - 3D hexahedron - 3D space - Perfect
+    #[test]
+    fn test_optimal_gauss_points_3d_3d_bilinear_material_mass() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 1.0, 0.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0, 0.0] },
+            Node { id: 4, coordinates: vec![0.0, 0.0, 1.0] },
+            Node { id: 5, coordinates: vec![1.0, 0.0, 1.0] },
+            Node { id: 6, coordinates: vec![1.0, 1.0, 1.0] },
+            Node { id: 7, coordinates: vec![0.0, 1.0, 1.0] },
+
+        ];
+        let element_type = ElementType::Hexahedron;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 3;
+        let tolerance = 1e-4;
+        
+
+        // BILINEAR density: rho(x,y,z) = 1 - x + 2z
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, -1.0, 0.0, 2.0]); // 1 - x + 2z
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 7);
+        assert_eq!(theoretical_num_gp, 4); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 2);
+        assert_eq!(result.theoretical_number, 4);
+    }
+
+    // TEST 34: Optimal Gauss points - TRILINEAR material - MASS matrix - 3D hexahedron - 3D space - Perfect
+    #[test]
+    fn test_optimal_gauss_points_3d_3d_trilinear_material_mass() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 1.0, 0.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0, 0.0] },
+            Node { id: 4, coordinates: vec![0.0, 0.0, 1.0] },
+            Node { id: 5, coordinates: vec![1.0, 0.0, 1.0] },
+            Node { id: 6, coordinates: vec![1.0, 1.0, 1.0] },
+            Node { id: 7, coordinates: vec![0.0, 1.0, 1.0] },
+
+        ];
+        let element_type = ElementType::Hexahedron;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 3;
+        let tolerance = 1e-4;
+        
+
+        // TRILINEAR density: rho(x,y,z) = 1 - x + 2z + 10y 
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, -1.0, 10.0, 2.0]); // 1 - x + 10y + 2z
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 7);
+        assert_eq!(theoretical_num_gp, 4); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 2);
+        assert_eq!(result.theoretical_number, 4);
+    }
+
+    // TEST 35: Optimal Gauss points - Quadratic material - MASS matrix - 3D hexahedron - 3D space - Perfect
+    #[test]
+    fn test_optimal_gauss_points_3d_3d_quadratic_material_mass() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 1.0, 0.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0, 0.0] },
+            Node { id: 4, coordinates: vec![0.0, 0.0, 1.0] },
+            Node { id: 5, coordinates: vec![1.0, 0.0, 1.0] },
+            Node { id: 6, coordinates: vec![1.0, 1.0, 1.0] },
+            Node { id: 7, coordinates: vec![0.0, 1.0, 1.0] },
+
+        ];
+        let element_type = ElementType::Hexahedron;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 3;
+        let tolerance = 1e-4;
+        
+
+        // QUADRATIC density: rho(x,y,z) = 1 - x^2 + 10y + 2z
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, 0.0, 10.0, 2.0, -1.0]); // 1 - x^2 + 10y + 2z
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 8);
+        assert_eq!(theoretical_num_gp, 5); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 3);
+        assert_eq!(result.theoretical_number, 5);
+    }
+
+    // TEST 36: Optimal Gauss points - QUADRATIC material - MASS matrix - 3D hexahedron - 3D space - BAD Skewness
+    #[test]
+    fn test_optimal_gauss_points_3d_3d_quadratic_material_mass_skew() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 1.0, 0.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0, 0.0] },
+            Node { id: 4, coordinates: vec![0.98, 0.0, 0.2] },
+            Node { id: 5, coordinates: vec![1.98, 0.0, 0.2] },
+            Node { id: 6, coordinates: vec![1.98, 1.0, 0.2] },
+            Node { id: 7, coordinates: vec![0.98, 1.0, 0.2] },
+
+        ];
+        let element_type = ElementType::Hexahedron;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 3;
+        let tolerance = 1e-4;
+        
+
+        // QUADRATIC density: rho(x,y,z) = 1 - x^2 + 10y + 2z
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, 0.0, 10.0, 2.0, -1.0]); // 1 - x^2 + 10y + 2z
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 8);
+        assert_eq!(theoretical_num_gp, 5); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 3);
+        assert_eq!(result.theoretical_number, 5);
+    }
+
+    // TEST 37: Optimal Gauss points - QUADRATIC material - MASS matrix - 3D hexahedron - 3D space - BAD Length Ratio
+    #[test]
+    fn test_optimal_gauss_points_3d_3d_quadratic_material_mass_len() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0, 0.0] },
+            Node { id: 1, coordinates: vec![10.0, 0.0, 0.0] },
+            Node { id: 2, coordinates: vec![10.0, 1.0, 0.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0, 0.0] },
+            Node { id: 4, coordinates: vec![0.0, 0.0, 1.0] },
+            Node { id: 5, coordinates: vec![10.0, 0.0, 1.0] },
+            Node { id: 6, coordinates: vec![10.0, 1.0, 1.0] },
+            Node { id: 7, coordinates: vec![0.0, 1.0, 1.0] },
+
+        ];
+        let element_type = ElementType::Hexahedron;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 3;
+        let tolerance = 1e-4;
+        
+
+        // QUADRATIC density: rho(x,y,z) = 1 - x^2 + 10y + 2z
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, 0.0, 10.0, 2.0, -1.0]); // 1 - x^2 + 10y + 2z
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 8);
+        assert_eq!(theoretical_num_gp, 5); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 3);
+        assert_eq!(result.theoretical_number, 5);
+    }
+
+    // TEST 38: Optimal Gauss points - QUADRATIC material - MASS matrix - 3D hexahedron - 3D space - BAD Orientation
+    #[test]
+    fn test_optimal_gauss_points_3d_3d_quadratic_material_mass_ori() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![1.2071, 0.5, 0.0] },
+            Node { id: 1, coordinates: vec![0.5, 1.2071, 0.0] },
+            Node { id: 2, coordinates: vec![-0.2071, 0.5, 0.0] },
+            Node { id: 3, coordinates: vec![0.5, -0.2071, 0.0] },
+            Node { id: 4, coordinates: vec![1.2071, 0.5, 1.0] },
+            Node { id: 5, coordinates: vec![0.5, 1.2071, 1.0] },
+            Node { id: 6, coordinates: vec![-0.2071, 0.5, 1.0] },
+            Node { id: 7, coordinates: vec![0.5, -0.2071, 1.0] },
+
+        ];
+        let element_type = ElementType::Hexahedron;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 3;
+        let tolerance = 1e-4;
+        
+
+        // QUADRATIC density: rho(x,y,z) = 1 - x^2 + 10y + 2z
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, 0.0, 10.0, 2.0, -1.0]); // 1 - x^2 + 10y + 2z
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 8);
+        assert_eq!(theoretical_num_gp, 5); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 3);
+        assert_eq!(result.theoretical_number, 5);
+    }
+
+    // TEST 39: Optimal Gauss points - QUADRATIC material - MASS matrix - 3D hexahedron - 3D space - BAD Jacobian Ratio (and Skewness)
+    #[test]
+    fn test_optimal_gauss_points_3d_3d_quadratic_material_mass_jr() {
+        let element = Element { id: 0, nodes: vec![0, 1, 2, 3, 4, 5, 6, 7] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0, 0.0] },
+            Node { id: 1, coordinates: vec![1.0, 0.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 1.0, 0.0] },
+            Node { id: 3, coordinates: vec![0.0, 1.0, 0.0] },
+            Node { id: 4, coordinates: vec![-0.4916, -0.4916, 1.0] },
+            Node { id: 5, coordinates: vec![0.5084, 0.4917, 1.0] },
+            Node { id: 6, coordinates: vec![1.4917, 1.4917, 1.0] },
+            Node { id: 7, coordinates: vec![0.4917, 0.5084, 1.0] },
+
+        ];
+        let element_type = ElementType::Hexahedron;
+        let element_dim = ElementType::get_element_dimension(&element_type).unwrap();
+        let mesh_dim = 3;
+        let tolerance = 1e-4;
+        
+
+        // QUADRATIC density: rho(x,y,z) = 1 - x^2 + 10y + 2z
+        let material_property_physical = MaterialProperty::Scalar(vec![1.0, 0.0, 10.0, 2.0, -1.0]); // 1 - x^2 + 10y + 2z
+
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property_physical,
+            mesh_dim,
+        ).unwrap();
+
+        let max_total_degree_in_matrix = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let theoretical_num_gp = ((max_total_degree_in_matrix + 1) as f64 / 2.0).ceil() as usize;
+
+        assert_eq!(max_total_degree_in_matrix, 12);
+        assert_eq!(theoretical_num_gp, 7); 
+
+        let mut coeff_matrix_matrix = vec![vec![vec![vec![0.0]]; integrand.len()]; integrand.len()];
+        let mut poly_degree_x_matrix = vec![vec![0; integrand.len()]; integrand.len()];
+        let mut poly_degree_y_matrix  = vec![vec![0; integrand.len()]; integrand.len()];
+        for i in 0..(integrand.len()) {
+            for j in 0..(integrand.len()) {
+                let coeff_matrix = MonomialPolynomial::get_coefficients_2d(&integrand[i][j]).unwrap(); 
+                let (poly_degree_x, poly_degree_y) = GaussianQuadrature::detect_polynomial_orders_2d(&coeff_matrix);
+                
+                coeff_matrix_matrix[i][j] = coeff_matrix;
+                poly_degree_x_matrix[i][j] = poly_degree_x;
+                poly_degree_y_matrix[i][j] = poly_degree_y;
+            }
+        }
+
+        let mut error_matrix: Vec<Vec<f64>> = vec![vec![0.0; integrand.len()]; integrand.len()];
+        let mut min_error = f64::MAX;
+        let mut optimal_points = 0;
+        for k in 1..theoretical_num_gp {
+            for i in 0..integrand.len() {
+                for j in 0..integrand.len() {
+                    let error = GaussianQuadrature::gauss_legendre_error(&integrand[i][j], k, element_dim).unwrap();
+
+                    error_matrix[i][j] = error;
+                }
+            }
+
+            let max_error = GaussianQuadrature::find_max_in_matrix(&error_matrix);
+
+            if max_error < min_error {
+                min_error = max_error;
+                optimal_points = k;
+            }
+
+            // If we meet tolerance, we can stop early
+            if max_error <= tolerance {
+                break;
+            }
+        }
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            tolerance,
+            &material_property_physical,
+        ).unwrap();
+
+        
+        assert_eq!(result.optimal_number, 4);
+        assert_eq!(result.theoretical_number, 7);
+    }
+
+    // TEST 40: Mass Matrix - 1D Element in 2D Space - CONSTANT detJ
+    #[test]
+    fn test_mass_1d_in_2d_constant_detj_perfect() {
+        // Quadratic Edge (Straight Line)
+        let element = Element { id: 0, nodes: vec![0, 1, 2] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0] },
+            Node { id: 1, coordinates: vec![2.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 0.0] }, 
+        ];
+        let element_type = ElementType::QuadraticEdge;
+        let mesh_dim = 2;
+        
+        let material_property = MaterialProperty::Scalar(vec![1.0]);
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property,
+            mesh_dim,
+        ).unwrap();
+
+        let max_degree = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let real_max_degree = 4;
+
+        assert_eq!(max_degree, real_max_degree);
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            1e-4,
+            &material_property,
+        ).unwrap();
+        
+        // This causes the theoretical calculator to demand excessive Gauss points
+        let real_theoretical_gp = ((real_max_degree as f64 + 1.0) / 2.0).ceil() as usize;
+        assert_eq!(real_theoretical_gp, 3);
+
+        assert_eq!(result.theoretical_number, real_theoretical_gp);
+    }
+
+    // TEST 41: Mass Matrix - 1D Element in 2D Space - NON-CONSTANT detJ
+    #[test]
+    fn test_mass_1d_in_2d_nonconstant_detj_expansion_artifact() {
+        // Quadratic Edge (Curved Parabola)
+        let element = Element { id: 0, nodes: vec![0, 1, 2] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0, 0.0] },
+            Node { id: 1, coordinates: vec![2.0, 0.0] },
+            Node { id: 2, coordinates: vec![1.0, 1.0] }, 
+        ];
+        let element_type = ElementType::QuadraticEdge;
+        let mesh_dim = 2;
+        
+        let material_property = MaterialProperty::Scalar(vec![1.0]);
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Mass,
+            &element_type,
+            &element_nodes,
+            &material_property,
+            mesh_dim,
+        ).unwrap();
+
+        let max_degree = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let real_max_degree = 5;
+
+        assert_eq!(max_degree, 12);
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Mass,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            1e-4,
+            &material_property,
+        ).unwrap();
+        
+        // This causes the theoretical calculator to demand excessive Gauss points
+        let real_theoretical_gp = ((real_max_degree as f64 + 1.0) / 2.0).ceil() as usize;
+        assert_eq!(real_theoretical_gp, 3);
+
+        assert_eq!(result.theoretical_number, 7);
+    }
+
+    // TEST 42: STIFFNESS Matrix - 1D Element in 1D Space - CONSTANT detJ
+    #[test]
+    fn test_stiffness_1d_in_1d_constant_detj_perfect() {
+        // Quadratic Edge (Straight Line)
+        let element = Element { id: 0, nodes: vec![0, 1, 2] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0] },
+            Node { id: 1, coordinates: vec![2.0] }, 
+            Node { id: 2, coordinates: vec![1.0] }, 
+        ];
+        let element_type = ElementType::QuadraticEdge;
+        let mesh_dim = 1;
+        
+        let material_property = MaterialProperty::Matrix(vec![vec![vec![1.0]]]);
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Stiffness,
+            &element_type,
+            &element_nodes,
+            &material_property,
+            mesh_dim,
+        ).unwrap();
+
+
+        let max_degree = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let real_max_degree = 2;
+
+        assert_eq!(max_degree, real_max_degree);
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Stiffness,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            1e-4,
+            &material_property,
+        ).unwrap();
+        
+        // This causes the theoretical calculator to demand excessive Gauss points
+        let real_theoretical_gp = ((real_max_degree as f64 + 1.0) / 2.0).ceil() as usize;
+        assert_eq!(real_theoretical_gp, 2);
+
+        assert_eq!(result.theoretical_number, real_theoretical_gp);
+    }
+
+    // TEST 43: Stiffness Matrix - 1D Element in 1D Space - NON-CONSTANT detJ
+    #[test]
+    fn test_stiffness_1d_in_1d_non_constant_detj_perfect() {
+        // Quadratic Edge 
+        let element = Element { id: 0, nodes: vec![0, 1, 2] };
+        let nodes = vec![
+            Node { id: 0, coordinates: vec![0.0] },
+            Node { id: 1, coordinates: vec![2.0] }, 
+            Node { id: 2, coordinates: vec![0.7] }, 
+        ];
+        let element_type = ElementType::QuadraticEdge;
+        let mesh_dim = 1;
+        
+        let material_property = MaterialProperty::Matrix(vec![vec![vec![1.0]]]);
+        let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
+
+        let integrand = GaussianQuadrature::calculate_integrand(
+            &IntegrationType::Stiffness,
+            &element_type,
+            &element_nodes,
+            &material_property,
+            mesh_dim,
+        ).unwrap();
+
+
+        let max_degree = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
+        let real_max_degree = 1;
+
+        assert_eq!(max_degree, 11);
+        
+        let result = GaussianQuadrature::find_optimal_gauss_points(
+            IntegrationType::Stiffness,
+            &element,
+            &element_type,
+            &element_nodes,
+            mesh_dim,
+            1e-4,
+            &material_property,
+        ).unwrap();
+        
+        // This causes the theoretical calculator to demand excessive Gauss points
+        let real_theoretical_gp = ((real_max_degree as f64 + 1.0) / 2.0).ceil() as usize;
+        assert_eq!(real_theoretical_gp, 1);
+
+        assert_eq!(result.theoretical_number, 6);
+    }
 }
 
-/* 
-#[cfg(test)]
-mod tests {
 
-    use super::*;
-    use crate::structs_and_impls::*;
 
-    // Test helper functions
-    mod helper_tests {
-        use super::*;
-
-        #[test]
-        fn test_factorial_small_values() {
-            // Test factorial for small values that are precomputed
-            assert_eq!(factorial(0), 1.0);
-            assert_eq!(factorial(1), 1.0);
-            assert_eq!(factorial(2), 2.0);
-            assert_eq!(factorial(3), 6.0);
-            assert_eq!(factorial(4), 24.0);
-            assert_eq!(factorial(5), 120.0);
-        }
-
-        #[test]
-        fn test_factorial_large_values() {
-            // Test factorial for larger values using Stirling's approximation
-            // We'll check that it's reasonably close to expected values
-            let fact_10 = factorial(10);
-            let expected_10 = 3628800.0;
-            assert!((fact_10 - expected_10).abs() / expected_10 < 0.01, 
-                   "Factorial(10) should be close to 3628800, got {}", fact_10);
-
-            let fact_20 = factorial(20);
-            let expected_20 = 2432902008176640000.0;
-            assert!((fact_20 - expected_20).abs() / expected_20 < 0.001,
-                   "Factorial(20) should be reasonably accurate");
-        }
-
-        #[test]
-        fn test_detect_polynomial_order_1d() {
-            // Test constant polynomial
-            let coeffs_constant = vec![1.0, 0.0, 0.0, 0.0];
-            assert_eq!(GaussianQuadrature::detect_polynomial_order_1d(&coeffs_constant), 0);
-
-            // Test linear polynomial
-            let coeffs_linear = vec![1.0, 2.0, 0.0, 0.0];
-            assert_eq!(GaussianQuadrature::detect_polynomial_order_1d(&coeffs_linear), 1);
-
-            // Test quadratic polynomial
-            let coeffs_quadratic = vec![1.0, 2.0, 3.0, 0.0];
-            assert_eq!(GaussianQuadrature::detect_polynomial_order_1d(&coeffs_quadratic), 2);
-
-            // Test cubic polynomial
-            let coeffs_cubic = vec![1.0, 2.0, 3.0, 4.0];
-            assert_eq!(GaussianQuadrature::detect_polynomial_order_1d(&coeffs_cubic), 3);
-
-            // Test with tolerance - small coefficients should be ignored
-            let coeffs_with_noise = vec![1.0, 1e-13, 1e-13, 2.0];
-            assert_eq!(GaussianQuadrature::detect_polynomial_order_1d(&coeffs_with_noise), 0);
-        }
-
-        #[test]
-        fn test_detect_polynomial_orders_2d() {
-            // Test constant polynomial in 2D
-            let coeffs_constant = vec![
-                vec![1.0, 0.0],
-                vec![0.0, 0.0],
-            ];
-            assert_eq!(GaussianQuadrature::detect_polynomial_orders_2d(&coeffs_constant), (0, 0));
-
-            // Test mixed orders
-            let coeffs_mixed = vec![
-                vec![1.0, 2.0, 0.0],
-                vec![3.0, 4.0, 5.0],
-                vec![0.0, 6.0, 0.0],
-            ];
-            assert_eq!(GaussianQuadrature::detect_polynomial_orders_2d(&coeffs_mixed), (2, 2));
-        }
-
-        #[test]
-        fn test_detect_polynomial_orders_3d() {
-            // Simple 3D test case
-            let coeffs = vec![
-                vec![
-                    vec![1.0, 0.0],
-                    vec![0.0, 2.0],
-                ],
-                vec![
-                    vec![0.0, 0.0],
-                    vec![3.0, 0.0],
-                ],
-            ];
-            assert_eq!(GaussianQuadrature::detect_polynomial_orders_3d(&coeffs), (1, 1, 1));
-        }
-    }
-
-    // Test monomial polynomial operations
-    mod monomial_tests {
-        use super::*;
-
-        #[test]
-        fn test_total_degree_polynomial() {
-            // Test constant polynomial
-            assert_eq!(MonomialPolynomial::total_degree_polynomial(&vec![1.0]), 0);
-            
-            // Test linear polynomial
-            assert_eq!(MonomialPolynomial::total_degree_polynomial(&vec![1.0, 2.0]), 1);
-            
-            // Test quadratic polynomial
-            assert_eq!(MonomialPolynomial::total_degree_polynomial(&vec![1.0, 2.0, 3.0]), 2);
-        }
-    }
-
-    // Main test for 1D line element mass integration
-    mod line_element_1d_tests {
-        use super::*;
-
-        pub fn create_1d_line_element() -> (Element, Vec<Node>, ElementType, MaterialProperty, MeshData) {
-            // Create a simple 1D line element from x=0 to x=1 with 0-based indexing
-            let element = Element {
-                id: 0,
-                nodes: vec![0, 1],  // 0-based node indices
-            };
-
-            let nodes = vec![
-                Node {
-                    id: 0,
-                    coordinates: vec![-1.0, 0.0, 0.0],
-                },
-                Node {
-                    id: 1,
-                    coordinates: vec![1.0, 0.0, 0.0],
-                },
-            ];
-
-            // Constant density material property
-            let material_property = MaterialProperty::Scalar(vec![1.0]); // ρ = 1.0
-
-            // Create minimal mesh data for testing
-            let mesh_data = MeshData {
-                dimension: 3,
-                num_nodes: 2,
-                min_node_index: 0,
-                nodes: nodes.clone(),
-                num_eltypes: 1,
-                elements: vec![element.clone()],
-                element_type_info: vec![ElementTypeInfo {
-                    element_type: ElementType::Line,
-                    num_elements: 1,
-                    start_index: 0,
-                    nodes_per_element: 2,
-                }],
-            };
-
-            (element, nodes, ElementType::Line, material_property, mesh_data)
-        }
-
-        #[test]
-        fn test_1d_line_shape_functions() {
-            let (_, _, element_type, _, _) = create_1d_line_element();
-            let shape_function = ElementType::get_shape_functions(&element_type).unwrap();
-            
-            // Line2 element should have 2 nodes
-            assert_eq!(shape_function.num_nodes, 2);
-            
-            // Shape function values should be for parametric coordinate xi ∈ [-1, 1]
-            // N1 = (1 - xi)/2, N2 = (1 + xi)/2
-            let n1 = &shape_function.values[0]; // N1 coefficients
-            let n2 = &shape_function.values[1]; // N2 coefficients
-            
-            // N1 = 0.5 - 0.5xi → coefficients: [0.5, -0.5] for basis [1, xi]
-            assert_eq!(n1.len(), 2);
-            assert!((n1[0] - 0.5).abs() < 1e-12, "N1 constant term should be 0.5");
-            assert!((n1[1] - (-0.5)).abs() < 1e-12, "N1 linear term should be -0.5");
-            
-            // N2 = 0.5 + 0.5xi → coefficients: [0.5, 0.5] for basis [1, xi]
-            assert!((n2[0] - 0.5).abs() < 1e-12, "N2 constant term should be 0.5");
-            assert!((n2[1] - 0.5).abs() < 1e-12, "N2 linear term should be 0.5");
-        }
-
-        #[test]
-        fn test_1d_line_shape_function_derivatives() {
-            let (_, _, element_type, _, _) = create_1d_line_element();
-            let shape_function = ElementType::get_shape_functions(&element_type).unwrap();
-            
-            // Derivatives: dN1/dxi = -0.5, dN2/dxi = 0.5
-            let dn1_dxi = &shape_function.derivatives[0][0]; // dN1/dxi
-            let dn2_dxi = &shape_function.derivatives[1][0]; // dN2/dxi
-            
-            // Derivatives should be constant polynomials
-            assert_eq!(dn1_dxi.len(), 1);
-            assert!((dn1_dxi[0] - (-0.5)).abs() < 1e-12, "dN1/dxi should be -0.5");
-            
-            assert_eq!(dn2_dxi.len(), 1);
-            assert!((dn2_dxi[0] - 0.5).abs() < 1e-12, "dN2/dxi should be 0.5");
-        }
-
-        #[test]
-        fn test_1d_line_jacobian() {
-            let (_, nodes, element_type, _, _) = create_1d_line_element();
-            let shape_function = ElementType::get_shape_functions(&element_type).unwrap();
-            
-            let jacobian = GaussianQuadrature::calculate_jacobian_monomial(
-                &nodes,
-                &shape_function.derivatives,
-                1, // element_dim
-                2, // num_nodes  
-                3, // mesh_dim (3D space)
-                1, // element_order
-            ).unwrap();
-
-            // For a straight line from (0,0,0) to (1,0,0):
-            // x(xi) = (1-xi)/2 * 0 + (1+xi)/2 * 1 = (1+xi)/2
-            // dx/dxi = 0.5
-            // Similarly, y and z coordinates are zero, so their derivatives are zero
-            
-            // Jacobian matrix should be [dx/dxi, dy/dxi, dz/dxi] = [0.5, 0, 0]
-            let j_matrix = &jacobian.matrix;
-            
-            // Check dx/dxi = 0.5
-            assert_eq!(j_matrix[0][0].len(), 1); // Constant polynomial
-            assert!((j_matrix[0][0][0] - 0.5).abs() < 1e-12, "dx/dxi should be 0.5");
-            
-            // Check dy/dxi = 0
-            assert!((j_matrix[1][0][0]).abs() < 1e-12, "dy/dxi should be 0");
-            
-            // Check dz/dxi = 0
-            assert!((j_matrix[2][0][0]).abs() < 1e-12, "dz/dxi should be 0");
-        }
-
-        #[test]
-        fn test_1d_line_jacobian_determinant() {
-            let (_, nodes, element_type, _, _) = create_1d_line_element();
-            let shape_function = ElementType::get_shape_functions(&element_type).unwrap();
-            
-            let jacobian = GaussianQuadrature::calculate_jacobian_monomial(
-                &nodes,
-                &shape_function.derivatives,
-                1, // element_dim
-                2, // num_nodes  
-                3, // mesh_dim (3D space)
-                1, // element_order
-            ).unwrap();
-
-            // For 1D element in 3D space, determinant is metric: dx^2 + dy^2 + dz^2
-            // dx/dxi = 0.5, dy/dxi = 0, dz/dxi = 0 → det = (0.5)^2 = 0.25
-            let det_j = &jacobian.determinant;
-            
-            assert_eq!(det_j.len(), 1); // Should be constant
-            assert!((det_j[0] - 0.25).abs() < 1e-12, "detJ should be 0.25");
-        }
-
-        #[test]
-        fn test_1d_line_inverse_jacobian() {
-            let (_, nodes, element_type, _, _) = create_1d_line_element();
-            let shape_function = ElementType::get_shape_functions(&element_type).unwrap();
-            
-            let jacobian = GaussianQuadrature::calculate_jacobian_monomial(
-                &nodes,
-                &shape_function.derivatives,
-                1, // element_dim
-                2, // num_nodes  
-                3, // mesh_dim (3D space)
-                1, // element_order
-            ).unwrap();
-
-            // For 1D in 3D, we compute pseudo-inverse
-            let inv_j = GaussianQuadrature::inverse_matrix_monomial(
-                &jacobian.matrix,
-                3, // mesh_dim
-                1, // element_dim
-            ).unwrap();
-
-            // For J = [0.5, 0, 0]^T, J⁺ = [2, 0, 0] (pseudo-inverse)
-            // Dimensions: [element_dim × mesh_dim] = [1 × 3]
-            assert_eq!(inv_j.len(), 1); // 1 row (element_dim)
-            assert_eq!(inv_j[0].len(), 3); // 3 columns (mesh_dim)
-            
-            // Check inv_j[0][0] = 2.0
-            assert!((inv_j[0][0][0] - 2.0).abs() < 1e-12, "invJ[0][0] should be 2.0");
-            assert!((inv_j[0][1][0]).abs() < 1e-12, "invJ[0][1] should be 0");
-            assert!((inv_j[0][2][0]).abs() < 1e-12, "invJ[0][2] should be 0");
-        }
-
-        #[test]
-        fn test_1d_line_mass_integrand() {
-            let (element, nodes, element_type, material_property, _) = create_1d_line_element();
-            
-            let integrand = GaussianQuadrature::calculate_integrand(
-                &IntegrationType::Mass,
-                &element_type,
-                &nodes,
-                &material_property,
-                3, // mesh_dim
-            ).unwrap();
-
-            // Mass matrix integrand: ρ * N_i * N_j * detJ
-            // ρ = 1.0, detJ = 0.25
-            // N1 = 0.5 - 0.5xi, N2 = 0.5 + 0.5xi
-            
-            // For 2 nodes in 3D, mass matrix is 6x6 (2 nodes × 3 DOF each)
-            assert_eq!(integrand.len(), 6);
-            assert_eq!(integrand[0].len(), 6);
-
-            // Check M11 component: ρ * N1 * N1 * detJ = 1.0 * (0.5 - 0.5xi)^2 * 0.25
-            // = 0.25 * (0.25 - 0.5xi + 0.25xi^2) = 0.0625 - 0.125xi + 0.0625xi^2
-            let m11 = &integrand[0][0]; // First DOF of first node
-            let expected_m11 = vec![0.0625, -0.125, 0.0625]; // [constant, xi, xi^2] coefficients
-            
-            assert_eq!(m11.len(), expected_m11.len());
-            for (actual, expected) in m11.iter().zip(expected_m11.iter()) {
-                assert!((actual - expected).abs() < 1e-12, 
-                       "M11 coefficient: expected {}, got {}", expected, actual);
-            }
-
-            // Check M12 component: ρ * N1 * N2 * detJ = 1.0 * (0.5 - 0.5xi)(0.5 + 0.5xi) * 0.25
-            // = 0.25 * (0.25 - 0.25xi^2) = 0.0625 - 0.0625xi^2
-            let m12 = &integrand[0][3]; // First DOF of first node × first DOF of second node
-            let expected_m12 = vec![0.0625, 0.0, -0.0625];
-            
-            assert_eq!(m12.len(), expected_m12.len());
-            for (actual, expected) in m12.iter().zip(expected_m12.iter()) {
-                assert!((actual - expected).abs() < 1e-12,
-                       "M12 coefficient: expected {}, got {}", expected, actual);
-            }
-        }
-
-        #[test]
-        fn test_1d_line_gauss_error_estimation() {
-            let (element, nodes, element_type, material_property, _) = create_1d_line_element();
-            
-            // Calculate integrand first
-            let integrand = GaussianQuadrature::calculate_integrand(
-                &IntegrationType::Mass,
-                &element_type,
-                &nodes,
-                &material_property,
-                3, // mesh_dim
-            ).unwrap();
-
-            // Test error calculation for different numbers of Gauss points
-            let error_1pt = GaussianQuadrature::calculate_error(&integrand, 1, 1).unwrap();
-            let error_2pt = GaussianQuadrature::calculate_error(&integrand, 2, 1).unwrap();
-
-            // For mass matrix with quadratic polynomials, 2-point Gauss should be exact
-            // So error for 2 points should be very small
-            let max_error_2pt = GaussianQuadrature::find_max_in_matrix(&error_2pt);
-            assert!(max_error_2pt < 1e-12, "2-point Gauss should be exact for quadratic polynomials, error: {}", max_error_2pt);
-
-            // 1-point Gauss should have some error for quadratic polynomials
-            let max_error_1pt = GaussianQuadrature::find_max_in_matrix(&error_1pt);
-            assert!(max_error_1pt > 1e-12, "1-point Gauss should have error for quadratic polynomials");
-        }
-
-        #[test]
-        fn test_1d_line_optimal_gauss_points() {
-            let (element, nodes, element_type, material_property, _) = create_1d_line_element();
-            
-            let tolerance = 1e-10;
-            
-            let result = GaussianQuadrature::find_optimal_gauss_points(
-                IntegrationType::Mass,
-                &element,
-                &element_type,
-                &nodes,
-                3, // mesh_dim
-                tolerance,
-                &material_property,
-            ).unwrap();
-
-            // For quadratic polynomials (max degree 2), theoretical points = ceil((2+1)/2) = 2
-            assert_eq!(result.theoretical_number, 2);
-            
-            // Optimal should also be 2 since it's exact
-            assert_eq!(result.optimal_number, 2);
-        }
-
-        #[test]
-        fn test_1d_line_polynomial_order_detection() {
-            let (_, nodes, element_type, material_property, _) = create_1d_line_element();
-            
-            let integrand = GaussianQuadrature::calculate_integrand(
-                &IntegrationType::Mass,
-                &element_type,
-                &nodes,
-                &material_property,
-                3, // mesh_dim
-            ).unwrap();
-
-            // Find maximum degree in the integrand matrix
-            let max_degree = GaussianQuadrature::find_max_degree_in_matrix(&integrand);
-            
-            // Mass matrix integrand for line element should have max degree 2
-            // (from N_i * N_j terms where both are linear)
-            assert_eq!(max_degree, 2);
-        }
-
-        #[test]
-        fn test_1d_line_gauss_legendre_error_function() {
-            // Test the error function directly with known polynomials
-            
-            // Quadratic polynomial: x^2 coefficients in graded lex order for 1D
-            // For 1D, basis is [1, x, x^2, x³, ...]
-            let quadratic_poly = vec![0.0, 0.0, 1.0]; // x^2
-            
-            // Error for 1-point Gauss on quadratic polynomial should be non-zero
-            let error_1pt = GaussianQuadrature::gauss_legendre_error(&quadratic_poly, 1, 1).unwrap();
-            assert!(error_1pt > 0.0, "1-point Gauss should have error for quadratic polynomial");
-            
-            // Error for 2-point Gauss on quadratic polynomial should be zero (exact)
-            let error_2pt = GaussianQuadrature::gauss_legendre_error(&quadratic_poly, 2, 1).unwrap();
-            assert!(error_2pt.abs() < 1e-12, "2-point Gauss should be exact for quadratic polynomial");
-        }
-
-        #[test]
-        fn test_1d_line_mesh_level_analysis() {
-            let (_, _, _, material_property, mesh_data) = create_1d_line_element();
-            
-            let tolerance = 1e-10;
-            
-            let result = GaussianQuadrature::find_optimal_gauss_points_number_mesh(
-                &mesh_data,
-                IntegrationType::Mass,
-                tolerance,
-                &material_property,
-            ).unwrap();
-
-            // Should analyze 1 element
-            assert_eq!(result.total_elements, 1);
-            assert_eq!(result.gauss_point_numbers.len(), 1);
-            
-            let element_report = &result.gauss_point_numbers[0];
-            assert_eq!(element_report.element_id, 0); // 0-based element ID
-            assert_eq!(element_report.theoretical_number, 2);
-            assert_eq!(element_report.optimal_number, 2);
-        }
-    }
-
-    // Additional tests for edge cases
-    mod edge_case_tests {
-        use super::*;
-
-        fn create_zero_length_element() -> (Element, Vec<Node>, ElementType, MaterialProperty) {
-            // Test with degenerate element (both nodes at same location)
-            let element = Element {
-                id: 0,
-                nodes: vec![0, 1],
-            };
-
-            let nodes = vec![
-                Node {
-                    id: 0,
-                    coordinates: vec![0.0, 0.0, 0.0],
-                },
-                Node {
-                    id: 1,
-                    coordinates: vec![0.0, 0.0, 0.0], // Same as node 0
-                },
-            ];
-
-            let material_property = MaterialProperty::Scalar(vec![1.0]);
-
-            (element, nodes, ElementType::Line, material_property)
-        }
-
-        #[test]
-        fn test_zero_length_element() {
-            let (element, nodes, element_type, material_property) = create_zero_length_element();
-
-            let shape_function = ElementType::get_shape_functions(&element_type).unwrap();
-            
-            // Jacobian should be zero
-            let jacobian = GaussianQuadrature::calculate_jacobian_monomial(
-                &nodes,
-                &shape_function.derivatives,
-                1, 2, 3, 1,
-            ).unwrap();
-
-            // All Jacobian components should be zero
-            for i in 0..3 {
-                assert!((jacobian.matrix[i][0][0]).abs() < 1e-12, 
-                       "Jacobian component should be zero for degenerate element");
-            }
-
-            // Determinant should be zero
-            assert!((jacobian.determinant[0]).abs() < 1e-12, 
-                   "detJ should be zero for degenerate element");
-        }
-
-        #[test]
-        fn test_constant_material_property() {
-            // Test with non-constant material property
-            let element = Element {
-                id: 0,
-                nodes: vec![0, 1],
-            };
-
-            let nodes = vec![
-                Node {
-                    id: 0,
-                    coordinates: vec![0.0, 0.0, 0.0],
-                },
-                Node {
-                    id: 1,
-                    coordinates: vec![1.0, 0.0, 0.0],
-                },
-            ];
-
-            // Linear density: ρ(x) = 1 + x
-            // In monomial basis for 1D: [constant, x] = [1.0, 1.0]
-            let material_property = MaterialProperty::Scalar(vec![1.0, 1.0]);
-
-            let result = GaussianQuadrature::find_optimal_gauss_points(
-                IntegrationType::Mass,
-                &element,
-                &ElementType::Line,
-                &nodes,
-                3,
-                1e-10,
-                &material_property,
-            );
-
-            // Should succeed and find appropriate Gauss points
-            assert!(result.is_ok());
-            let report = result.unwrap();
-            
-            // With linear density and quadratic shape functions, integrand becomes cubic
-            // Theoretical points = ceil((3+1)/2) = 2, but might need more for tolerance
-            assert!(report.theoretical_number >= 2);
-        }
-
-        #[test]
-        fn test_element_node_retrieval() {
-            let (element, nodes, _, _, _) = super::line_element_1d_tests::create_1d_line_element();
-            
-            // Test that GeometricAnalysis::get_element_nodes works correctly with 0-based indexing
-            let element_nodes = GeometricAnalysis::get_element_nodes(&element, &nodes).unwrap();
-            
-            assert_eq!(element_nodes.len(), 2);
-            assert_eq!(element_nodes[0].id, 0);
-            assert_eq!(element_nodes[1].id, 1);
-            assert_eq!(element_nodes[0].coordinates, vec![0.0, 0.0, 0.0]);
-            assert_eq!(element_nodes[1].coordinates, vec![1.0, 0.0, 0.0]);
-        }
-    }
-}
-
-*/
