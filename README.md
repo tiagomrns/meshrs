@@ -1,24 +1,24 @@
-# FEA Mesh Analysis & Optimization Tool
+# meshrs
 
-![Rust](https://img.shields.io/badge/Language-Rust-blue) ![License](https://img.shields.io/github/license/ayberksaglik/Master-Thesis-Caglar-Ayberk-Saglik)
+![Rust](https://img.shields.io/badge/Language-Rust-blue) ![License](https://img.shields.io/github/license/tiagomrns/meshrs)
 
 ---
 
 ## Executive Summary
 
-The FEA Mesh Analysis & Optimization Tool is a cutting-edge Rust-based solution designed to streamline the parsing, analysis, and optimization processes of finite element analysis meshes used in engineering simulations. This tool supports Abaqus (.inp) and COMSOL (.mphtxt) mesh formats for parsing, evaluates geometric quality using metrics like Knupp's quality metrics (Shape, Skewness, and Jacobian Ratio), and optimizes Gaussian quadrature points using symbolic mathematics. With output in the VTU format, the tool ensures seamless integration with ParaView for visualization and further processing.
+The meshrs addresses the interoperability gap between proprietary simulation software, academic codes, and in-house solvers by developing a modular framework in the Rust programming language. The framework enables the conversion of proprietary mesh formats (such as COMSOL `.mphtxt` and Abaqus `.inp`) to the open-standard VTU format for visualization in ParaView, while providing extensible modules for user-defined pre-processing analysis. Key contributions include mesh quality assessment using metrics like Jacobian ratio and skewness, integration point optimization based on material properties and a user-defined error tolerance, and deformation visualization of raw result data from `.txt` files. By leveraging Rust's memory safety, performance characteristics, and growing industry adoption, this work establishes a foundation for reliable, high-performance engineering software tools that bridge legacy systems and modern development practices.
 
 ---
 
 ## Key Features
 
 - **Parsing**
-  - Supports `.inp` (Abaqus) and `.mphtxt` (COMSOL) file formats.
+  - Supports `.inp` (Abaqus) and `.mphtxt` (COMSOL) file formats for mesh parsing and `.txt` file format for nodal value parsing.
   
 - **Analysis**
   - Calculates geometric quality metrics, including:
-    - Shape metric
-    - Skewness
+    - Knupp's algebraic quality metrics (Shape Metric, Skewness Metric, Length Ratio, Orientation Metric, Volume Metric)
+    - Determinant check
     - Jacobian Ratio
 
 - **Optimization**
@@ -26,16 +26,17 @@ The FEA Mesh Analysis & Optimization Tool is a cutting-edge Rust-based solution 
   
 - **Output**
   - Generates VTU files compatible with ParaView for intuitive visualization.
+  - Generates TXT files for detailed analysis.
 
 ---
 
 ## Installation
 
-To get started with the FEA Tool, clone this repository and use **Cargo** (Rust's package manager) to build the project. Run the following commands:
+To get started with the meshrs, clone this repository and use **Cargo** (Rust's package manager) to build the project. Run the following commands:
 
 ```bash
-git clone https://github.com/ayberksaglik/Master-Thesis-Caglar-Ayberk-Saglik.git
-cd Master-Thesis-Caglar-Ayberk-Saglik
+git clone https://github.com/tiagomrns/meshrs.git
+cd meshrs
 cargo build --release
 ```
 
@@ -48,7 +49,7 @@ Below are various use cases for the tool:
 1. **Basic Mesh Parsing**  
    Generate a VTU representation of a COMSOL mesh file:
    ```bash
-   cargo run --release -- mesh.mphtxt --print-vtu
+   cargo run --release -- mesh.mphtxt
    ```
 
 2. **Geometric Quality Analysis**
@@ -60,13 +61,13 @@ Below are various use cases for the tool:
 3. **Gaussian Quadrature Optimization (Mass Matrix Integration)**  
    Optimize Gaussian integration points for the mass matrix:
    ```bash
-   cargo run --release -- input_mesh.inp --optimize-gauss --mass-integration
+   cargo run --release -- input_mesh.inp --optimize-gauss --gauss-tolerance 1e-4 --mass-integration --material-property 10.0,5.0,3.0,0.5
    ```
 
 4. **Gaussian Quadrature Optimization (Stiffness Matrix Integration)**  
-   Optimize Gaussian integration points for the stiffness matrix using provided material property:
+   Optimize Gaussian integration points for the stiffness matrix using provided material property for 3D mesh (6 at the beginning shows that the material matrix is 6x6):
    ```bash
-   cargo run --release -- input_mesh.inp --optimize-gauss --stiffness-integration --material-property "[1.0, 0.0, 0.5]"
+   cargo run --release -- input_mesh.inp --optimize-gauss --stiffness-integration --material-property '6;10.0;1.3;4.0;0.6;1.0;0.3;1.3;0.8;0.3;0.1;0.5;0.7;4.0;0.3;0.7;0.2;0.8;0.4;0.6;0.1;0.2;0.9;0.0;0.1;1.0;0.5;0.8;0.0;0.6;0.1;0.3;0.7;0.4;0.1;0.1;0.3'
    ```
 
 ---
@@ -78,27 +79,29 @@ The tool generates the following output files for further analysis:
 | File Extension                        | Description                                                    |
 |---------------------------------------|----------------------------------------------------------------|
 | `<mesh_name>_parsed_mesh_data.txt`    | Parsed mesh data, including nodes and elements, in a human-readable format. |
+| `<mesh_name>_parsed_data.txt          | Raw parsed nodal values (if applicable).
 | `<mesh_name>_mesh_quality_analysis.txt` | Detailed quality metrics of the parsed mesh, including shape, skewness, and Jacobian ratios. |
-| `<mesh_name>_quadrature_optimized_mass.vtu` | VTU file with optimized Gaussian integration points for Mass Matrix. |
+| `<mesh_name>_mesh_gauss_optimization.txt` | Report on the optimal number of Gaussian points found for each element. |
+| `<mesh_name>_with_analysis.vtu` | VTU file containing the mesh geometry and computed quality metrics. |
 | `<mesh_name>_quadrature_optimized_stiffness.vtu` | VTU file with optimized Gaussian integration points for Stiffness Matrix. |
 
 ---
 
 ## Developer Guide
 
-### Extending the FEA Tool
+### Extending the meshrs
 
 ### Adding a New ElementType
 
 1. **Define a new `ElementType`**:
-   - Open [structs_and_impls.rs](https://github.com/ayberksaglik/Master-Thesis-Caglar-Ayberk-Saglik/blob/main/src/structs_and_impls.rs).
+   - Open [structs_and_impls.rs](https://github.com/tiagomrns/meshrs/blob/main/src/structs_and_impls.rs).
    - Add a new variant to the `ElementType` enum.
    
 2. **Shape Functions**:  
    - Implement the `get_shape_functions` method for your new `ElementType`.
 
 3. **Integration Rules**:  
-   - Extend the implementation in [gaussian_quadrature.rs](https://github.com/ayberksaglik/Master-Thesis-Caglar-Ayberk-Saglik/blob/main/src/mesh_analysis/gaussian_quadrature.rs) to define symbolic or numerical integration rules.
+   - Extend the implementation in [gaussian_quadrature.rs](https://github.com/tiagomrns/meshrs/blob/main/src/mesh_analysis/gaussian_quadrature.rs) to define symbolic or numerical integration rules.
 
 ---
 
@@ -106,18 +109,22 @@ The tool generates the following output files for further analysis:
 
 1. **Create a New Parser Module**:  
    - Add your parser under the `src/parser` directory.  
-   - Implement the necessary parsing logic (see [abaqus_inp.rs](https://github.com/ayberksaglik/Master-Thesis-Caglar-Ayberk-Saglik/blob/main/src/parser/abaqus/abaqus_inp.rs)).
+   - Implement the necessary parsing logic (see [abaqus_inp.rs](https://github.com/tiagomrns/meshrs/blob/main/src/parser/abaqus/abaqus_inp.rs)).
 
 2. **Connect Parser**:  
-   - Register your parser in [parser/mod.rs](https://github.com/ayberksaglik/Master-Thesis-Caglar-Ayberk-Saglik/blob/main/src/parser/mod.rs).
+   - Register your parser in [parser/mod.rs](https://github.com/tiagomrns/meshrs/blob/main/src/parser/mod.rs).
 
 ---
 
 ## Known Limitations & Future Work
 
 - **Hardcoded Output Path**:
-  - The output directory is currently hardcoded in [main.rs](https://github.com/ayberksaglik/Master-Thesis-Caglar-Ayberk-Saglik/blob/main/src/main.rs).  
+  - The output directory is currently hardcoded in [main.rs](https://github.com/tiagomrns/meshrs/blob/main/src/main.rs).  
   - **Action for Users**: You must manually modify the `output_dir` variable in `main.rs` to match your local file system before running the tool. Failure to do so may result in the program panicking due to an invalid path.
+ 
+- **High Order Shape Functions and Derivatives**:
+  - Shape functions for Quadratic Hexahedron, Biquadratic Hexahedron, and Triquadratic Hexahedron require verification before use. 
+  - **Action for Users**: Please review the implementation in structs_and_impls.rs if utilizing these specific element types for high-precision simulations.
 
 - **Symbolic Integration Approximations**:
   - The symbolic math engine used in the tool has limitations when handling non-polynomial functions such as rational functions and square roots.
@@ -134,4 +141,4 @@ The tool generates the following output files for further analysis:
 
 ---
 
-This README provides an overview of the **FEA Mesh Analysis & Optimization Tool**, summarizing its capabilities, installation, usage, known limitations, and guidelines for extending its functionality.
+This README provides an overview of the **meshrs**, summarizing its capabilities, installation, usage, known limitations, and guidelines for extending its functionality.
